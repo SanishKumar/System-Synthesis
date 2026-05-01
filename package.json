@@ -1,0 +1,9 @@
+{
+  "name": "system-synthesis",
+  "private": true,
+  "workspaces": [
+    "frontend",
+    "server",
+    "shared"
+  ]
+}

@@ -1,0 +1,399 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   System Synthesis — Theme Variables
+   ============================================================ */
+
+:root {
+  /* Dark Mode (default) */
+  --color-canvas: #050505;
+  --color-canvas-50: #0a0a0a;
+  --color-canvas-100: #0f0f0f;
+  --color-surface: #121414;
+  --color-surface-light: #1a1c1c;
+  --color-surface-lighter: #222525;
+  --color-border: #262626;
+  --color-border-light: #333333;
+  --color-text-primary: #f0f0f0;
+  --color-text-secondary: #9ca3af;
+  --color-text-muted: #6b7280;
+  --color-accent-cyan: #00dbe9;
+  --color-accent-purple: #ebb2ff;
+  --accent-cyan-rgb: 0 219 233;
+  --accent-purple-rgb: 235 178 255;
+  --color-node-bg: #121414;
+  --color-scrollbar-track: #0a0a0a;
+  --color-scrollbar-thumb: #333;
+  --color-scrollbar-thumb-hover: #555;
+  --color-selection-bg: rgba(0, 219, 233, 0.25);
+  --color-selection-text: #f0f0f0;
+  --color-grid: rgba(38, 38, 38, 0.4);
+  --color-rf-bg: #050505;
+  --color-rf-edge: #333;
+  --color-rf-edge-selected: #00dbe9;
+  --color-rf-handle: #333;
+  --color-rf-handle-border: #555;
+  --color-rf-controls-bg: #121414;
+  --color-rf-controls-border: #262626;
+  --color-rf-controls-fill: #9ca3af;
+  --color-minimap-mask: rgba(5, 5, 5, 0.8);
+}
+
+[data-theme="light"] {
+  --color-canvas: #f5f5f7;
+  --color-canvas-50: #ebebef;
+  --color-canvas-100: #e0e0e6;
+  --color-surface: #ffffff;
+  --color-surface-light: #f0f0f4;
+  --color-surface-lighter: #e5e5eb;
+  --color-border: #d4d4d8;
+  --color-border-light: #a1a1aa;
+  --color-text-primary: #18181b;
+  --color-text-secondary: #52525b;
+  --color-text-muted: #71717a;
+  --color-accent-cyan: #0891b2;
+  --color-accent-purple: #9333ea;
+  --accent-cyan-rgb: 8 145 178;
+  --accent-purple-rgb: 147 51 234;
+  --color-node-bg: #ffffff;
+  --color-scrollbar-track: #f0f0f4;
+  --color-scrollbar-thumb: #c4c4c8;
+  --color-scrollbar-thumb-hover: #a1a1a5;
+  --color-selection-bg: rgba(8, 145, 178, 0.2);
+  --color-selection-text: #18181b;
+  --color-grid: rgba(0, 0, 0, 0.06);
+  --color-rf-bg: #f5f5f7;
+  --color-rf-edge: #a1a1aa;
+  --color-rf-edge-selected: #0891b2;
+  --color-rf-handle: #a1a1aa;
+  --color-rf-handle-border: #71717a;
+  --color-rf-controls-bg: #ffffff;
+  --color-rf-controls-border: #d4d4d8;
+  --color-rf-controls-fill: #52525b;
+  --color-minimap-mask: rgba(245, 245, 247, 0.85);
+}
+
+/* ============================================================
+   System Synthesis — Global Styles
+   ============================================================ */
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    box-sizing: border-box;
+  }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-text-primary);
+    font-family: "Inter", system-ui, sans-serif;
+    overflow-x: hidden;
+  }
+
+  ::selection {
+    background-color: var(--color-selection-bg);
+    color: var(--color-selection-text);
+  }
+
+  /* Custom Scrollbar — Slim */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--color-scrollbar-track);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-scrollbar-thumb);
+    border-radius: 3px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-scrollbar-thumb-hover);
+  }
+
+  /* Focus styles */
+  *:focus-visible {
+    outline: 1px solid var(--color-accent-cyan);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  /* ---------- Canvas Grid Background ---------- */
+  .canvas-grid {
+    background-color: var(--color-canvas);
+    background-image:
+      linear-gradient(var(--color-grid) 1px, transparent 1px),
+      linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
+    background-size: 24px 24px;
+  }
+
+  /* ---------- Glow Effects ---------- */
+  .glow-border-cyan {
+    box-shadow: 0 0 4px rgba(0, 219, 233, 0.2);
+    border-color: var(--color-accent-cyan);
+  }
+
+  .glow-border-purple {
+    box-shadow: 0 0 4px rgba(235, 178, 255, 0.2);
+    border-color: var(--color-accent-purple);
+  }
+
+  /* ---------- Card Styles ---------- */
+  .card {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    transition: all 150ms;
+  }
+
+  .card:hover {
+    border-color: var(--color-border-light);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  }
+
+  .card-active {
+    border-color: var(--color-accent-cyan);
+    box-shadow: 0 0 4px rgba(0, 219, 233, 0.2);
+  }
+
+  /* ---------- Input Styles ---------- */
+  .input {
+    background-color: var(--color-canvas-50);
+    border: 1px solid var(--color-border);
+    border-radius: 4px;
+    padding: 0.5rem 0.75rem;
+    color: var(--color-text-primary);
+    font-size: 0.875rem;
+    font-family: "Inter", system-ui, sans-serif;
+    transition: all 150ms;
+  }
+
+  .input::placeholder {
+    color: var(--color-text-muted);
+  }
+
+  .input:focus {
+    border-color: var(--color-accent-cyan);
+    box-shadow: 0 0 4px rgba(0, 219, 233, 0.2);
+    outline: none;
+  }
+
+  /* ---------- Button Styles ---------- */
+  .btn-primary {
+    @apply bg-accent-cyan text-canvas font-display font-semibold
+           px-4 py-2 rounded-sm
+           hover:brightness-110 active:brightness-90
+           transition-all duration-150
+           shadow-glow-cyan;
+  }
+
+  .btn-secondary {
+    @apply bg-transparent border border-accent-cyan text-accent-cyan
+           font-display font-medium
+           px-4 py-2 rounded-sm
+           hover:bg-accent-cyan/10
+           transition-all duration-150;
+  }
+
+  .btn-ghost {
+    color: var(--color-text-secondary);
+    background: transparent;
+    padding: 0.5rem 0.75rem;
+    border-radius: 4px;
+    transition: all 150ms;
+  }
+
+  .btn-ghost:hover {
+    color: var(--color-text-primary);
+    background-color: var(--color-surface-light);
+  }
+
+  /* ---------- Badge Styles ---------- */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5
+           text-xs font-mono font-medium
+           rounded-sm border;
+  }
+
+  .badge-cyan {
+    @apply badge border-accent-cyan/40 text-accent-cyan bg-accent-cyan/10;
+  }
+
+  .badge-purple {
+    @apply badge border-accent-purple/40 text-accent-purple bg-accent-purple/10;
+  }
+
+  .badge-green {
+    @apply badge border-status-active/40 text-status-active bg-status-active/10;
+  }
+
+  .badge-yellow {
+    @apply badge border-status-warning/40 text-status-warning bg-status-warning/10;
+  }
+
+  /* ---------- Tab Styles ---------- */
+  .tab {
+    @apply px-4 py-2 text-sm font-display text-text-muted
+           border-b-2 border-transparent
+           hover:text-text-secondary
+           transition-all duration-150 cursor-pointer;
+  }
+
+  .tab-active {
+    @apply tab text-accent-cyan border-accent-cyan;
+  }
+
+  /* ---------- Toggle Switch ---------- */
+  .toggle-track {
+    position: relative;
+    width: 2.5rem;
+    height: 1.25rem;
+    border-radius: 4px;
+    background-color: var(--color-surface-lighter);
+    border: 1px solid var(--color-border);
+    cursor: pointer;
+    transition: all 200ms;
+  }
+
+  .toggle-track[data-active="true"] {
+    background-color: rgba(0, 219, 233, 0.2);
+    border-color: var(--color-accent-cyan);
+    box-shadow: 0 0 4px rgba(0, 219, 233, 0.2);
+  }
+
+  .toggle-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 1rem;
+    height: 1rem;
+    border-radius: 4px;
+    background-color: var(--color-text-muted);
+    transition: all 200ms;
+  }
+
+  .toggle-track[data-active="true"] .toggle-thumb {
+    transform: translateX(1.25rem);
+    background-color: var(--color-accent-cyan);
+  }
+
+  /* ---------- Status Indicator ---------- */
+  .status-dot {
+    @apply w-2 h-2 rounded-full;
+  }
+
+  .status-dot-active {
+    @apply status-dot bg-status-active shadow-[0_0_4px_rgba(34,197,94,0.5)];
+  }
+
+  .status-dot-inactive {
+    @apply status-dot bg-status-inactive;
+  }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    position: fixed;
+    top: 3.5rem;
+    right: 0;
+    bottom: 0;
+    width: 20rem;
+    background-color: var(--color-surface);
+    border-left: 1px solid var(--color-border);
+    display: flex;
+    flex-direction: column;
+    animation: slideInRight 0.3s ease-out;
+    z-index: 30;
+  }
+}
+
+@layer utilities {
+  .text-gradient-cyan {
+    @apply bg-gradient-to-r from-accent-cyan to-accent-purple bg-clip-text text-transparent;
+  }
+
+  .line-clamp-2 {
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+
+/* ============================================================
+   React Flow Overrides (theme-aware)
+   ============================================================ */
+
+.react-flow__background {
+  background-color: var(--color-rf-bg) !important;
+}
+
+.react-flow__minimap {
+  background-color: var(--color-surface) !important;
+  border: 1px solid var(--color-border) !important;
+  border-radius: 8px !important;
+}
+
+.react-flow__controls {
+  border: 1px solid var(--color-rf-controls-border) !important;
+  border-radius: 4px !important;
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  background-color: var(--color-rf-controls-bg) !important;
+  border-bottom: 1px solid var(--color-rf-controls-border) !important;
+  fill: var(--color-rf-controls-fill) !important;
+}
+
+.react-flow__controls-button:hover {
+  background-color: var(--color-surface-light) !important;
+  fill: var(--color-accent-cyan) !important;
+}
+
+.react-flow__edge-path {
+  stroke: var(--color-rf-edge) !important;
+  stroke-width: 1.5 !important;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--color-rf-edge-selected) !important;
+  stroke-width: 2 !important;
+}
+
+.react-flow__handle {
+  width: 8px !important;
+  height: 8px !important;
+  background-color: var(--color-rf-handle) !important;
+  border: 1px solid var(--color-rf-handle-border) !important;
+  border-radius: 2px !important;
+}
+
+.react-flow__handle:hover {
+  background-color: var(--color-accent-cyan) !important;
+  border-color: var(--color-accent-cyan) !important;
+  box-shadow: 0 0 6px rgba(0, 219, 233, 0.4);
+}
+
+.react-flow__connection-line {
+  stroke: var(--color-accent-cyan) !important;
+  stroke-dasharray: 5 5;
+}
+
+.react-flow__attribution {
+  display: none !important;
+}
