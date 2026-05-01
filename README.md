@@ -52,10 +52,12 @@ graph TD
         R[(Redis)]
     end
 
-    Z <-->|WebSockets (Sync)| WS
-    Z <-->|HTTP (Stateless Auth)| API
-    WS <-->|Pub/Sub Events| R
-    API <-->|Persistence| R
+    Z -->|WebSockets Sync| WS
+    WS -->|Broadcast State| Z
+    Z -->|HTTP Actions| API
+    WS -->|Pub/Sub Events| R
+    R -->|Pub/Sub Events| WS
+    API -->|Read & Write| R
     API -->|Graph JSON Analysis| AI
 ```
 
