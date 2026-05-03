@@ -1,9 +1,21 @@
 # System Synthesis
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-system--synthesis--frontend.vercel.app-00dbe9?style=for-the-badge)](https://system-synthesis-frontend.vercel.app/)
+
 ![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)
 ![React Flow](https://img.shields.io/badge/React_Flow-12-blue?logo=react)
 ![Socket.io](https://img.shields.io/badge/Socket.io-Real--time-black?logo=socket.io)
 ![Redis](https://img.shields.io/badge/Redis-In--memory-red?logo=redis)
+
+## Screenshots
+
+> **Note:** To render these images, take screenshots of your live app and save them in a new folder named `docs` as `dashboard.png` and `canvas.png`.
+
+![Dashboard](./docs/dashboard.png)
+*The System Overview and project dashboard.*
+
+![Canvas Architecture](./docs/canvas.png)
+*Real-time collaborative editing of the Global E-Commerce architecture.*
 
 A real-time, collaborative architecture whiteboard built for designing and discussing system infrastructure. Think of it as Excalidraw specifically tailored for microservices, databases, and cloud components.
 
