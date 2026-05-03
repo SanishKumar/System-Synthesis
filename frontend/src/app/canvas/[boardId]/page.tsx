@@ -29,7 +29,7 @@ const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
 export default function CanvasBoardPage() {
   const params = useParams();
   const router = useRouter();
-  const boardId = (params.boardId as string) || "demo-board";
+  const boardId = (params.boardId as string) || "demo-ecommerce";
   const { userId, userName, authHeaders, isReady } = useUser();
 
   const [activeTool, setActiveTool] = useState<

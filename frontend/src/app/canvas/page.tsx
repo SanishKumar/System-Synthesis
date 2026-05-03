@@ -25,10 +25,10 @@ export default function NewCanvasRedirect() {
           const board = await res.json();
           router.replace(`/canvas/${board.id}`);
         } else {
-          router.replace("/canvas/demo-board");
+          router.replace("/canvas/demo-ecommerce");
         }
       } catch {
-        router.replace("/canvas/demo-board");
+        router.replace("/canvas/demo-ecommerce");
       }
     }
     createAndRedirect();

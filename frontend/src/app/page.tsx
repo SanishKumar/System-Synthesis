@@ -128,7 +128,7 @@ export default function DashboardPage() {
         return;
       }
     } catch {}
-    router.push("/canvas/demo-board");
+    router.push("/canvas/demo-ecommerce");
     setCreating(false);
   };
 

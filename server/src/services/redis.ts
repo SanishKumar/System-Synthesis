@@ -9,7 +9,7 @@ const memoryStore = new Map<string, string>();
 
 // Demo board data
 const demoBoardState: BoardState = {
-  id: "demo-board",
+  id: "demo-ecommerce",
   name: "Global E-Commerce Platform",
   description: "High-availability microservices architecture for handling global order processing.",
   ownerId: "system",
@@ -176,7 +176,7 @@ export async function initRedis(): Promise<void> {
   const redisUrl = process.env.REDIS_URL;
   if (!redisUrl) {
     console.log("  ⚡ Redis URL not configured — using in-memory store");
-    memoryStore.set(`board:demo-board`, JSON.stringify(demoBoardState));
+    memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
     return;
   }
 
@@ -208,7 +208,7 @@ export async function initRedis(): Promise<void> {
     });
   } catch (err) {
     console.log("  ⚠ Redis module not available — using in-memory store");
-    memoryStore.set(`board:demo-board`, JSON.stringify(demoBoardState));
+    memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
   }
 }
 
@@ -230,7 +230,7 @@ export async function getBoardState(boardId: string): Promise<BoardState | null>
   const data = memoryStore.get(key);
   if (data) return migrateBoardState(JSON.parse(data));
 
-  if (boardId === "demo-board") {
+  if (boardId === "demo-ecommerce") {
     memoryStore.set(key, JSON.stringify(demoBoardState));
     return demoBoardState;
   }
@@ -451,7 +451,7 @@ export async function listBoards(requesterId?: string): Promise<BoardState[]> {
 
   // Ensure demo board exists on first load
   if (allBoards.length === 0) {
-    memoryStore.set(`board:demo-board`, JSON.stringify(demoBoardState));
+    memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
     allBoards.push(demoBoardState);
   }
 

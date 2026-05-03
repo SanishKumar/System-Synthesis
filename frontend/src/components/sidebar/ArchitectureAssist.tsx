@@ -91,6 +91,7 @@ export default function ArchitectureAssist() {
     setSelectedNodeId,
     getSerializedNodes,
     getSerializedEdges,
+    boardId,
   } = useBoardStore();
 
   const analysis = aiAnalysis || mockAnalysis;
@@ -105,7 +106,7 @@ export default function ArchitectureAssist() {
     const socket = getSocket();
     if (socket.connected) {
       socket.emit("request_ai_analysis", {
-        boardId: "demo-board",
+        boardId,
         nodes: serializedNodes,
         edges: serializedEdges,
       });
@@ -113,7 +114,8 @@ export default function ArchitectureAssist() {
     }
 
     try {
-      const response = await fetch("http://localhost:4000/api/ai/analyze", {
+      const apiUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+      const response = await fetch(`${apiUrl}/api/ai/analyze`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ nodes: serializedNodes, edges: serializedEdges }),
