@@ -241,11 +241,11 @@ interface BoardStore {
 // ---------- Store ----------
 
 export const useBoardStore = create<BoardStore>((set, get) => ({
-  boardId: "demo-board",
-  boardName: "Production Architecture",
+  boardId: "",
+  boardName: "",
 
-  nodes: initialNodes,
-  edges: initialEdges,
+  nodes: [],
+  edges: [],
 
   onNodesChange: (changes) => {
     set({ nodes: applyNodeChanges(changes, get().nodes) as Node<ArchNodeData>[] });
