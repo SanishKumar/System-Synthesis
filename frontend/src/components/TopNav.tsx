@@ -346,14 +346,7 @@ export default function TopNav({
                   <span className="ml-auto text-[10px] text-accent-cyan">Switch</span>
                 </button>
               </div>
-              <div>
-                <label className="text-[11px] text-text-muted font-display block mb-1">
-                  Backend
-                </label>
-                <span className="text-[11px] font-mono text-accent-cyan">
-                  {API_URL}
-                </span>
-              </div>
+
             </div>
           )}
         </div>
