@@ -248,11 +248,11 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   edges: initialEdges,
 
   onNodesChange: (changes) => {
-    set({ nodes: applyNodeChanges(changes, get().nodes) });
+    set({ nodes: applyNodeChanges(changes, get().nodes) as Node<ArchNodeData>[] });
   },
 
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) });
+    set({ edges: applyEdgeChanges(changes, get().edges) as Edge<ArchEdgeData>[] });
   },
 
   onConnect: (connection) => {
@@ -264,7 +264,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
           style: { stroke: "#444" },
         },
         get().edges
-      ),
+      ) as Edge<ArchEdgeData>[],
     });
   },
 
