@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { v4 as uuidv4 } from "uuid";
 
 const USER_ID_KEY = "ss_user_id";
@@ -54,10 +54,10 @@ export function useUser() {
   /**
    * Standard headers to attach to all API calls.
    */
-  const authHeaders = {
+  const authHeaders = useMemo(() => ({
     "x-user-id": userId,
     "x-user-name": userName,
-  };
+  }), [userId, userName]);
 
   return {
     userId,

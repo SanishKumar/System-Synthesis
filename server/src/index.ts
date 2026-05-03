@@ -22,8 +22,11 @@ async function main() {
   const app = express();
   app.use(
     cors({
-      origin: [FRONTEND_URL, "http://localhost:3000", "http://localhost:3001"],
-      methods: ["GET", "POST", "PUT", "DELETE", "PATCH"],
+      origin: (origin, callback) => {
+        // Echo back the requesting origin to allow flexible Vercel deployments
+        // while still supporting credentials: true
+        callback(null, origin || true);
+      },
       credentials: true,
     })
   );
