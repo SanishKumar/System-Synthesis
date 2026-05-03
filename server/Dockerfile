@@ -2,35 +2,43 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy package.json and package-lock.json (if available)
-COPY package*.json ./
+# Copy the root workspace config and lockfile
+COPY package.json package-lock.json ./
 
-# Install dependencies (including devDependencies for building)
-RUN npm install
+# Copy the specific workspace packages we need
+COPY server/package.json ./server/
+COPY shared/package.json ./shared/
 
-# Copy the rest of the application code
-COPY . .
+# Install all dependencies (resolves workspace symlinks)
+RUN npm ci
 
-# Build the TypeScript code
-RUN npm run build
+# Copy the actual source code for shared and server
+COPY shared/ ./shared/
+COPY server/ ./server/
+
+# Build the shared and server packages
+RUN npm run build --workspace=server
 
 # --- Production Image ---
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Set node environment to production
 ENV NODE_ENV=production
 
-# Copy package files and install only production dependencies
-COPY package*.json ./
-RUN npm install --omit=dev
+# Copy root config and specific packages again
+COPY package.json package-lock.json ./
+COPY server/package.json ./server/
+COPY shared/package.json ./shared/
 
-# Copy the built artifacts from the builder stage
-COPY --from=builder /app/dist ./dist
+# Install only production dependencies
+RUN npm ci --omit=dev
 
-# Expose the port the app runs on
+# Copy the built artifacts and shared files
+COPY --from=builder /app/shared ./shared
+COPY --from=builder /app/server/dist ./server/dist
+
 EXPOSE 4000
 
-# Start the application
-CMD ["npm", "start"]
+# Start the server workspace
+CMD ["npm", "start", "--workspace=server"]
