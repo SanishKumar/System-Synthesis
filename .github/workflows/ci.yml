@@ -9,9 +9,6 @@ on:
 jobs:
   frontend-check:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./frontend
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -21,25 +18,22 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: './frontend/package-lock.json'
+          cache-dependency-path: 'package-lock.json'
 
-      - name: Install Frontend Dependencies
+      - name: Install Dependencies
         run: npm ci
 
       - name: Run Linter
-        run: npm run lint
+        run: npm run lint --workspace=frontend
 
       - name: Build Next.js
-        run: npm run build
+        run: npm run build --workspace=frontend
         env:
           # Dummy URL required for Next.js build time, overridden at runtime
           NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
 
   backend-check:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./server
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -49,10 +43,10 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: './server/package-lock.json'
+          cache-dependency-path: 'package-lock.json'
 
-      - name: Install Backend Dependencies
+      - name: Install Dependencies
         run: npm ci
 
       - name: Build Backend (TypeScript)
-        run: npm run build
+        run: npm run build --workspace=server
