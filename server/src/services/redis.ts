@@ -92,7 +92,12 @@ export async function initRedis(): Promise<void> {
 
   try {
     const Redis = (await import("ioredis")).default;
+    
+    const isTls = redisUrl.startsWith("rediss://");
+    
     redisClient = new Redis(redisUrl, {
+      family: 0, // Crucial for Upstash on Render: Force IPv4
+      tls: isTls ? { rejectUnauthorized: false } : undefined,
       maxRetriesPerRequest: 3,
       retryStrategy: (times: number) => {
         if (times > 3) {
