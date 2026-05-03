@@ -234,7 +234,7 @@ JSON response:`;
     throw new Error(`Local LLM error: ${response.statusText}`);
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as { response: string };
   return JSON.parse(data.response) as AIAnalysisResult;
 }
 
