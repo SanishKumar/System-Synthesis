@@ -75,6 +75,7 @@ export interface SerializedEdge {
   sourceHandle?: string;
   targetHandle?: string;
   data?: ArchEdgeData;
+  animated?: boolean;
 }
 
 // --- Multiplayer ---
