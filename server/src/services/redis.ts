@@ -201,6 +201,8 @@ export async function initRedis(): Promise<void> {
 
     redisClient.on("connect", () => {
       console.log("  ✅ Redis connected");
+      // Explicitly seed the demo board into Redis so it appears in the database GUI
+      redisClient?.set("board:demo-ecommerce", JSON.stringify(demoBoardState));
     });
 
     redisClient.on("error", (err: Error) => {
