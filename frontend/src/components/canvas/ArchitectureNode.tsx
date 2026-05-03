@@ -56,14 +56,11 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
 
   return (
     <div
-      className={`group relative min-w-[200px] max-w-[280px] rounded-md transition-all duration-200 ${
+      className={`group relative min-w-[200px] max-w-[280px] rounded-md transition-all duration-200 bg-surface ${
         selected
           ? "border border-accent-cyan shadow-glow-cyan-md"
           : "border border-border hover:border-border-light"
       }`}
-      style={{
-        backgroundColor: "var(--node-bg, #121414)",
-      }}
     >
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">

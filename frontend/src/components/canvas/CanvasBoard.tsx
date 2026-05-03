@@ -269,7 +269,7 @@ export default function CanvasBoard({
         }
         defaultEdgeOptions={{
           type: "smoothstep",
-          style: { stroke: "#333", strokeWidth: 1.5 },
+          style: { stroke: "var(--color-rf-edge)", strokeWidth: 1.5 },
         }}
         proOptions={{ hideAttribution: true }}
         className="!bg-transparent"
@@ -278,7 +278,7 @@ export default function CanvasBoard({
           variant={BackgroundVariant.Dots}
           gap={24}
           size={1}
-          color="#262626"
+          color="var(--color-grid)"
         />
         <Controls
           showZoom
@@ -288,8 +288,8 @@ export default function CanvasBoard({
         />
         <MiniMap
           nodeStrokeWidth={3}
-          nodeColor="#1a1c1c"
-          maskColor="rgba(5, 5, 5, 0.8)"
+          nodeColor="var(--color-surface-lighter)"
+          maskColor="var(--color-minimap-mask)"
           className="!bg-surface !border-border !rounded-md"
           style={{ width: 140, height: 90 }}
         />
