@@ -9,8 +9,6 @@
 
 ## Screenshots
 
-> **Note:** To render these images, take screenshots of your live app and save them in a new folder named `docs` as `dashboard.png` and `canvas.png`.
-
 ![Dashboard](./docs/dashboard.png)
 *The System Overview and project dashboard.*
 
