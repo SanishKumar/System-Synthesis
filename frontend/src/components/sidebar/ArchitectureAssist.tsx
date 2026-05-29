@@ -756,7 +756,7 @@ export default function ArchitectureAssist() {
             {!validationResult ? (
               <div className="text-center py-8">
                 <Shield className="w-8 h-8 text-text-muted/30 mx-auto mb-2" />
-                <p className="text-xs text-text-muted">Click "Run Validation" or make changes to auto-validate.</p>
+                <p className="text-xs text-text-muted">Click &quot;Run Validation&quot; or make changes to auto-validate.</p>
               </div>
             ) : validationResult.issues.length === 0 ? (
               <div className="text-center py-8">

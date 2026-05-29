@@ -223,7 +223,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
           <p className="text-[11px] text-text-muted">
             {mode === "login" ? (
               <>
-                Don't have an account?{" "}
+                Don&apos;t have an account?{" "}
                 <button
                   onClick={() => { setMode("register"); setError(null); }}
                   className="text-accent-cyan hover:underline font-display font-semibold"

@@ -264,7 +264,7 @@ export default function BottomToolbar({
                   ))}
                   {filteredCategories.length === 1 && filteredCategories[0].nodes.length === 0 && (
                     <div className="px-3 py-4 text-center">
-                      <p className="text-xs text-text-muted">No components match "{paletteSearch}"</p>
+                      <p className="text-xs text-text-muted">No components match &quot;{paletteSearch}&quot;</p>
                     </div>
                   )}
                 </div>
