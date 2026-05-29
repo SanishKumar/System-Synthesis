@@ -115,6 +115,7 @@ export default function DashboardPage() {
   }, [isReady, userId]);
 
   const handleCreateBoard = async () => {
+    if (!isReady) return;
     setCreating(true);
     try {
       const res = await fetch(`${API_URL}/api/boards`, {

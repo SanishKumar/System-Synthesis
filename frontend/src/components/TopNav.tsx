@@ -4,6 +4,8 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
+import { useBoardStore } from "@/store/boardStore";
+import AuthModal from "@/components/AuthModal";
 import {
   Search,
   Bell,
@@ -13,6 +15,13 @@ import {
   Workflow,
   X,
   Check,
+  Download,
+  ChevronDown,
+  FileCode,
+  FileText,
+  Image as ImageIcon,
+  Container,
+  Pencil,
 } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
@@ -21,6 +30,7 @@ interface TopNavProps {
   onMessCleanup?: () => void;
   isMessCleanupActive?: boolean;
   onToggleMessCleanup?: (active: boolean) => void;
+  onExportPng?: () => void;
 }
 
 interface SearchResult {
@@ -33,6 +43,7 @@ export default function TopNav({
   onMessCleanup,
   isMessCleanupActive = false,
   onToggleMessCleanup,
+  onExportPng,
 }: TopNavProps) {
   const pathname = usePathname();
   const router = useRouter();
@@ -42,7 +53,7 @@ export default function TopNav({
   const [showNotifications, setShowNotifications] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const { userId, userName, setUserName: saveUserName, authHeaders } = useUser();
+  const { userId, userName, setUserName: saveUserName, authHeaders, isGuest, logout } = useUser();
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [notifications, setNotifications] = useState<string[]>([
     "System Synthesis server connected",
@@ -52,6 +63,18 @@ export default function TopNav({
   const notifRef = useRef<HTMLDivElement>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
   const userRef = useRef<HTMLDivElement>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
+
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [exportLoading, setExportLoading] = useState<string | null>(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+
+  // Board name editing
+  const [isEditingBoardName, setIsEditingBoardName] = useState(false);
+  const [editBoardName, setEditBoardName] = useState("");
+  const boardNameInputRef = useRef<HTMLInputElement>(null);
+  const storeBoardName = useBoardStore((s) => s.boardName);
+  const storeBoardId = useBoardStore((s) => s.boardId);
 
   // Load theme from localStorage
   useEffect(() => {
@@ -73,6 +96,8 @@ export default function TopNav({
         setShowSettings(false);
       if (userRef.current && !userRef.current.contains(e.target as Node))
         setShowUserMenu(false);
+      if (exportRef.current && !exportRef.current.contains(e.target as Node))
+        setShowExportMenu(false);
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
@@ -186,6 +211,55 @@ export default function TopNav({
         })}
       </div>
 
+      {/* Board Name (inline editable — only on canvas pages) */}
+      {pathname.startsWith("/canvas") && storeBoardName && (
+        <div className="flex items-center gap-1.5 px-2 shrink-0 max-w-[200px]">
+          <span className="text-text-muted text-xs">/</span>
+          {isEditingBoardName ? (
+            <input
+              ref={boardNameInputRef}
+              value={editBoardName}
+              onChange={(e) => setEditBoardName(e.target.value)}
+              onBlur={async () => {
+                setIsEditingBoardName(false);
+                if (editBoardName.trim() && editBoardName !== storeBoardName) {
+                  try {
+                    await fetch(`${API_URL}/api/boards/${storeBoardId}`, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", ...authHeaders },
+                      body: JSON.stringify({ name: editBoardName.trim() }),
+                    });
+                    useBoardStore.setState({ boardName: editBoardName.trim() });
+                  } catch {}
+                }
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                if (e.key === "Escape") {
+                  setEditBoardName(storeBoardName);
+                  setIsEditingBoardName(false);
+                }
+              }}
+              className="bg-transparent border-b border-accent-cyan text-sm font-display text-text-primary outline-none px-0.5 min-w-[80px] max-w-[180px]"
+              autoFocus
+            />
+          ) : (
+            <button
+              onClick={() => {
+                setEditBoardName(storeBoardName);
+                setIsEditingBoardName(true);
+                setTimeout(() => boardNameInputRef.current?.focus(), 50);
+              }}
+              className="group flex items-center gap-1 text-sm font-display text-text-secondary hover:text-text-primary transition-colors truncate max-w-[180px]"
+              title="Click to rename board"
+            >
+              <span className="truncate">{storeBoardName}</span>
+              <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity shrink-0" />
+            </button>
+          )}
+        </div>
+      )}
+
       <div className="flex-1" />
 
       {/* Search */}
@@ -249,6 +323,137 @@ export default function TopNav({
             <div className="toggle-thumb w-3 h-3" />
           </div>
         </button>
+      )}
+
+      {/* Export Dropdown */}
+      {pathname.startsWith("/canvas") && (
+        <div ref={exportRef} className="relative mr-2">
+          <button
+            id="export-dropdown-btn"
+            onClick={() => setShowExportMenu(!showExportMenu)}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-display font-semibold transition-all duration-200 border bg-surface-light border-border text-text-secondary hover:border-border-light hover:text-text-primary"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export
+            <ChevronDown className={`w-3 h-3 transition-transform ${showExportMenu ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showExportMenu && (
+            <div className="absolute top-10 right-0 w-56 bg-surface border border-border rounded-md shadow-card z-50 overflow-hidden animate-fade-in">
+              {/* PNG */}
+              <button
+                onClick={() => { onExportPng?.(); setShowExportMenu(false); }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border"
+              >
+                <ImageIcon className="w-4 h-4 text-accent-cyan" />
+                <div>
+                  <p className="font-semibold">Export as PNG</p>
+                  <p className="text-[10px] text-text-muted">Canvas screenshot</p>
+                </div>
+              </button>
+
+              {/* Docker Compose */}
+              <button
+                disabled={exportLoading === 'docker'}
+                onClick={async () => {
+                  setExportLoading('docker');
+                  try {
+                    const store = useBoardStore.getState();
+                    const res = await fetch(`${API_URL}/api/export/docker-compose`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ nodes: store.getSerializedNodes(), edges: store.getSerializedEdges() }),
+                    });
+                    if (res.ok) {
+                      const text = await res.text();
+                      const blob = new Blob([text], { type: 'text/yaml' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a'); a.href = url; a.download = 'docker-compose.yml'; a.click();
+                      URL.revokeObjectURL(url);
+                    }
+                  } catch {}
+                  setExportLoading(null); setShowExportMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border disabled:opacity-50"
+              >
+                <Container className="w-4 h-4 text-status-active" />
+                <div>
+                  <p className="font-semibold">Docker Compose</p>
+                  <p className="text-[10px] text-text-muted">docker-compose.yml</p>
+                </div>
+              </button>
+
+              {/* Terraform */}
+              <button
+                disabled={exportLoading === 'terraform'}
+                onClick={async () => {
+                  setExportLoading('terraform');
+                  try {
+                    const store = useBoardStore.getState();
+                    const res = await fetch(`${API_URL}/api/export/terraform`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ nodes: store.getSerializedNodes(), edges: store.getSerializedEdges() }),
+                    });
+                    if (res.ok) {
+                      const bundle = await res.json();
+                      // Download each file
+                      for (const [filename, content] of Object.entries(bundle)) {
+                        const blob = new Blob([content as string], { type: 'text/plain' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+                        URL.revokeObjectURL(url);
+                      }
+                    }
+                  } catch {}
+                  setExportLoading(null); setShowExportMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border disabled:opacity-50"
+              >
+                <FileCode className="w-4 h-4 text-accent-purple" />
+                <div>
+                  <p className="font-semibold">Terraform</p>
+                  <p className="text-[10px] text-text-muted">main.tf, variables.tf, outputs.tf</p>
+                </div>
+              </button>
+
+              {/* Design Doc */}
+              <button
+                disabled={exportLoading === 'report'}
+                onClick={async () => {
+                  setExportLoading('report');
+                  try {
+                    const store = useBoardStore.getState();
+                    const res = await fetch(`${API_URL}/api/export/report`, {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        nodes: store.getSerializedNodes(),
+                        edges: store.getSerializedEdges(),
+                        boardName: store.boardName,
+                      }),
+                    });
+                    if (res.ok) {
+                      const text = await res.text();
+                      const blob = new Blob([text], { type: 'text/markdown' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a'); a.href = url; a.download = `${store.boardName || 'architecture'}-report.md`; a.click();
+                      URL.revokeObjectURL(url);
+                    }
+                  } catch {}
+                  setExportLoading(null); setShowExportMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors disabled:opacity-50"
+              >
+                <FileText className="w-4 h-4 text-status-warning" />
+                <div>
+                  <p className="font-semibold">Design Document</p>
+                  <p className="text-[10px] text-text-muted">Markdown architecture report</p>
+                </div>
+              </button>
+            </div>
+          )}
+        </div>
       )}
 
       {/* Right Icons */}
@@ -373,9 +578,30 @@ export default function TopNav({
                   {userName}
                 </p>
                 <p className="text-[10px] text-text-muted font-mono mt-0.5">
-                  ID: {userId.slice(0, 8)}…
+                  {isGuest ? "Guest" : `ID: ${userId.slice(0, 8)}…`}
                 </p>
               </div>
+              {isGuest ? (
+                <button
+                  onClick={() => {
+                    setShowAuthModal(true);
+                    setShowUserMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-xs text-accent-cyan text-left hover:bg-surface-light transition-colors font-display font-semibold"
+                >
+                  Sign In / Register
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    logout();
+                    setShowUserMenu(false);
+                  }}
+                  className="w-full px-3 py-2 text-xs text-status-error text-left hover:bg-surface-light transition-colors"
+                >
+                  Log Out
+                </button>
+              )}
               <button
                 onClick={() => {
                   const name = prompt("Enter new display name:", userName);
@@ -397,6 +623,11 @@ export default function TopNav({
           )}
         </div>
       </div>
+
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <AuthModal onClose={() => setShowAuthModal(false)} />
+      )}
     </nav>
   );
 }

@@ -8,19 +8,27 @@ import {
   MiniMap,
   BackgroundVariant,
   type NodeTypes,
+  type EdgeTypes,
   type Node,
   useReactFlow,
   ConnectionMode,
+  getNodesBounds,
 } from "@xyflow/react";
+import { toPng } from "html-to-image";
 import "@xyflow/react/dist/style.css";
 
 import { useBoardStore } from "@/store/boardStore";
 import ArchitectureNode from "./ArchitectureNode";
+import ArchitectureEdge from "./ArchitectureEdge";
 import RemoteCursors from "./RemoteCursors";
-import type { ArchNodeData } from "@system-synthesis/shared";
+import type { ArchNodeData, ArchEdgeData } from "@system-synthesis/shared";
 
 const nodeTypes: NodeTypes = {
   architectureNode: ArchitectureNode as any,
+};
+
+const edgeTypes: EdgeTypes = {
+  architectureEdge: ArchitectureEdge as any,
 };
 
 const NODE_TYPE_LABELS: Record<string, string> = {
@@ -65,24 +73,41 @@ export default function CanvasBoard({
     setEdges,
   } = useBoardStore();
 
-  // ——— Delete key handler ———
+  // ——— Keyboard shortcuts: Delete, Undo (Ctrl+Z), Redo (Ctrl+Shift+Z) ———
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isTyping = tag === "INPUT" || tag === "TEXTAREA";
+
+      // Undo: Ctrl+Z (not while typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !isTyping) {
+        e.preventDefault();
+        useBoardStore.getState().undo();
+        return;
+      }
+
+      // Redo: Ctrl+Shift+Z (not while typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === "z" && e.shiftKey && !isTyping) {
+        e.preventDefault();
+        useBoardStore.getState().redo();
+        return;
+      }
+
+      // Redo: Ctrl+Y (not while typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === "y" && !isTyping) {
+        e.preventDefault();
+        useBoardStore.getState().redo();
+        return;
+      }
+
+      // Delete selected node
       if (e.key === "Delete" || e.key === "Backspace") {
-        // Don't delete if user is typing in an input
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        if (isTyping) return;
 
         const state = useBoardStore.getState();
         const selectedId = state.selectedNodeId;
         if (selectedId) {
-          // Remove the node and any connected edges
-          state.setNodes(state.nodes.filter((n) => n.id !== selectedId));
-          state.setEdges(
-            state.edges.filter(
-              (e) => e.source !== selectedId && e.target !== selectedId
-            )
-          );
+          state.deleteNode(selectedId);
           state.setSelectedNodeId(null);
           state.setSidebarMode("none");
         }
@@ -90,6 +115,67 @@ export default function CanvasBoard({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // ——— Export PNG handler ———
+  useEffect(() => {
+    function handleExport() {
+      if (nodes.length === 0) {
+        alert("Board is empty!");
+        return;
+      }
+      
+      const nodesBounds = getNodesBounds(nodes);
+      // Add padding
+      const padding = 50;
+      const width = nodesBounds.width + padding * 2;
+      const height = nodesBounds.height + padding * 2;
+
+      const viewportEl = document.querySelector(".react-flow__viewport") as HTMLElement;
+      if (!viewportEl) return;
+
+      toPng(viewportEl, {
+        backgroundColor: "#0A0A0A",
+        width,
+        height,
+        style: {
+          width: `${width}px`,
+          height: `${height}px`,
+          transform: `translate(${-nodesBounds.x + padding}px, ${-nodesBounds.y + padding}px) scale(1)`,
+        },
+      }).then((dataUrl) => {
+        const a = document.createElement("a");
+        a.setAttribute("download", "system-architecture.png");
+        a.setAttribute("href", dataUrl);
+        a.click();
+      }).catch((err) => {
+        console.error("Export failed", err);
+        alert("Failed to export PNG");
+      });
+    }
+
+    window.addEventListener("export-png", handleExport);
+    return () => window.removeEventListener("export-png", handleExport);
+  }, [nodes]);
+
+  // ——— Edge update handlers (label + data from ArchitectureEdge) ———
+  useEffect(() => {
+    function handleLabelUpdate(e: Event) {
+      const { edgeId, label } = (e as CustomEvent).detail;
+      useBoardStore.getState().updateEdgeData(edgeId, { label });
+    }
+
+    function handleDataUpdate(e: Event) {
+      const { edgeId, data } = (e as CustomEvent).detail;
+      useBoardStore.getState().updateEdgeData(edgeId, data);
+    }
+
+    window.addEventListener("edge-label-update", handleLabelUpdate);
+    window.addEventListener("edge-data-update", handleDataUpdate);
+    return () => {
+      window.removeEventListener("edge-label-update", handleLabelUpdate);
+      window.removeEventListener("edge-data-update", handleDataUpdate);
+    };
   }, []);
 
   const handleNodeClick = useCallback(
@@ -260,6 +346,7 @@ export default function CanvasBoard({
         onNodeClick={handleNodeClick}
         onPaneClick={handlePaneClick}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         connectOnClick={isConnectMode}
@@ -268,7 +355,7 @@ export default function CanvasBoard({
           isConnectMode ? ConnectionMode.Loose : ConnectionMode.Strict
         }
         defaultEdgeOptions={{
-          type: "smoothstep",
+          type: "architectureEdge",
           style: { stroke: "var(--color-rf-edge)", strokeWidth: 1.5 },
         }}
         proOptions={{ hideAttribution: true }}

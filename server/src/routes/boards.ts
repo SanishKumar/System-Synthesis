@@ -7,14 +7,22 @@ import {
   deleteBoard,
   getMetrics,
   toggleBoardVisibility,
-} from "../services/redis.js";
+  listBoardVersions,
+  getBoardVersion,
+  restoreBoardVersion,
+} from "../services/boardRepository.js";
+import { validateArchitecture } from "../services/validation.js";
 
 const router = Router();
 
 /**
- * Extract user identity from request headers.
+ * Extract user identity from req.user (set by auth middleware)
+ * or legacy headers as fallback.
  */
-function getUserFromHeaders(req: any): { userId: string; userName: string } {
+function getUserFromRequest(req: any): { userId: string; userName: string } {
+  if (req.user) {
+    return { userId: req.user.userId, userName: req.user.userName };
+  }
   return {
     userId: (req.headers["x-user-id"] as string) || "",
     userName: (req.headers["x-user-name"] as string) || "Anonymous",
@@ -27,7 +35,7 @@ function getUserFromHeaders(req: any): { userId: string; userName: string } {
  */
 router.get("/metrics", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const metrics = await getMetrics(userId || undefined);
     res.json(metrics);
   } catch (err: any) {
@@ -40,7 +48,7 @@ router.get("/metrics", async (req, res) => {
  */
 router.get("/", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const boards = await listBoards(userId || undefined);
     res.json({
       boards: boards
@@ -71,7 +79,7 @@ router.get("/", async (req, res) => {
  */
 router.get("/:id", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const board = await getBoardState(req.params.id);
     if (!board) {
       return res.status(404).json({ error: "Board not found" });
@@ -93,7 +101,7 @@ router.get("/:id", async (req, res) => {
  */
 router.post("/", async (req, res) => {
   try {
-    const { userId, userName } = getUserFromHeaders(req);
+    const { userId, userName } = getUserFromRequest(req);
     const { name, description } = req.body;
     const board = await createBoard(
       name || "Untitled Board",
@@ -112,7 +120,7 @@ router.post("/", async (req, res) => {
  */
 router.put("/:id", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const existing = await getBoardState(req.params.id);
     if (!existing) {
       return res.status(404).json({ error: "Board not found" });
@@ -137,7 +145,7 @@ router.put("/:id", async (req, res) => {
  */
 router.patch("/:id/visibility", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const result = await toggleBoardVisibility(req.params.id, userId);
 
     if (!result) {
@@ -173,12 +181,153 @@ router.patch("/:id/visibility", async (req, res) => {
  */
 router.delete("/:id", async (req, res) => {
   try {
-    const { userId } = getUserFromHeaders(req);
+    const { userId } = getUserFromRequest(req);
     const deleted = await deleteBoard(req.params.id, userId);
     if (!deleted) {
       return res.status(403).json({ error: "Only the board owner can delete this board" });
     }
     res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================================
+// Version History Endpoints
+// ============================================================
+
+/**
+ * GET /api/boards/:id/versions — List all snapshots for a board
+ */
+router.get("/:id/versions", async (req, res) => {
+  try {
+    const { userId } = getUserFromRequest(req);
+    const board = await getBoardState(req.params.id);
+    if (!board) {
+      return res.status(404).json({ error: "Board not found" });
+    }
+
+    // Access check
+    if (!board.isPublic && board.ownerId !== userId && board.ownerId !== "system") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const versions = await listBoardVersions(req.params.id);
+    res.json({ versions });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/boards/:id/versions/:version — Get a specific snapshot
+ */
+router.get("/:id/versions/:version", async (req, res) => {
+  try {
+    const { userId } = getUserFromRequest(req);
+    const board = await getBoardState(req.params.id);
+    if (!board) {
+      return res.status(404).json({ error: "Board not found" });
+    }
+
+    // Access check
+    if (!board.isPublic && board.ownerId !== userId && board.ownerId !== "system") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const version = parseInt(req.params.version, 10);
+    if (isNaN(version)) {
+      return res.status(400).json({ error: "Invalid version number" });
+    }
+
+    const snapshot = await getBoardVersion(req.params.id, version);
+    if (!snapshot) {
+      return res.status(404).json({ error: "Version not found" });
+    }
+
+    res.json(snapshot);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/boards/:id/versions/:version/restore — Restore a previous version
+ */
+router.post("/:id/versions/:version/restore", async (req, res) => {
+  try {
+    const { userId } = getUserFromRequest(req);
+    const board = await getBoardState(req.params.id);
+    if (!board) {
+      return res.status(404).json({ error: "Board not found" });
+    }
+
+    // Only owner can restore
+    if (board.ownerId !== userId && board.ownerId !== "system") {
+      return res.status(403).json({ error: "Only the board owner can restore versions" });
+    }
+
+    const version = parseInt(req.params.version, 10);
+    if (isNaN(version)) {
+      return res.status(400).json({ error: "Invalid version number" });
+    }
+
+    const restored = await restoreBoardVersion(req.params.id, version, userId);
+    if (!restored) {
+      return res.status(404).json({ error: "Version not found" });
+    }
+
+    // Broadcast the restored state to all connected clients
+    const io = req.app.get("io");
+    if (io) {
+      io.to(req.params.id).emit("board_state", restored);
+    }
+
+    res.json({ success: true, board: restored });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+// ============================================================
+// Validation Endpoints
+// ============================================================
+
+/**
+ * POST /api/boards/:id/validate — Run validation on a board's current state
+ */
+router.post("/:id/validate", async (req, res) => {
+  try {
+    const { userId } = getUserFromRequest(req);
+    const board = await getBoardState(req.params.id);
+    if (!board) {
+      return res.status(404).json({ error: "Board not found" });
+    }
+
+    // Access check
+    if (!board.isPublic && board.ownerId !== userId && board.ownerId !== "system") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const result = validateArchitecture(board.nodes, board.edges);
+    res.json(result);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/boards/validate — Run validation on arbitrary node/edge data (client-side)
+ * Body: { nodes: SerializedNode[], edges: SerializedEdge[] }
+ */
+router.post("/validate", async (req, res) => {
+  try {
+    const { nodes, edges } = req.body;
+    if (!Array.isArray(nodes) || !Array.isArray(edges)) {
+      return res.status(400).json({ error: "nodes and edges arrays required" });
+    }
+
+    const result = validateArchitecture(nodes, edges);
+    res.json(result);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

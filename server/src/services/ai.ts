@@ -1,7 +1,9 @@
 import type {
   AIAnalysisResult,
+  AIGenerateResult,
   SerializedNode,
   SerializedEdge,
+  ArchNodeType,
 } from "@system-synthesis/shared";
 
 // ---------- Mock Analysis ----------
@@ -25,6 +27,7 @@ function generateMockAnalysis(
       description:
         "Architecture lacks a caching layer. Consider adding Redis or Memcached to reduce database load and improve response times.",
       severity: "warning",
+      actions: [{ type: 'add_node', nodeType: 'cache', label: 'Redis Cache' }]
     });
   }
 
@@ -34,6 +37,7 @@ function generateMockAnalysis(
       description:
         "No asynchronous message processing found. Consider RabbitMQ or Kafka for decoupling services and handling background jobs.",
       severity: "warning",
+      actions: [{ type: 'add_node', nodeType: 'queue', label: 'Kafka Event Bus' }]
     });
   }
 
@@ -43,6 +47,7 @@ function generateMockAnalysis(
       description:
         "No API Gateway detected. Consider Kong or Nginx for rate limiting, SSL termination, and request routing.",
       severity: "critical",
+      actions: [{ type: 'add_node', nodeType: 'gateway', label: 'API Gateway' }]
     });
   }
 
@@ -52,6 +57,7 @@ function generateMockAnalysis(
       description:
         "Architecture lacks load balancing. Consider adding a load balancer for high availability.",
       severity: "info",
+      actions: [{ type: 'add_node', nodeType: 'loadbalancer', label: 'Load Balancer' }]
     });
   }
 
@@ -132,6 +138,34 @@ function generateMockAnalysis(
 
 // ---------- OpenAI Adapter ----------
 
+const ANALYSIS_SYSTEM_PROMPT = `You are an expert software architect analyzer. Given a system architecture graph in JSON, analyze it and return a structured JSON response.
+
+Your response MUST be valid JSON with this exact structure:
+{
+  "missingComponents": [
+    {
+      "title": "string",
+      "description": "string",
+      "severity": "critical|warning|info",
+      "actions": [
+        {"type": "add_node", "nodeType": "service|database|gateway|queue|cache|client|loadbalancer|storage", "label": "Component Name"},
+        {"type": "add_edge", "sourceId": "existing-node-id", "targetId": "new-or-existing-node-id", "label": "optional edge label"}
+      ]
+    }
+  ],
+  "suggestedStorage": [{"name": "string", "type": "primary|cache|search|queue", "reason": "string"}],
+  "apiRecommendations": [{"name": "string", "description": "string", "badge": "string"}],
+  "scalabilityChecklist": [{"label": "string", "checked": boolean}],
+  "summary": "string"
+}
+
+IMPORTANT: Each missingComponent MUST include an "actions" array with concrete actions to fix the issue.
+For "add_node" actions: nodeType must be one of: service, database, gateway, queue, cache, client, loadbalancer, storage.
+For "add_edge" actions: sourceId and targetId should reference existing node IDs from the input graph.
+
+Analyze for: missing dependencies, single points of failure, scalability gaps, security concerns, and best practice violations.
+Return ONLY the JSON, no markdown or explanation.`;
+
 async function analyzeWithOpenAI(
   nodes: SerializedNode[],
   edges: SerializedEdge[]
@@ -146,34 +180,25 @@ async function analyzeWithOpenAI(
         label: n.data.label,
         type: n.data.nodeType,
         subtitle: n.data.subtitle,
+        tier: n.data.tier,
+        zone: n.data.zone,
+        tech: n.data.tech,
       })),
       edges: edges.map((e) => ({
+        id: e.id,
         from: e.source,
         to: e.target,
+        label: e.data?.label,
       })),
     },
     null,
     2
   );
 
-  const systemPrompt = `You are an expert software architect analyzer. Given a system architecture graph in JSON, analyze it and return a structured JSON response.
-
-Your response MUST be valid JSON with this exact structure:
-{
-  "missingComponents": [{"title": "string", "description": "string", "severity": "critical|warning|info"}],
-  "suggestedStorage": [{"name": "string", "type": "primary|cache|search|queue", "reason": "string"}],
-  "apiRecommendations": [{"name": "string", "description": "string", "badge": "string"}],
-  "scalabilityChecklist": [{"label": "string", "checked": boolean}],
-  "summary": "string"
-}
-
-Analyze for: missing dependencies, single points of failure, scalability gaps, security concerns, and best practice violations.
-Return ONLY the JSON, no markdown or explanation.`;
-
   const response = await client.chat.completions.create({
     model: "gpt-4o",
     messages: [
-      { role: "system", content: systemPrompt },
+      { role: "system", content: ANALYSIS_SYSTEM_PROMPT },
       {
         role: "user",
         content: `Analyze this architecture:\n${graphDescription}`,
@@ -212,7 +237,10 @@ async function analyzeWithLocalLLM(
     2
   );
 
-  const prompt = `Analyze this system architecture and return ONLY valid JSON with these fields: missingComponents (array of {title, description, severity}), suggestedStorage (array of {name, type, reason}), apiRecommendations (array of {name, description, badge}), scalabilityChecklist (array of {label, checked}), summary (string).
+  const prompt = `Analyze this system architecture and return ONLY valid JSON with these fields: missingComponents (array of {title, description, severity, actions}), suggestedStorage (array of {name, type, reason}), apiRecommendations (array of {name, description, badge}), scalabilityChecklist (array of {label, checked}), summary (string).
+
+Each missingComponent must include "actions" array with objects like:
+  {"type": "add_node", "nodeType": "service|database|gateway|queue|cache|loadbalancer|storage", "label": "Name"}
 
 Architecture:
 ${graphDescription}
@@ -238,7 +266,214 @@ JSON response:`;
   return JSON.parse(data.response) as AIAnalysisResult;
 }
 
-// ---------- Main Service ----------
+// ---------- Architecture Generation ----------
+
+const GENERATE_SYSTEM_PROMPT = `You are an expert cloud architect. Given a scenario description, generate a complete system architecture graph.
+
+Return ONLY valid JSON with this structure:
+{
+  "nodes": [
+    {
+      "id": "unique-id",
+      "type": "architectureNode",
+      "position": {"x": number, "y": number},
+      "data": {
+        "label": "Component Name",
+        "subtitle": "Technology\\nDetails",
+        "nodeType": "service|database|gateway|queue|cache|client|loadbalancer|storage",
+        "status": "active",
+        "tier": "frontend|backend|data|infrastructure|external",
+        "zone": "public|private|dmz|restricted",
+        "tech": "technology name",
+        "metadata": {"notes": "", "links": [], "codeSnippet": "", "attachedFiles": []}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-id",
+      "source": "source-node-id",
+      "target": "target-node-id",
+      "data": {"label": "connection description", "protocol": "HTTP|gRPC|TCP|AMQP|WebSocket"}
+    }
+  ],
+  "summary": "Brief description of the generated architecture"
+}
+
+RULES:
+- Generate between 4-12 nodes depending on complexity.
+- Position nodes in a logical top-down flow layout (clients at top ~y:50, gateways ~y:200, services ~y:400, databases ~y:600).
+- Space nodes horizontally with ~250px gaps. Center the layout around x:400.
+- Use sensible IDs like "client-1", "gateway-1", "auth-service", "user-db", etc.
+- Every edge must connect existing node IDs.
+- Include appropriate tiers, zones, and technology names.
+- Follow architecture best practices (no client→database, use gateways, etc).
+Return ONLY the JSON.`;
+
+/**
+ * Generate a complete architecture from a text description.
+ * Priority: OpenAI → Local LLM → Mock
+ */
+export async function generateArchitecture(
+  scenario: string
+): Promise<AIGenerateResult> {
+  // Try OpenAI first
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      console.log("  🤖 Generating architecture with OpenAI...");
+      const OpenAI = (await import("openai")).default;
+      const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+      const response = await client.chat.completions.create({
+        model: "gpt-4o",
+        messages: [
+          { role: "system", content: GENERATE_SYSTEM_PROMPT },
+          { role: "user", content: `Design an architecture for: ${scenario}` },
+        ],
+        temperature: 0.5,
+        max_tokens: 3000,
+        response_format: { type: "json_object" },
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) throw new Error("Empty response from OpenAI");
+      return JSON.parse(content) as AIGenerateResult;
+    } catch (err: any) {
+      console.error("  ⚠ OpenAI generation error:", err.message);
+    }
+  }
+
+  // Try local LLM
+  if (process.env.LOCAL_LLM_URL) {
+    try {
+      console.log("  🤖 Generating architecture with local LLM...");
+      const url = process.env.LOCAL_LLM_URL || "http://localhost:11434/api/generate";
+      const model = process.env.LOCAL_LLM_MODEL || "qwen2.5:7b";
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model,
+          prompt: `${GENERATE_SYSTEM_PROMPT}\n\nDesign an architecture for: ${scenario}\n\nJSON response:`,
+          stream: false,
+          format: "json",
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Local LLM error: ${response.statusText}`);
+      const data = (await response.json()) as { response: string };
+      return JSON.parse(data.response) as AIGenerateResult;
+    } catch (err: any) {
+      console.error("  ⚠ Local LLM generation error:", err.message);
+    }
+  }
+
+  // Fallback: generate a mock architecture
+  console.log("  🤖 Using mock generation (no AI provider configured)");
+  return generateMockArchitecture(scenario);
+}
+
+/**
+ * Generate a sensible mock architecture based on keywords in the scenario.
+ */
+function generateMockArchitecture(scenario: string): AIGenerateResult {
+  const lower = scenario.toLowerCase();
+  const nodes: SerializedNode[] = [];
+  const edges: SerializedEdge[] = [];
+  const meta = { notes: "", links: [], codeSnippet: "", attachedFiles: [] };
+
+  // Always start with a client
+  nodes.push({
+    id: "gen-client", type: "architectureNode",
+    position: { x: 400, y: 50 },
+    data: { label: "Web Client", subtitle: "React / Next.js", nodeType: "client", status: "active", tier: "frontend", zone: "public", tech: "React", metadata: meta },
+  });
+
+  // Gateway
+  nodes.push({
+    id: "gen-gateway", type: "architectureNode",
+    position: { x: 400, y: 200 },
+    data: { label: "API Gateway", subtitle: "Kong / Nginx", nodeType: "gateway", status: "active", tier: "infrastructure", zone: "dmz", tech: "Kong", metadata: meta },
+  });
+  edges.push({ id: "gen-e1", source: "gen-client", target: "gen-gateway", data: { label: "HTTPS", protocol: "HTTP" } });
+
+  // Core service
+  const serviceName = lower.includes("chat") ? "Chat Service"
+    : lower.includes("ecommerce") || lower.includes("shop") ? "Order Service"
+    : lower.includes("social") ? "Feed Service"
+    : lower.includes("analytics") ? "Analytics Engine"
+    : "Core API Service";
+
+  nodes.push({
+    id: "gen-service-1", type: "architectureNode",
+    position: { x: 250, y: 380 },
+    data: { label: serviceName, subtitle: "Node.js / Go", nodeType: "service", status: "active", tier: "backend", zone: "private", tech: "Node.js", metadata: meta },
+  });
+  edges.push({ id: "gen-e2", source: "gen-gateway", target: "gen-service-1", data: { label: "REST", protocol: "HTTP" } });
+
+  // Auth service
+  nodes.push({
+    id: "gen-auth", type: "architectureNode",
+    position: { x: 550, y: 380 },
+    data: { label: "Auth Service", subtitle: "JWT / OAuth2", nodeType: "service", status: "active", tier: "backend", zone: "private", tech: "Go", metadata: meta },
+  });
+  edges.push({ id: "gen-e3", source: "gen-gateway", target: "gen-auth", data: { label: "Auth", protocol: "gRPC" } });
+
+  // Primary database
+  const dbName = lower.includes("nosql") || lower.includes("mongo") ? "MongoDB"
+    : lower.includes("mysql") ? "MySQL"
+    : "PostgreSQL";
+  nodes.push({
+    id: "gen-db", type: "architectureNode",
+    position: { x: 250, y: 560 },
+    data: { label: `${dbName} DB`, subtitle: dbName, nodeType: "database", status: "active", tier: "data", zone: "restricted", tech: dbName, metadata: meta },
+  });
+  edges.push({ id: "gen-e4", source: "gen-service-1", target: "gen-db", data: { label: "Queries", protocol: "TCP" } });
+
+  // Cache
+  nodes.push({
+    id: "gen-cache", type: "architectureNode",
+    position: { x: 550, y: 560 },
+    data: { label: "Redis Cache", subtitle: "Session + Query Cache", nodeType: "cache", status: "active", tier: "data", zone: "private", tech: "Redis", metadata: meta },
+  });
+  edges.push({ id: "gen-e5", source: "gen-service-1", target: "gen-cache", data: { label: "Cache R/W", protocol: "TCP" } });
+
+  // Conditional: queue for event-driven scenarios
+  if (lower.includes("event") || lower.includes("queue") || lower.includes("async") || lower.includes("real-time") || lower.includes("chat") || lower.includes("notification")) {
+    nodes.push({
+      id: "gen-queue", type: "architectureNode",
+      position: { x: 100, y: 480 },
+      data: { label: "Kafka Event Bus", subtitle: "Async Messaging", nodeType: "queue", status: "active", tier: "infrastructure", zone: "private", tech: "Kafka", metadata: meta },
+    });
+    edges.push({ id: "gen-e6", source: "gen-service-1", target: "gen-queue", data: { label: "Events", protocol: "TCP" } });
+
+    nodes.push({
+      id: "gen-worker", type: "architectureNode",
+      position: { x: 100, y: 620 },
+      data: { label: "Worker Service", subtitle: "Background Jobs", nodeType: "service", status: "active", tier: "backend", zone: "private", tech: "Python", metadata: meta },
+    });
+    edges.push({ id: "gen-e7", source: "gen-queue", target: "gen-worker", data: { label: "Consume", protocol: "TCP" } });
+  }
+
+  // Conditional: storage for file-heavy scenarios
+  if (lower.includes("storage") || lower.includes("file") || lower.includes("image") || lower.includes("upload") || lower.includes("media")) {
+    nodes.push({
+      id: "gen-storage", type: "architectureNode",
+      position: { x: 700, y: 480 },
+      data: { label: "S3 Object Storage", subtitle: "Files & Media", nodeType: "storage", status: "active", tier: "data", zone: "private", tech: "AWS S3", metadata: meta },
+    });
+    edges.push({ id: "gen-e-stor", source: "gen-service-1", target: "gen-storage", data: { label: "Upload", protocol: "HTTP" } });
+  }
+
+  return {
+    nodes,
+    edges,
+    summary: `Generated ${nodes.length}-node architecture for: "${scenario}". Includes client, API gateway, ${serviceName.toLowerCase()}, auth, ${dbName} database, and Redis cache.`,
+  };
+}
+
+// ---------- Main Analysis Service ----------
 
 /**
  * Analyze architecture using the best available AI provider.

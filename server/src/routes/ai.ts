@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { analyzeArchitecture } from "../services/ai.js";
+import { analyzeArchitecture, generateArchitecture } from "../services/ai.js";
 
 const router = Router();
 
@@ -18,6 +18,26 @@ router.post("/analyze", async (req, res) => {
     res.json(result);
   } catch (err: any) {
     console.error("AI analysis error:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/ai/generate — Generate a complete architecture from a text description
+ * Body: { scenario: string }
+ */
+router.post("/generate", async (req, res) => {
+  try {
+    const { scenario } = req.body;
+
+    if (!scenario || typeof scenario !== "string") {
+      return res.status(400).json({ error: "scenario string is required" });
+    }
+
+    const result = await generateArchitecture(scenario);
+    res.json(result);
+  } catch (err: any) {
+    console.error("AI generation error:", err);
     res.status(500).json({ error: err.message });
   }
 });

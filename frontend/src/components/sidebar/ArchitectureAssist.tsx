@@ -8,7 +8,7 @@ import {
   X,
   Sparkles,
   Layers,
-  Grid3X3,
+  BookOpen,
   Terminal as TerminalIcon,
   AlertTriangle,
   Database,
@@ -26,15 +26,19 @@ import {
   Eye,
   GripVertical,
   Copy,
+  Wand2,
 } from "lucide-react";
-import type { AIAnalysisResult } from "@system-synthesis/shared";
+import type { AIAnalysisResult, AiAction, AIGenerateResult, ValidationResult, ValidationIssue, ArchTemplate } from "@system-synthesis/shared";
 
-type TabId = "ai-assist" | "layers" | "components" | "terminal";
+const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+
+type TabId = "ai-assist" | "validation" | "layers" | "templates" | "terminal";
 
 const sidebarTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "ai-assist", label: "AI Assist", icon: <Sparkles className="w-4 h-4" /> },
+  { id: "validation", label: "Validate", icon: <Shield className="w-4 h-4" /> },
   { id: "layers", label: "Layers", icon: <Layers className="w-4 h-4" /> },
-  { id: "components", label: "Components", icon: <Grid3X3 className="w-4 h-4" /> },
+  { id: "templates", label: "Templates", icon: <BookOpen className="w-4 h-4" /> },
   { id: "terminal", label: "Terminal", icon: <TerminalIcon className="w-4 h-4" /> },
 ];
 
@@ -92,11 +96,110 @@ export default function ArchitectureAssist() {
     getSerializedNodes,
     getSerializedEdges,
     boardId,
+    addNode,
+    validationResult,
+    isValidating,
+    setValidationResult,
+    setIsValidating,
   } = useBoardStore();
 
   const analysis = aiAnalysis || mockAnalysis;
 
   const reactFlowInstance = useReactFlow();
+
+  // --- Auto-validation: debounced, runs when nodes/edges change ---
+  const validationTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    if (validationTimerRef.current) clearTimeout(validationTimerRef.current);
+
+    validationTimerRef.current = setTimeout(async () => {
+      const serializedNodes = getSerializedNodes();
+      const serializedEdges = getSerializedEdges();
+
+      // Skip if empty
+      if (serializedNodes.length === 0) {
+        setValidationResult(null);
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API_URL}/api/boards/validate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ nodes: serializedNodes, edges: serializedEdges }),
+        });
+        if (res.ok) {
+          const result: ValidationResult = await res.json();
+          setValidationResult(result);
+        }
+      } catch {
+        // Server not available — silently skip
+      }
+    }, 1500);
+
+    return () => {
+      if (validationTimerRef.current) clearTimeout(validationTimerRef.current);
+    };
+  }, [nodes.length, edges.length]);
+
+  const applyAiAction = (action: AiAction) => {
+    if (action.type === 'add_node') {
+      const newNodeId = `ai-node-${Date.now()}`;
+      
+      const center = reactFlowInstance.screenToFlowPosition({
+        x: window.innerWidth / 2,
+        y: window.innerHeight / 2,
+      });
+
+      const newNode = {
+        id: newNodeId,
+        type: 'architectureNode',
+        position: { x: center.x - 100, y: center.y - 100 },
+        data: {
+          label: action.label,
+          nodeType: action.nodeType,
+          status: 'active' as const,
+          metadata: { notes: '', links: [], codeSnippet: '', attachedFiles: [] }
+        }
+      };
+      
+      // addNode records a node_created op — multiplayer hook will emit it automatically
+      addNode(newNode);
+    } else if (action.type === 'add_edge') {
+      const store = useBoardStore.getState();
+      const sourceExists = store.nodes.some(n => n.id === action.sourceId);
+      const targetExists = store.nodes.some(n => n.id === action.targetId);
+      if (sourceExists && targetExists) {
+        store.addEdgeItem({
+          id: `ai-edge-${Date.now()}`,
+          source: action.sourceId,
+          target: action.targetId,
+          type: 'smoothstep',
+          style: { stroke: '#444' },
+          data: { label: action.label || '' },
+        });
+      }
+    } else if (action.type === 'update_node') {
+      const store = useBoardStore.getState();
+      const exists = store.nodes.some(n => n.id === action.nodeId);
+      if (exists) {
+        store.updateNodeData(action.nodeId, action.patch);
+      }
+    }
+  };
+
+  /** Apply ALL actions from all suggestions at once */
+  const applyAllSuggestions = () => {
+    const allActions: AiAction[] = [];
+    for (const comp of analysis.missingComponents) {
+      if (comp.actions) allActions.push(...comp.actions);
+    }
+    if (allActions.length === 0) return;
+    for (const action of allActions) {
+      applyAiAction(action);
+    }
+  };
 
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
@@ -194,13 +297,17 @@ export default function ArchitectureAssist() {
         case "help":
           newLines.push(
             { type: "output", text: "Available commands:" },
-            { type: "success", text: "  status        — Board connection status" },
-            { type: "success", text: "  list nodes    — List all nodes" },
-            { type: "success", text: "  list edges    — List all edges" },
-            { type: "success", text: "  analyze       — Trigger AI analysis" },
-            { type: "success", text: "  export json   — Copy board JSON to clipboard" },
-            { type: "success", text: "  clear         — Clear terminal" },
-            { type: "success", text: "  help          — Show this message" }
+            { type: "success", text: "  status          — Board connection status" },
+            { type: "success", text: "  list nodes      — List all nodes" },
+            { type: "success", text: "  list edges      — List all edges" },
+            { type: "success", text: "  analyze         — Trigger AI analysis" },
+            { type: "success", text: "  export json     — Copy board JSON to clipboard" },
+            { type: "success", text: "  export docker   — Download docker-compose.yml" },
+            { type: "success", text: "  export terraform— Download Terraform files" },
+            { type: "success", text: "  export report   — Download design document" },
+            { type: "success", text: "  design <desc>   — Generate architecture from description" },
+            { type: "success", text: "  clear           — Clear terminal" },
+            { type: "success", text: "  help            — Show this message" }
           );
           break;
 
@@ -256,16 +363,153 @@ export default function ArchitectureAssist() {
           newLines.push({ type: "success", text: "Board JSON copied to clipboard ✓" });
           break;
 
+        case "export docker":
+          newLines.push({ type: "output", text: "Generating docker-compose.yml..." });
+          setTerminalLines(newLines); setTerminalInput("");
+          setCmdHistory((prev) => [...prev, cmd]); setHistoryIdx(-1);
+          (async () => {
+            try {
+              const res = await fetch(`${API_URL}/api/export/docker-compose`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
+              });
+              if (res.ok) {
+                const text = await res.text();
+                const blob = new Blob([text], { type: "text/yaml" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a"); a.href = url; a.download = "docker-compose.yml"; a.click();
+                URL.revokeObjectURL(url);
+                setTerminalLines(prev => [...prev, { type: "success", text: "✓ docker-compose.yml downloaded" }]);
+              } else {
+                setTerminalLines(prev => [...prev, { type: "error", text: "Export failed." }]);
+              }
+            } catch { setTerminalLines(prev => [...prev, { type: "error", text: "Server not reachable." }]); }
+          })();
+          return;
+
+        case "export terraform":
+          newLines.push({ type: "output", text: "Generating Terraform files..." });
+          setTerminalLines(newLines); setTerminalInput("");
+          setCmdHistory((prev) => [...prev, cmd]); setHistoryIdx(-1);
+          (async () => {
+            try {
+              const res = await fetch(`${API_URL}/api/export/terraform`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
+              });
+              if (res.ok) {
+                const bundle = await res.json();
+                for (const [filename, content] of Object.entries(bundle)) {
+                  const blob = new Blob([content as string], { type: "text/plain" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a"); a.href = url; a.download = filename; a.click();
+                  URL.revokeObjectURL(url);
+                }
+                setTerminalLines(prev => [...prev, { type: "success", text: `✓ Downloaded ${Object.keys(bundle).length} Terraform files` }]);
+              } else {
+                setTerminalLines(prev => [...prev, { type: "error", text: "Export failed." }]);
+              }
+            } catch { setTerminalLines(prev => [...prev, { type: "error", text: "Server not reachable." }]); }
+          })();
+          return;
+
+        case "export report":
+          newLines.push({ type: "output", text: "Generating design document..." });
+          setTerminalLines(newLines); setTerminalInput("");
+          setCmdHistory((prev) => [...prev, cmd]); setHistoryIdx(-1);
+          (async () => {
+            try {
+              const res = await fetch(`${API_URL}/api/export/report`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges(), boardName: storeState.boardName }),
+              });
+              if (res.ok) {
+                const text = await res.text();
+                const blob = new Blob([text], { type: "text/markdown" });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a"); a.href = url; a.download = `${storeState.boardName || "architecture"}-report.md`; a.click();
+                URL.revokeObjectURL(url);
+                setTerminalLines(prev => [...prev, { type: "success", text: "✓ Design document downloaded" }]);
+              } else {
+                setTerminalLines(prev => [...prev, { type: "error", text: "Export failed." }]);
+              }
+            } catch { setTerminalLines(prev => [...prev, { type: "error", text: "Server not reachable." }]); }
+          })();
+          return;
+
         case "clear":
           setTerminalLines([]);
           setTerminalInput("");
           return;
 
         default:
-          newLines.push({
-            type: "error",
-            text: `Unknown command: "${cmd}". Type "help" for available commands.`,
-          });
+          // Check for "design" command prefix
+          if (trimmed.startsWith("design ")) {
+            const scenario = cmd.trim().slice(7).trim();
+            if (!scenario) {
+              newLines.push({ type: "error", text: 'Usage: design <description>' });
+            } else {
+              newLines.push({ type: "output", text: `Generating architecture for: "${scenario}"...` });
+              setTerminalLines(newLines);
+              setTerminalInput("");
+              setCmdHistory((prev) => [...prev, cmd]);
+              setHistoryIdx(-1);
+
+              // Async generation
+              (async () => {
+                try {
+                  const res = await fetch(`${API_URL}/api/ai/generate`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ scenario }),
+                  });
+                  if (res.ok) {
+                    const result: AIGenerateResult = await res.json();
+                    const store = useBoardStore.getState();
+
+                    // Apply generated nodes
+                    const newNodes = result.nodes.map((n: any) => ({
+                      id: n.id,
+                      type: n.type || "architectureNode",
+                      position: n.position,
+                      data: {
+                        ...n.data,
+                        status: n.data.status || "active",
+                        metadata: n.data.metadata || { notes: "", links: [], codeSnippet: "", attachedFiles: [] },
+                      },
+                    }));
+                    const newEdges = result.edges.map((e: any) => ({
+                      id: e.id,
+                      source: e.source,
+                      target: e.target,
+                      type: "smoothstep" as const,
+                      style: { stroke: "#444" },
+                      data: e.data || {},
+                    }));
+
+                    store.setNodes(newNodes);
+                    store.setEdges(newEdges);
+
+                    setTerminalLines(prev => [
+                      ...prev,
+                      { type: "success", text: `✓ Generated ${result.nodes.length} nodes and ${result.edges.length} edges` },
+                      { type: "output", text: result.summary },
+                    ]);
+                  } else {
+                    setTerminalLines(prev => [...prev, { type: "error", text: "Generation failed. Check server logs." }]);
+                  }
+                } catch {
+                  setTerminalLines(prev => [...prev, { type: "error", text: "Server not reachable." }]);
+                }
+              })();
+              return;
+            }
+          } else {
+            newLines.push({
+              type: "error",
+              text: `Unknown command: "${cmd}". Type "help" for available commands.`,
+            });
+          }
       }
 
       setTerminalLines(newLines);
@@ -324,13 +568,13 @@ export default function ArchitectureAssist() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-border">
+      <div className="flex border-b border-border overflow-x-auto scrollbar-hide">
         {sidebarTabs.map((tab) => (
           <button
             key={tab.id}
             id={`assist-tab-${tab.id}`}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex flex-col items-center gap-1 px-3 py-2.5 text-[10px] font-display uppercase tracking-wider transition-all flex-1 ${
+            className={`flex flex-col items-center gap-1 px-3 py-2.5 text-[10px] font-display uppercase tracking-wider transition-all min-w-[72px] shrink-0 ${
               activeTab === tab.id
                 ? "text-accent-cyan border-b-2 border-accent-cyan"
                 : "text-text-muted hover:text-text-secondary"
@@ -371,11 +615,36 @@ export default function ArchitectureAssist() {
                       <div>
                         <p className="text-xs font-display font-semibold text-text-primary">{comp.title}</p>
                         <p className="text-xs text-text-muted mt-1 leading-relaxed">{comp.description}</p>
+                        {comp.actions && comp.actions.length > 0 && (
+                          <div className="mt-2.5 flex flex-wrap gap-2">
+                            {comp.actions.map((action, aIdx) => (
+                              <button
+                                key={aIdx}
+                                onClick={() => applyAiAction(action)}
+                                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] font-display font-bold uppercase tracking-wider bg-canvas-50 border border-border text-text-secondary hover:text-accent-cyan hover:border-accent-cyan/50 transition-colors"
+                              >
+                                <Sparkles className="w-3 h-3" />
+                                {action.type === 'add_node' ? `+ Add ${action.label}` : 'Apply Fix'}
+                              </button>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
                 ))}
               </div>
+
+              {/* Apply All Suggestions button */}
+              {analysis.missingComponents.some(c => c.actions && c.actions.length > 0) && (
+                <button
+                  onClick={applyAllSuggestions}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-sm text-xs font-display font-bold uppercase tracking-wider bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20 transition-all mt-3"
+                >
+                  <Wand2 className="w-3.5 h-3.5" />
+                  Apply All Suggestions ({analysis.missingComponents.reduce((acc, c) => acc + (c.actions?.length || 0), 0)} actions)
+                </button>
+              )}
             </section>
 
             <section>
@@ -451,6 +720,147 @@ export default function ArchitectureAssist() {
           </div>
         )}
 
+        {/* =========== VALIDATION TAB =========== */}
+        {activeTab === "validation" && (
+          <div className="animate-fade-in space-y-4">
+            {/* Run validation button */}
+            <button
+              onClick={async () => {
+                setIsValidating(true);
+                try {
+                  const res = await fetch(`${API_URL}/api/boards/validate`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      nodes: getSerializedNodes(),
+                      edges: getSerializedEdges(),
+                    }),
+                  });
+                  if (res.ok) {
+                    const result: ValidationResult = await res.json();
+                    setValidationResult(result);
+                  }
+                } catch {}
+                setIsValidating(false);
+              }}
+              disabled={isValidating}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-sm text-xs font-display bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20 transition-all disabled:opacity-50"
+            >
+              {isValidating ? (
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Validating...</>
+              ) : (
+                <><Shield className="w-3.5 h-3.5" /> Run Validation</>
+              )}
+            </button>
+
+            {!validationResult ? (
+              <div className="text-center py-8">
+                <Shield className="w-8 h-8 text-text-muted/30 mx-auto mb-2" />
+                <p className="text-xs text-text-muted">Click "Run Validation" or make changes to auto-validate.</p>
+              </div>
+            ) : validationResult.issues.length === 0 ? (
+              <div className="text-center py-8">
+                <div className="w-12 h-12 rounded-sm bg-status-active/10 border border-status-active/30 flex items-center justify-center mx-auto mb-3">
+                  <CheckSquare className="w-6 h-6 text-status-active" />
+                </div>
+                <p className="text-sm font-display font-bold text-status-active">All checks passed</p>
+                <p className="text-xs text-text-muted mt-1 max-w-[220px] mx-auto leading-relaxed">
+                  No architecture issues detected. The validator checks for anti-patterns like direct client→database connections, orphaned services, and misconfigured queues.
+                </p>
+              </div>
+            ) : (
+              <>
+                {/* Stats bar */}
+                <div className="flex items-center gap-3 p-2.5 bg-canvas-50 rounded-sm border border-border">
+                  {validationResult.stats.critical > 0 && (
+                    <span className="flex items-center gap-1 text-[10px] font-display font-bold text-status-error">
+                      <span className="w-2 h-2 rounded-full bg-status-error" />
+                      {validationResult.stats.critical} Critical
+                    </span>
+                  )}
+                  {validationResult.stats.warning > 0 && (
+                    <span className="flex items-center gap-1 text-[10px] font-display font-bold text-status-warning">
+                      <span className="w-2 h-2 rounded-full bg-status-warning" />
+                      {validationResult.stats.warning} Warning
+                    </span>
+                  )}
+                  {validationResult.stats.info > 0 && (
+                    <span className="flex items-center gap-1 text-[10px] font-display font-bold text-accent-cyan">
+                      <span className="w-2 h-2 rounded-full bg-accent-cyan" />
+                      {validationResult.stats.info} Info
+                    </span>
+                  )}
+                </div>
+
+                {/* Issues list */}
+                <div className="space-y-2">
+                  {validationResult.issues.map((issue: ValidationIssue) => (
+                    <div
+                      key={issue.id}
+                      className={`p-3 rounded-sm border-l-2 cursor-pointer hover:bg-surface-light/50 transition-colors ${
+                        issue.severity === "critical"
+                          ? "border-l-status-error bg-status-error/5"
+                          : issue.severity === "warning"
+                          ? "border-l-status-warning bg-status-warning/5"
+                          : "border-l-accent-cyan bg-accent-cyan/5"
+                      }`}
+                      onClick={() => {
+                        // Click to navigate to the first affected node
+                        if (issue.nodeIds.length > 0) {
+                          const nodeId = issue.nodeIds[0];
+                          const node = nodes.find((n) => n.id === nodeId);
+                          if (node && reactFlowInstance) {
+                            setSelectedNodeId(nodeId);
+                            reactFlowInstance.setCenter(
+                              node.position.x + 100,
+                              node.position.y + 50,
+                              { zoom: 1.2, duration: 400 }
+                            );
+                          }
+                        }
+                      }}
+                    >
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle
+                          className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${
+                            issue.severity === "critical"
+                              ? "text-status-error"
+                              : issue.severity === "warning"
+                              ? "text-status-warning"
+                              : "text-accent-cyan"
+                          }`}
+                        />
+                        <div>
+                          <p className="text-xs font-display font-semibold text-text-primary">
+                            {issue.title}
+                          </p>
+                          <p className="text-xs text-text-muted mt-1 leading-relaxed">
+                            {issue.description}
+                          </p>
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className={`text-[9px] font-display font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-sm ${
+                              issue.severity === "critical"
+                                ? "bg-status-error/15 text-status-error"
+                                : issue.severity === "warning"
+                                ? "bg-status-warning/15 text-status-warning"
+                                : "bg-accent-cyan/15 text-accent-cyan"
+                            }`}>
+                              {issue.severity}
+                            </span>
+                            <span className="text-[9px] text-text-muted font-mono">
+                              {issue.nodeIds.length} node{issue.nodeIds.length !== 1 ? "s" : ""}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
         {/* =========== LAYERS TAB =========== */}
         {activeTab === "layers" && (
           <div className="animate-fade-in">
@@ -489,40 +899,22 @@ export default function ArchitectureAssist() {
           </div>
         )}
 
-        {/* =========== COMPONENTS TAB =========== */}
-        {activeTab === "components" && (
-          <div className="animate-fade-in">
-            <p className="text-xs text-text-muted mb-3">
-              Drag components onto the canvas to add them.
-            </p>
-            {COMPONENT_TYPES.map((comp) => (
-              <div
-                key={comp.type}
-                draggable
-                onDragStart={(e) => handleDragStart(e, comp.type)}
-                className="flex items-center gap-2.5 p-2.5 mb-1.5 bg-canvas-50 rounded-sm border border-border hover:border-accent-cyan/40 hover:shadow-glow-cyan transition-all cursor-grab active:cursor-grabbing"
-              >
-                <GripVertical className="w-3 h-3 text-text-muted/40 shrink-0" />
-                {comp.icon}
-                <span className="text-xs font-display text-text-primary">
-                  {comp.label}
-                </span>
-              </div>
-            ))}
-          </div>
+        {/* =========== TEMPLATES TAB =========== */}
+        {activeTab === "templates" && (
+          <TemplatesPanel setNodes={useBoardStore.getState().setNodes} setEdges={useBoardStore.getState().setEdges} />
         )}
 
         {/* =========== TERMINAL TAB =========== */}
         {activeTab === "terminal" && (
           <div className="animate-fade-in">
             <div
-              className="bg-canvas rounded-sm border border-border p-3 font-mono text-xs text-text-muted min-h-[300px] max-h-[500px] overflow-y-auto flex flex-col"
+              className="bg-canvas rounded-sm border border-border p-3 font-mono text-xs text-text-muted min-h-[300px] max-h-[500px] overflow-y-auto overflow-x-hidden flex flex-col"
               onClick={() => inputRef.current?.focus()}
             >
               {terminalLines.map((line, i) => (
                 <p
                   key={i}
-                  className={`whitespace-pre-wrap ${
+                  className={`whitespace-pre-wrap break-all ${
                     line.type === "input"
                       ? "text-accent-cyan"
                       : line.type === "error"
@@ -575,6 +967,133 @@ export default function ArchitectureAssist() {
           )}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ============================================================
+// Templates Panel (separate component to isolate state)
+// ============================================================
+
+interface TemplateSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  nodeCount: number;
+  edgeCount: number;
+}
+
+function TemplatesPanel({
+  setNodes,
+  setEdges,
+}: {
+  setNodes: (nodes: any[]) => void;
+  setEdges: (edges: any[]) => void;
+}) {
+  const [templates, setTemplates] = useState<TemplateSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [applying, setApplying] = useState<string | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch(`${API_URL}/api/templates`);
+        if (res.ok) {
+          const data = await res.json();
+          setTemplates(data.templates || []);
+        }
+      } catch {}
+      setLoading(false);
+    })();
+  }, []);
+
+  const applyTemplate = async (id: string) => {
+    if (!confirm("Apply this template? It will replace the current canvas.")) return;
+
+    setApplying(id);
+    try {
+      const res = await fetch(`${API_URL}/api/templates/${id}`);
+      if (res.ok) {
+        const template: ArchTemplate = await res.json();
+
+        const newNodes = template.nodes.map((n: any) => ({
+          id: n.id,
+          type: n.type || "architectureNode",
+          position: n.position,
+          data: {
+            ...n.data,
+            status: n.data.status || "active",
+            metadata: n.data.metadata || { notes: "", links: [], codeSnippet: "", attachedFiles: [] },
+          },
+        }));
+        const newEdges = template.edges.map((e: any) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          type: "smoothstep" as const,
+          style: { stroke: "#444" },
+          data: e.data || {},
+        }));
+
+        setNodes(newNodes);
+        setEdges(newEdges);
+      }
+    } catch {}
+    setApplying(null);
+  };
+
+  const categoryColors: Record<string, string> = {
+    Microservices: "bg-accent-cyan/15 text-accent-cyan border-accent-cyan/30",
+    "Event-Driven": "bg-accent-purple/15 text-accent-purple border-accent-purple/30",
+    Serverless: "bg-status-warning/15 text-status-warning border-status-warning/30",
+    Traditional: "bg-status-active/15 text-status-active border-status-active/30",
+    Data: "bg-status-error/15 text-status-error border-status-error/30",
+  };
+
+  if (loading) {
+    return (
+      <div className="animate-fade-in flex flex-col items-center justify-center py-12 gap-3">
+        <Loader2 className="w-6 h-6 text-text-muted animate-spin" />
+        <p className="text-xs text-text-muted">Loading templates...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="animate-fade-in space-y-3">
+      <p className="text-xs text-text-muted">
+        Pre-built architecture patterns. Click to apply.
+      </p>
+      {templates.map((t) => (
+        <button
+          key={t.id}
+          onClick={() => applyTemplate(t.id)}
+          disabled={applying === t.id}
+          className="w-full text-left p-3 rounded-sm border border-border bg-canvas-50 hover:border-accent-cyan/40 hover:shadow-glow-cyan transition-all group disabled:opacity-50"
+        >
+          <div className="flex items-center gap-2 mb-1.5">
+            <span className="text-xs font-display font-bold text-text-primary group-hover:text-accent-cyan transition-colors">
+              {t.name}
+            </span>
+            <span
+              className={`text-[9px] font-display font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-sm border ${
+                categoryColors[t.category] || "bg-canvas-50 text-text-muted border-border"
+              }`}
+            >
+              {t.category}
+            </span>
+          </div>
+          <p className="text-[10px] text-text-muted leading-relaxed mb-2">
+            {t.description}
+          </p>
+          <div className="flex items-center gap-3 text-[9px] text-text-muted font-mono">
+            <span>{t.nodeCount} nodes</span>
+            <span>{t.edgeCount} edges</span>
+            {applying === t.id && <Loader2 className="w-3 h-3 animate-spin ml-auto" />}
+          </div>
+        </button>
+      ))}
     </div>
   );
 }

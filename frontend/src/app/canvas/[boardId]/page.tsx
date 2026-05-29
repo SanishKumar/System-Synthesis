@@ -8,6 +8,7 @@ import BottomToolbar from "@/components/BottomToolbar";
 import CanvasBoard from "@/components/canvas/CanvasBoard";
 import NodeInspector from "@/components/sidebar/NodeInspector";
 import ArchitectureAssist from "@/components/sidebar/ArchitectureAssist";
+import VersionHistory from "@/components/sidebar/VersionHistory";
 import { useBoardStore } from "@/store/boardStore";
 import { useMultiplayer } from "@/hooks/useMultiplayer";
 import { useUser } from "@/hooks/useUser";
@@ -20,6 +21,7 @@ import {
   Check,
   AlertTriangle,
   Loader2,
+  History,
 } from "lucide-react";
 import type { ArchNodeData } from "@system-synthesis/shared";
 import type { Node } from "@xyflow/react";
@@ -33,7 +35,7 @@ export default function CanvasBoardPage() {
   const { userId, userName, authHeaders, isReady } = useUser();
 
   const [activeTool, setActiveTool] = useState<
-    "select" | "draw" | "shapes" | "text" | "undo"
+    "select" | "draw" | "shapes" | "text" | "undo" | "redo"
   >("select");
   const [pendingNodeType, setPendingNodeType] = useState<string | null>(null);
   const [isMessCleanupActive, setIsMessCleanupActive] = useState(false);
@@ -74,6 +76,8 @@ export default function CanvasBoardPage() {
           setBoardOwnerId(board.ownerId);
           setBoardOwnerName(board.ownerName);
           setIsPublic(board.isPublic);
+          // Hydrate Zustand store so TopNav breadcrumb + VersionHistory can read boardId/boardName
+          useBoardStore.setState({ boardId, boardName: board.name });
         }
       } catch {
         // Server might be down — let socket handle it
@@ -96,11 +100,12 @@ export default function CanvasBoardPage() {
     router.push("/");
   }, [router]);
 
-  // Multiplayer (pass identityId + ejection callback)
+  // Multiplayer (pass identityId + isReady + ejection callback)
   const { emitCursor } = useMultiplayer(
     boardId,
     userName,
     userId,
+    isReady,
     handleAccessRevoked
   );
 
@@ -194,11 +199,11 @@ export default function CanvasBoardPage() {
   };
 
   const handleUndo = useCallback(() => {
-    const store = useBoardStore.getState();
-    const nodes = store.nodes;
-    if (nodes.length > 0) {
-      store.setNodes(nodes.slice(0, -1));
-    }
+    useBoardStore.getState().undo();
+  }, []);
+
+  const handleRedo = useCallback(() => {
+    useBoardStore.getState().redo();
   }, []);
 
   // --- Access Denied Screen ---
@@ -233,6 +238,7 @@ export default function CanvasBoardPage() {
           onMessCleanup={handleMessCleanup}
           isMessCleanupActive={isMessCleanupActive}
           onToggleMessCleanup={handleToggleMessCleanup}
+          onExportPng={() => window.dispatchEvent(new CustomEvent("export-png"))}
         />
 
         <main
@@ -253,10 +259,12 @@ export default function CanvasBoardPage() {
           onToolChange={setActiveTool}
           onShapeSelected={handleShapeSelected}
           onUndo={handleUndo}
+          onRedo={handleRedo}
         />
 
         {sidebarMode === "inspector" && <NodeInspector />}
         {sidebarMode === "ai-assist" && <ArchitectureAssist />}
+        {sidebarMode === "version-history" && <VersionHistory />}
 
         {/* Top-right controls: AI Assist + Share */}
         <div 
@@ -361,17 +369,29 @@ export default function CanvasBoardPage() {
             </div>
           )}
 
-          {sidebarMode !== "ai-assist" && (
-            <button
-              id="ai-assist-toggle"
-              onClick={handleToggleAiAssist}
-              className="flex items-center gap-2 px-3 py-2
-                         bg-surface border border-border rounded-md text-xs font-display
-                         hover:border-accent-cyan hover:shadow-glow-cyan transition-all"
-            >
-              <span className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse-slow" />
-              AI Assist
-            </button>
+          {sidebarMode !== "ai-assist" && sidebarMode !== "version-history" && (
+            <>
+              <button
+                id="version-history-toggle"
+                onClick={() => setSidebarMode("version-history")}
+                className="flex items-center gap-2 px-3 py-2
+                           bg-surface border border-border rounded-md text-xs font-display
+                           hover:border-accent-purple hover:shadow-sm transition-all"
+              >
+                <History className="w-3.5 h-3.5 text-accent-purple" />
+                History
+              </button>
+              <button
+                id="ai-assist-toggle"
+                onClick={handleToggleAiAssist}
+                className="flex items-center gap-2 px-3 py-2
+                           bg-surface border border-border rounded-md text-xs font-display
+                           hover:border-accent-cyan hover:shadow-glow-cyan transition-all"
+              >
+                <span className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse-slow" />
+                AI Assist
+              </button>
+            </>
           )}
         </div>
 

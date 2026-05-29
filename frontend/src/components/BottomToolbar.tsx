@@ -6,36 +6,98 @@ import {
   Pencil,
   Type,
   Undo2,
-  Server,
-  Database,
-  Globe,
-  Layers,
-  HardDrive,
-  Monitor,
-  Shield,
-  Container,
+  Redo2,
   ChevronUp,
+  Search,
+  // Compute
+  Server,
+  Monitor,
+  Container,
+  Cpu,
+  // Data
+  Database,
+  HardDrive,
+  // Networking
+  Globe,
+  Shield,
+  Wifi,
+  // Messaging
+  Layers,
+  Mail,
+  // Storage
+  Archive,
 } from "lucide-react";
 
-type Tool = "select" | "draw" | "shapes" | "text" | "undo";
+type Tool = "select" | "draw" | "shapes" | "text" | "undo" | "redo";
 
 interface BottomToolbarProps {
   activeTool?: Tool;
   onToolChange?: (tool: Tool) => void;
   onShapeSelected?: (nodeType: string) => void;
   onUndo?: () => void;
+  onRedo?: () => void;
 }
 
-const nodeTypes = [
-  { type: "service", label: "Service", icon: <Server className="w-4 h-4" /> },
-  { type: "database", label: "Database", icon: <Database className="w-4 h-4" /> },
-  { type: "gateway", label: "Gateway", icon: <Globe className="w-4 h-4" /> },
-  { type: "queue", label: "Queue", icon: <Layers className="w-4 h-4" /> },
-  { type: "cache", label: "Cache", icon: <HardDrive className="w-4 h-4" /> },
-  { type: "client", label: "Client", icon: <Monitor className="w-4 h-4" /> },
-  { type: "loadbalancer", label: "Load Balancer", icon: <Shield className="w-4 h-4" /> },
-  { type: "storage", label: "Storage", icon: <Container className="w-4 h-4" /> },
+// ── Categorized Node Palette ───────────────────────────────────────
+
+interface NodeEntry {
+  type: string;
+  label: string;
+  icon: React.ReactNode;
+  description: string;
+}
+
+interface NodeCategory {
+  name: string;
+  color: string;
+  nodes: NodeEntry[];
+}
+
+const nodeCategories: NodeCategory[] = [
+  {
+    name: "Compute",
+    color: "text-accent-cyan",
+    nodes: [
+      { type: "service", label: "Service", icon: <Server className="w-4 h-4" />, description: "Microservice / API" },
+      { type: "client", label: "Client", icon: <Monitor className="w-4 h-4" />, description: "Browser / Mobile app" },
+    ],
+  },
+  {
+    name: "Data",
+    color: "text-accent-purple",
+    nodes: [
+      { type: "database", label: "Database", icon: <Database className="w-4 h-4" />, description: "SQL / NoSQL store" },
+      { type: "cache", label: "Cache", icon: <HardDrive className="w-4 h-4" />, description: "Redis / Memcached" },
+    ],
+  },
+  {
+    name: "Networking",
+    color: "text-status-active",
+    nodes: [
+      { type: "gateway", label: "Gateway", icon: <Globe className="w-4 h-4" />, description: "API Gateway / Proxy" },
+      { type: "loadbalancer", label: "Load Balancer", icon: <Shield className="w-4 h-4" />, description: "HAProxy / ALB" },
+    ],
+  },
+  {
+    name: "Messaging",
+    color: "text-status-warning",
+    nodes: [
+      { type: "queue", label: "Queue", icon: <Layers className="w-4 h-4" />, description: "Kafka / RabbitMQ" },
+    ],
+  },
+  {
+    name: "Storage",
+    color: "text-status-error",
+    nodes: [
+      { type: "storage", label: "Storage", icon: <Archive className="w-4 h-4" />, description: "S3 / Blob / File" },
+    ],
+  },
 ];
+
+// Flatten for search
+const allNodes = nodeCategories.flatMap((cat) =>
+  cat.nodes.map((n) => ({ ...n, category: cat.name, color: cat.color }))
+);
 
 const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
   { id: "select", label: "SELECT", icon: <MousePointer2 className="w-5 h-5" /> },
@@ -43,6 +105,7 @@ const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
   { id: "shapes", label: "ADD NODE", icon: <ChevronUp className="w-5 h-5" /> },
   { id: "text", label: "TEXT", icon: <Type className="w-5 h-5" /> },
   { id: "undo", label: "UNDO", icon: <Undo2 className="w-5 h-5" /> },
+  { id: "redo", label: "REDO", icon: <Redo2 className="w-5 h-5" /> },
 ];
 
 export default function BottomToolbar({
@@ -50,28 +113,44 @@ export default function BottomToolbar({
   onToolChange,
   onShapeSelected,
   onUndo,
+  onRedo,
 }: BottomToolbarProps) {
   const [showShapes, setShowShapes] = useState(false);
+  const [paletteSearch, setPaletteSearch] = useState("");
   const shapesRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
 
   // Close shapes dropdown on outside click
   useEffect(() => {
     function handleClick(e: MouseEvent) {
       if (shapesRef.current && !shapesRef.current.contains(e.target as Node)) {
         setShowShapes(false);
+        setPaletteSearch("");
       }
     }
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
+  // Auto-focus search when palette opens
+  useEffect(() => {
+    if (showShapes && searchRef.current) {
+      searchRef.current.focus();
+    }
+  }, [showShapes]);
+
   const handleToolClick = (tool: Tool) => {
     if (tool === "shapes") {
       setShowShapes(!showShapes);
+      setPaletteSearch("");
       return;
     }
     if (tool === "undo") {
       onUndo?.();
+      return;
+    }
+    if (tool === "redo") {
+      onRedo?.();
       return;
     }
     setShowShapes(false);
@@ -81,7 +160,24 @@ export default function BottomToolbar({
   const handleShapeClick = (nodeType: string) => {
     onShapeSelected?.(nodeType);
     setShowShapes(false);
+    setPaletteSearch("");
   };
+
+  // Filter nodes by search
+  const query = paletteSearch.toLowerCase().trim();
+  const filteredCategories = query
+    ? [{
+        name: "Search Results",
+        color: "text-text-muted",
+        nodes: allNodes.filter(
+          (n) =>
+            n.label.toLowerCase().includes(query) ||
+            n.description.toLowerCase().includes(query) ||
+            n.type.toLowerCase().includes(query) ||
+            n.category.toLowerCase().includes(query)
+        ),
+      }]
+    : nodeCategories;
 
   return (
     <div
@@ -114,25 +210,63 @@ export default function BottomToolbar({
               </span>
             </button>
 
-            {/* Shapes Dropdown */}
+            {/* Enhanced Shapes Palette */}
             {tool.id === "shapes" && showShapes && (
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-56 bg-surface border border-border rounded-md shadow-card overflow-hidden z-50">
+              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 bg-surface border border-border rounded-md shadow-card overflow-hidden z-50 animate-fade-in">
+                {/* Search */}
                 <div className="px-3 py-2 border-b border-border">
-                  <span className="text-[10px] font-display text-text-muted uppercase tracking-wider">
-                    Add Component
-                  </span>
+                  <div className="relative">
+                    <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted" />
+                    <input
+                      ref={searchRef}
+                      type="text"
+                      placeholder="Search components..."
+                      value={paletteSearch}
+                      onChange={(e) => setPaletteSearch(e.target.value)}
+                      className="w-full pl-7 pr-2 py-1.5 bg-surface-light border border-border rounded-sm text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/40"
+                    />
+                  </div>
                 </div>
-                <div className="grid grid-cols-2 gap-0.5 p-1.5">
-                  {nodeTypes.map((nt) => (
-                    <button
-                      key={nt.type}
-                      onClick={() => handleShapeClick(nt.type)}
-                      className="flex items-center gap-2 px-2.5 py-2 rounded-sm text-xs font-display text-text-secondary hover:bg-accent-cyan/10 hover:text-accent-cyan transition-all"
-                    >
-                      <span className="text-accent-cyan/60">{nt.icon}</span>
-                      {nt.label}
-                    </button>
+
+                {/* Categories */}
+                <div className="max-h-80 overflow-y-auto scrollbar-thin">
+                  {filteredCategories.map((cat) => (
+                    <div key={cat.name}>
+                      {/* Category Header */}
+                      <div className="px-3 py-1.5 bg-surface-light/50 sticky top-0 z-10">
+                        <span className={`text-[10px] font-display font-semibold uppercase tracking-wider ${cat.color}`}>
+                          {cat.name}
+                        </span>
+                      </div>
+                      {/* Category Items */}
+                      <div className="p-1">
+                        {cat.nodes.map((nt) => (
+                          <button
+                            key={nt.type}
+                            onClick={() => handleShapeClick(nt.type)}
+                            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-sm text-left transition-all hover:bg-accent-cyan/8 group"
+                          >
+                            <span className={`shrink-0 ${(nt as any).color || cat.color} opacity-70 group-hover:opacity-100 transition-opacity`}>
+                              {nt.icon}
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <p className="text-xs font-display font-semibold text-text-primary group-hover:text-accent-cyan transition-colors">
+                                {nt.label}
+                              </p>
+                              <p className="text-[10px] text-text-muted truncate">
+                                {nt.description}
+                              </p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ))}
+                  {filteredCategories.length === 1 && filteredCategories[0].nodes.length === 0 && (
+                    <div className="px-3 py-4 text-center">
+                      <p className="text-xs text-text-muted">No components match "{paletteSearch}"</p>
+                    </div>
+                  )}
                 </div>
               </div>
             )}

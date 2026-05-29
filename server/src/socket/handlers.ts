@@ -5,15 +5,25 @@ import type {
   SerializedEdge,
   ServerToClientEvents,
   ClientToServerEvents,
+  BoardOperation,
+  BoardState,
 } from "@system-synthesis/shared";
-import { getBoardState, saveBoardState } from "../services/redis.js";
+import { getBoardState, saveBoardState } from "../services/boardRepository.js";
 import { analyzeArchitecture } from "../services/ai.js";
+import { verifyToken } from "../middleware/auth.js";
+import { shouldThrottleCursor, clearCursorThrottle } from "../middleware/rateLimit.js";
 import { v4 as uuid } from "uuid";
 
 // Track active users per room
 const roomUsers = new Map<
   string,
   Map<string, { userName: string; color: string; identityId: string }>
+>();
+
+// --- Server-side authoritative graph state per room ---
+const roomGraphs = new Map<
+  string,
+  { nodes: SerializedNode[]; edges: SerializedEdge[] }
 >();
 
 // Multiplayer cursor colors
@@ -35,11 +45,7 @@ function getRandomColor(): string {
 // Debounce save timers per board
 const saveTimers = new Map<string, NodeJS.Timeout>();
 
-function debouncedSave(
-  boardId: string,
-  nodes: SerializedNode[],
-  edges: SerializedEdge[]
-) {
+function debouncedSave(boardId: string) {
   const existing = saveTimers.get(boardId);
   if (existing) clearTimeout(existing);
 
@@ -47,8 +53,11 @@ function debouncedSave(
     boardId,
     setTimeout(async () => {
       try {
-        await saveBoardState(boardId, nodes, edges);
-        console.log(`  💾 Board "${boardId}" saved (${nodes.length} nodes)`);
+        const graph = roomGraphs.get(boardId);
+        if (graph) {
+          await saveBoardState(boardId, graph.nodes, graph.edges);
+          console.log(`  💾 Board "${boardId}" saved (${graph.nodes.length} nodes)`);
+        }
       } catch (err: any) {
         console.error(`  ⚠ Save error for "${boardId}":`, err.message);
       }
@@ -58,14 +67,106 @@ function debouncedSave(
 }
 
 /**
+ * Apply a BoardOperation to the server-side authoritative graph.
+ * Returns true if the operation was applied successfully.
+ */
+function applyOperationToGraph(
+  boardId: string,
+  operation: BoardOperation
+): boolean {
+  let graph = roomGraphs.get(boardId);
+  if (!graph) {
+    graph = { nodes: [], edges: [] };
+    roomGraphs.set(boardId, graph);
+  }
+
+  switch (operation.op) {
+    case "node_created": {
+      // Don't duplicate if node already exists
+      if (graph.nodes.some((n) => n.id === operation.node.id)) return false;
+      graph.nodes.push(operation.node);
+      return true;
+    }
+    case "node_updated": {
+      const idx = graph.nodes.findIndex((n) => n.id === operation.nodeId);
+      if (idx === -1) return false;
+      graph.nodes[idx] = {
+        ...graph.nodes[idx],
+        data: { ...graph.nodes[idx].data, ...operation.patch },
+      };
+      return true;
+    }
+    case "node_moved": {
+      const idx = graph.nodes.findIndex((n) => n.id === operation.nodeId);
+      if (idx === -1) return false;
+      graph.nodes[idx] = {
+        ...graph.nodes[idx],
+        position: operation.position,
+      };
+      return true;
+    }
+    case "node_deleted": {
+      const prevLen = graph.nodes.length;
+      graph.nodes = graph.nodes.filter((n) => n.id !== operation.nodeId);
+      // Also remove connected edges
+      graph.edges = graph.edges.filter(
+        (e) => e.source !== operation.nodeId && e.target !== operation.nodeId
+      );
+      return graph.nodes.length < prevLen;
+    }
+    case "edge_created": {
+      if (graph.edges.some((e) => e.id === operation.edge.id)) return false;
+      graph.edges.push(operation.edge);
+      return true;
+    }
+    case "edge_updated": {
+      const idx = graph.edges.findIndex((e) => e.id === operation.edgeId);
+      if (idx === -1) return false;
+      graph.edges[idx] = {
+        ...graph.edges[idx],
+        data: { ...graph.edges[idx].data, ...operation.patch },
+      };
+      return true;
+    }
+    case "edge_deleted": {
+      const prevLen = graph.edges.length;
+      graph.edges = graph.edges.filter((e) => e.id !== operation.edgeId);
+      return graph.edges.length < prevLen;
+    }
+    case "bulk_sync": {
+      graph.nodes = [...operation.nodes];
+      graph.edges = [...operation.edges];
+      return true;
+    }
+  }
+}
+
+/**
  * Register all Socket.io event handlers.
  */
 export function registerSocketHandlers(io: Server): void {
+  // --- Socket.io JWT auth middleware ---
+  io.use((socket, next) => {
+    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
+    if (token && typeof token === "string") {
+      const payload = verifyToken(token);
+      if (payload) {
+        (socket as any).authUser = payload;
+        return next();
+      }
+    }
+    // Legacy fallback: accept connections without token (migration period)
+    // They'll use socket.handshake.auth.userName / userId
+    (socket as any).authUser = null;
+    next();
+  });
+
   io.on("connection", (socket: Socket) => {
+    const authUser = (socket as any).authUser;
     const userId = socket.id;
     let currentBoard: string | null = null;
-    let userName = "Anonymous";
-    let identityId = "";
+    let userName = authUser?.userName || "Anonymous";
+    let identityId = authUser?.userId || "";
     let userColor = getRandomColor();
 
     console.log(`  🔌 Client connected: ${userId}`);
@@ -100,6 +201,14 @@ export function registerSocketHandlers(io: Server): void {
       }
       roomUsers.get(boardId)!.set(userId, { userName, color: userColor, identityId });
 
+      // Initialize server-side graph from persisted state (if not already loaded)
+      if (!roomGraphs.has(boardId) && board) {
+        roomGraphs.set(boardId, {
+          nodes: [...board.nodes],
+          edges: [...board.edges],
+        });
+      }
+
       const userCount = roomUsers.get(boardId)!.size;
       console.log(
         `  📋 ${userName} joined board "${boardId}" (${userCount} user${userCount !== 1 ? "s" : ""})`
@@ -119,7 +228,27 @@ export function registerSocketHandlers(io: Server): void {
       });
     });
 
-    // --- update_nodes ---
+    // --- board_operation (NEW: granular operation) ---
+    socket.on(
+      "board_operation",
+      (payload: { boardId: string; operation: BoardOperation }) => {
+        // Apply to server-side authoritative graph
+        const applied = applyOperationToGraph(payload.boardId, payload.operation);
+
+        if (applied) {
+          // Broadcast the operation to all OTHER users in the room
+          socket.to(payload.boardId).emit("operation_applied", {
+            operation: payload.operation,
+            userId,
+          });
+
+          // Debounced save to Redis
+          debouncedSave(payload.boardId);
+        }
+      }
+    );
+
+    // --- update_nodes (LEGACY: full graph sync — kept for backward compat) ---
     socket.on(
       "update_nodes",
       (payload: {
@@ -127,6 +256,12 @@ export function registerSocketHandlers(io: Server): void {
         nodes: SerializedNode[];
         edges: SerializedEdge[];
       }) => {
+        // Update server-side graph
+        roomGraphs.set(payload.boardId, {
+          nodes: [...payload.nodes],
+          edges: [...payload.edges],
+        });
+
         // Broadcast to all other users in the room
         socket.to(payload.boardId).emit("nodes_updated", {
           nodes: payload.nodes,
@@ -135,14 +270,17 @@ export function registerSocketHandlers(io: Server): void {
         });
 
         // Debounced save to Redis
-        debouncedSave(payload.boardId, payload.nodes, payload.edges);
+        debouncedSave(payload.boardId);
       }
     );
 
-    // --- cursor_moved ---
+    // --- cursor_moved (with server-side throttle guard) ---
     socket.on(
       "cursor_moved",
       (payload: { boardId: string; cursor: CursorPosition }) => {
+        // Server-side throttle: max 20 updates/sec per socket
+        if (shouldThrottleCursor(userId)) return;
+
         socket.to(payload.boardId).emit("cursor_moved", {
           ...payload.cursor,
           userId,
@@ -185,6 +323,8 @@ export function registerSocketHandlers(io: Server): void {
         users.delete(userId);
         if (users.size === 0) {
           roomUsers.delete(boardId);
+          // Keep the graph in memory for a while in case someone rejoins quickly
+          // It will be cleaned up naturally or on next save
         }
       }
       socket.to(boardId).emit("user_left", userId);
@@ -200,6 +340,9 @@ export function registerSocketHandlers(io: Server): void {
 
     // --- disconnect ---
     socket.on("disconnect", () => {
+      // Clean up cursor throttle state
+      clearCursorThrottle(userId);
+
       if (userName !== "Anonymous") {
         console.log(`  🔌 Client disconnected: ${userId} (${userName})`);
       }

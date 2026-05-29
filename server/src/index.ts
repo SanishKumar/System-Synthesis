@@ -5,18 +5,36 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { registerSocketHandlers } from "./socket/handlers.js";
 import { initRedis } from "./services/redis.js";
+import { initDatabase, isDbAvailable } from "./services/db.js";
+import { optionalAuth } from "./middleware/auth.js";
+import { apiLimiter, boardCreateLimiter, aiLimiter, exportLimiter } from "./middleware/rateLimit.js";
+import { logger, requestLogger } from "./middleware/logger.js";
+import { metricsHandler, metrics } from "./middleware/metrics.js";
 import boardsRouter from "./routes/boards.js";
 import aiRouter from "./routes/ai.js";
+import templatesRouter from "./routes/templates.js";
+import exportRouter from "./routes/export.js";
+import authRouter, { ensureUsersTable } from "./routes/auth.js";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
 
 async function main() {
-  console.log("\n🚀 System Synthesis — Backend Server");
-  console.log("─".repeat(40));
+  logger.info("🚀 System Synthesis — Backend Server");
+  logger.info("─".repeat(40));
 
-  // Initialize Redis (or fallback to in-memory)
+  // Initialize storage layers
   await initRedis();
+  const dbReady = await initDatabase();
+
+  // Create users table if DB is available
+  if (dbReady) {
+    try {
+      await ensureUsersTable();
+    } catch (err: any) {
+      logger.error("Users table creation failed", { error: err.message });
+    }
+  }
 
   // Express app
   const app = express();
@@ -32,9 +50,21 @@ async function main() {
   );
   app.use(express.json({ limit: "10mb" }));
 
-  // REST routes
+  // Request logging
+  app.use(requestLogger);
+
+  // Global middleware: optional auth on all routes (attaches req.user if token present)
+  app.use(optionalAuth);
+
+  // Global rate limit
+  app.use("/api/", apiLimiter);
+
+  // REST routes with targeted rate limits
+  app.use("/api/auth", authRouter);
   app.use("/api/boards", boardsRouter);
-  app.use("/api/ai", aiRouter);
+  app.use("/api/ai", aiLimiter, aiRouter);
+  app.use("/api/templates", templatesRouter);
+  app.use("/api/export", exportLimiter, exportRouter);
 
   // Health check
   app.get("/health", (_req, res) => {
@@ -42,8 +72,12 @@ async function main() {
       status: "ok",
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
+      dbAvailable: isDbAvailable(),
     });
   });
+
+  // Prometheus metrics endpoint
+  app.get("/metrics", metricsHandler);
 
   // HTTP + Socket.io server
   const httpServer = createServer(app);
@@ -66,19 +100,21 @@ async function main() {
 
   // Start server
   httpServer.listen(PORT, () => {
-    console.log(`  🌐 HTTP server running on http://localhost:${PORT}`);
-    console.log(`  🔌 WebSocket server ready`);
-    console.log(`  📡 CORS allowed: ${FRONTEND_URL}`);
-    console.log("─".repeat(40));
-    console.log("  Ready for connections!\n");
+    logger.info(`🌐 HTTP server running on http://localhost:${PORT}`);
+    logger.info(`🔌 WebSocket server ready`);
+    logger.info(`📡 CORS allowed: ${FRONTEND_URL}`);
+    logger.info(`🔒 JWT auth + rate limiting active`);
+    logger.info(`📊 Prometheus metrics at /metrics`);
+    logger.info("─".repeat(40));
+    logger.info("Ready for connections!");
   });
 
   // Graceful shutdown
   const shutdown = () => {
-    console.log("\n  🛑 Shutting down gracefully...");
+    logger.info("🛑 Shutting down gracefully...");
     io.close();
     httpServer.close(() => {
-      console.log("  Server closed.");
+      logger.info("Server closed.");
       process.exit(0);
     });
     setTimeout(() => process.exit(1), 5000);
@@ -89,6 +125,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Failed to start server:", err);
+  logger.fatal("Failed to start server", { error: String(err) });
   process.exit(1);
 });

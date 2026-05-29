@@ -10,10 +10,11 @@ import type {
   BoardState,
   UserPresence,
   AIAnalysisResult,
+  BoardOperation,
 } from "@system-synthesis/shared";
 
 const CURSOR_THROTTLE_MS = 50;
-const NODE_SYNC_DEBOUNCE_MS = 500;
+const OP_FLUSH_INTERVAL_MS = 100;
 
 /**
  * Multiplayer hook — manages board room lifecycle.
@@ -24,24 +25,31 @@ const NODE_SYNC_DEBOUNCE_MS = 500;
  * 2. Event listeners are registered ONCE using a setup ref guard
  *    to handle React Strict Mode double-mounting.
  * 3. Cleanup only leaves the room — doesn't disconnect.
+ * 
+ * Operation-based sync:
+ * - Local mutations record ops to `pendingOps` in the store.
+ * - This hook flushes them at a regular interval and emits to the server.
+ * - Incoming `operation_applied` events are applied via `applyRemoteOperation`.
  */
 export function useMultiplayer(
   boardId: string,
   userName: string,
   identityId: string,
+  isReady: boolean,
   onAccessRevokedCallback?: () => void
 ) {
-  const syncTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastCursorEmitRef = useRef<number>(0);
   const isRemoteUpdateRef = useRef(false);
-  const prevNodesRef = useRef<string>("");
-  const prevEdgesRef = useRef<string>("");
   const currentBoardRef = useRef<string | null>(null);
   const listenersRegisteredRef = useRef(false);
   const mountedRef = useRef(true);
+  const opFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   // --- Socket connection + room lifecycle ---
   useEffect(() => {
+    // Don't connect until user identity is resolved
+    if (!isReady) return;
+
     mountedRef.current = true;
     const socket = getSocket();
 
@@ -87,19 +95,30 @@ export function useMultiplayer(
 
       useBoardStore.getState().setNodes(newNodes);
       useBoardStore.getState().setEdges(newEdges);
-
-      prevNodesRef.current = JSON.stringify(
-        newNodes.map((n) => ({ id: n.id, position: n.position }))
-      );
-      prevEdgesRef.current = JSON.stringify(
-        newEdges.map((e) => ({ id: e.id, source: e.source, target: e.target }))
-      );
+      // Hydrate board metadata into Zustand so TopNav/VersionHistory can use it
+      useBoardStore.setState({ boardName: state.name, boardId: state.id });
 
       setTimeout(() => {
         isRemoteUpdateRef.current = false;
       }, 200);
     };
 
+    // NEW: Handle granular operations from other clients
+    const onOperationApplied = (payload: {
+      operation: BoardOperation;
+      userId: string;
+    }) => {
+      if (!mountedRef.current) return;
+      if (payload.userId === socket.id) return;
+
+      isRemoteUpdateRef.current = true;
+      useBoardStore.getState().applyRemoteOperation(payload.operation);
+      setTimeout(() => {
+        isRemoteUpdateRef.current = false;
+      }, 100);
+    };
+
+    // LEGACY: Keep for backward compat with older servers
     const onNodesUpdated = (payload: {
       nodes: SerializedNode[];
       edges: SerializedEdge[];
@@ -129,13 +148,6 @@ export function useMultiplayer(
 
       useBoardStore.getState().setNodes(newNodes);
       useBoardStore.getState().setEdges(newEdges);
-
-      prevNodesRef.current = JSON.stringify(
-        newNodes.map((n) => ({ id: n.id, position: n.position }))
-      );
-      prevEdgesRef.current = JSON.stringify(
-        newEdges.map((e) => ({ id: e.id, source: e.source, target: e.target }))
-      );
 
       setTimeout(() => {
         isRemoteUpdateRef.current = false;
@@ -197,6 +209,7 @@ export function useMultiplayer(
       socket.on("connect", onConnect);
       socket.on("disconnect", onDisconnect);
       socket.on("board_state", onBoardState);
+      socket.on("operation_applied", onOperationApplied);
       socket.on("nodes_updated", onNodesUpdated);
       socket.on("cursor_moved", onCursorMoved);
       socket.on("user_joined", onUserJoined);
@@ -221,9 +234,34 @@ export function useMultiplayer(
       socket.emit("join_board", boardId, userName, identityId);
     }
 
+    // ——— Op flush interval: drain pendingOps and emit to server ———
+    opFlushTimerRef.current = setInterval(() => {
+      if (!mountedRef.current) return;
+      if (isRemoteUpdateRef.current) return;
+
+      const socket = getSocket();
+      if (!socket.connected) return;
+
+      const ops = useBoardStore.getState().flushPendingOps();
+      if (ops.length === 0) return;
+
+      const bid = currentBoardRef.current;
+      if (!bid) return;
+
+      for (const operation of ops) {
+        socket.emit("board_operation", { boardId: bid, operation });
+      }
+    }, OP_FLUSH_INTERVAL_MS);
+
     // ——— Cleanup: leave room, but DON'T disconnect socket ———
     return () => {
       mountedRef.current = false;
+
+      // Stop op flush
+      if (opFlushTimerRef.current) {
+        clearInterval(opFlushTimerRef.current);
+        opFlushTimerRef.current = null;
+      }
 
       // Leave the board room (not the socket)
       if (currentBoardRef.current) {
@@ -235,6 +273,7 @@ export function useMultiplayer(
       socket.off("connect", onConnect);
       socket.off("disconnect", onDisconnect);
       socket.off("board_state", onBoardState);
+      socket.off("operation_applied", onOperationApplied);
       socket.off("nodes_updated", onNodesUpdated);
       socket.off("cursor_moved", onCursorMoved);
       socket.off("user_joined", onUserJoined);
@@ -243,68 +282,8 @@ export function useMultiplayer(
       socket.off("board_access_revoked", onBoardAccessRevoked as any);
       socket.off("error", onError);
       listenersRegisteredRef.current = false;
-
-      // Clear any pending sync timers
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
     };
-  }, [boardId, userName, identityId]);
-
-  // --- Debounced node/edge sync ---  // Subscribe to node/edge changes for sync
-  const nodes = useBoardStore((s) => s.nodes);
-  const edges = useBoardStore((s) => s.edges);
-
-  useEffect(() => {
-    if (isRemoteUpdateRef.current) return;
-
-    const socket = getSocket();
-    if (!socket.connected) return;
-
-    // Check if nodes/edges actually changed
-    const state = useBoardStore.getState();
-    const currentNodesKey = JSON.stringify(
-      state.nodes.map((n) => ({
-        id: n.id,
-        position: n.position,
-        data: n.data,
-      }))
-    );
-    const currentEdgesKey = JSON.stringify(
-      state.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-      }))
-    );
-
-    if (
-      currentNodesKey === prevNodesRef.current &&
-      currentEdgesKey === prevEdgesRef.current
-    ) {
-      return;
-    }
-
-    // Debounce
-    if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-
-    syncTimerRef.current = setTimeout(() => {
-      const latestState = useBoardStore.getState();
-      const serializedNodes = latestState.getSerializedNodes();
-      const serializedEdges = latestState.getSerializedEdges();
-
-      socket.emit("update_nodes", {
-        boardId,
-        nodes: serializedNodes,
-        edges: serializedEdges,
-      });
-
-      prevNodesRef.current = currentNodesKey;
-      prevEdgesRef.current = currentEdgesKey;
-    }, NODE_SYNC_DEBOUNCE_MS);
-
-    return () => {
-      if (syncTimerRef.current) clearTimeout(syncTimerRef.current);
-    };
-  }, [nodes, edges, boardId]);
+  }, [boardId, userName, identityId, isReady]);
 
   // --- Throttled cursor emission ---
   const emitCursor = useCallback(

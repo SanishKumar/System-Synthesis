@@ -11,27 +11,67 @@ import {
   Plus,
   Trash2,
   ExternalLink,
+  Settings2,
 } from "lucide-react";
+import type {
+  ArchTier,
+  ArchZone,
+  ArchEnvironment,
+  ArchNodeType,
+} from "@system-synthesis/shared";
 
-type TabId = "notes" | "links" | "code" | "files";
+type TabId = "properties" | "notes" | "links" | "code" | "files";
 
 const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
+  { id: "properties", label: "Properties", icon: <Settings2 className="w-4 h-4" /> },
   { id: "notes", label: "Notes", icon: <FileText className="w-4 h-4" /> },
   { id: "links", label: "Links", icon: <Link2 className="w-4 h-4" /> },
   { id: "code", label: "Code", icon: <Code2 className="w-4 h-4" /> },
   { id: "files", label: "Files", icon: <Paperclip className="w-4 h-4" /> },
 ];
 
+const TIER_OPTIONS: { value: ArchTier; label: string }[] = [
+  { value: "frontend", label: "Frontend" },
+  { value: "backend", label: "Backend" },
+  { value: "data", label: "Data" },
+  { value: "infrastructure", label: "Infrastructure" },
+  { value: "external", label: "External" },
+];
+
+const ZONE_OPTIONS: { value: ArchZone; label: string }[] = [
+  { value: "public", label: "Public" },
+  { value: "dmz", label: "DMZ" },
+  { value: "private", label: "Private" },
+  { value: "restricted", label: "Restricted" },
+];
+
+const ENV_OPTIONS: { value: ArchEnvironment; label: string }[] = [
+  { value: "production", label: "Production" },
+  { value: "staging", label: "Staging" },
+  { value: "development", label: "Development" },
+  { value: "shared", label: "Shared" },
+];
+
+const NODE_TYPE_OPTIONS: { value: ArchNodeType; label: string }[] = [
+  { value: "service", label: "Service" },
+  { value: "database", label: "Database" },
+  { value: "gateway", label: "Gateway" },
+  { value: "queue", label: "Queue" },
+  { value: "cache", label: "Cache" },
+  { value: "client", label: "Client" },
+  { value: "loadbalancer", label: "Load Balancer" },
+  { value: "storage", label: "Storage" },
+];
+
 export default function NodeInspector() {
-  const [activeTab, setActiveTab] = useState<TabId>("notes");
+  const [activeTab, setActiveTab] = useState<TabId>("properties");
   const {
     selectedNodeId,
     nodes,
     edges,
     updateNodeData,
     setSidebarMode,
-    setNodes,
-    setEdges,
+    deleteNode,
     setSelectedNodeId,
   } = useBoardStore();
 
@@ -100,13 +140,13 @@ export default function NodeInspector() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b border-border">
+      <div className="flex border-b border-border overflow-x-auto">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             id={`inspector-tab-${tab.id}`}
             onClick={() => setActiveTab(tab.id)}
-            className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-display transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-2.5 text-xs font-display transition-all whitespace-nowrap ${
               activeTab === tab.id
                 ? "text-accent-cyan border-b-2 border-accent-cyan"
                 : "text-text-muted hover:text-text-secondary"
@@ -120,6 +160,178 @@ export default function NodeInspector() {
 
       {/* Tab Content */}
       <div className="flex-1 overflow-y-auto p-4">
+        {/* ========== PROPERTIES TAB ========== */}
+        {activeTab === "properties" && (
+          <div className="animate-fade-in space-y-4">
+            {/* Label */}
+            <div>
+              <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                Label
+              </label>
+              <input
+                type="text"
+                value={data.label}
+                onChange={(e) => updateNodeData(selectedNode.id, { label: e.target.value })}
+                className="input w-full text-sm"
+                id="inspector-label"
+              />
+            </div>
+
+            {/* Subtitle */}
+            <div>
+              <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                Subtitle
+              </label>
+              <input
+                type="text"
+                value={data.subtitle || ""}
+                onChange={(e) => updateNodeData(selectedNode.id, { subtitle: e.target.value })}
+                className="input w-full text-sm"
+                placeholder="e.g. Kong Enterprise, Redis 7.x"
+                id="inspector-subtitle"
+              />
+            </div>
+
+            {/* Node Type */}
+            <div>
+              <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                Component Type
+              </label>
+              <select
+                value={data.nodeType}
+                onChange={(e) => updateNodeData(selectedNode.id, { nodeType: e.target.value as ArchNodeType })}
+                className="input w-full text-sm"
+                id="inspector-node-type"
+              >
+                {NODE_TYPE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+            </div>
+
+            <hr className="border-border" />
+
+            {/* Tier + Zone row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  Tier
+                </label>
+                <select
+                  value={data.tier || ""}
+                  onChange={(e) => updateNodeData(selectedNode.id, { tier: (e.target.value || undefined) as ArchTier | undefined })}
+                  className="input w-full text-xs"
+                  id="inspector-tier"
+                >
+                  <option value="">— None —</option>
+                  {TIER_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  Zone
+                </label>
+                <select
+                  value={data.zone || ""}
+                  onChange={(e) => updateNodeData(selectedNode.id, { zone: (e.target.value || undefined) as ArchZone | undefined })}
+                  className="input w-full text-xs"
+                  id="inspector-zone"
+                >
+                  <option value="">— None —</option>
+                  {ZONE_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {/* Tech */}
+            <div>
+              <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                Technology
+              </label>
+              <input
+                type="text"
+                value={(data.tech as string) || ""}
+                onChange={(e) => updateNodeData(selectedNode.id, { tech: e.target.value || undefined })}
+                className="input w-full text-sm"
+                placeholder="e.g. PostgreSQL 15, Node.js 20, Go 1.22"
+                id="inspector-tech"
+              />
+            </div>
+
+            {/* Environment + Region row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  Environment
+                </label>
+                <select
+                  value={(data.environment as string) || ""}
+                  onChange={(e) => updateNodeData(selectedNode.id, { environment: (e.target.value || undefined) as ArchEnvironment | undefined })}
+                  className="input w-full text-xs"
+                  id="inspector-environment"
+                >
+                  <option value="">— None —</option>
+                  {ENV_OPTIONS.map((opt) => (
+                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  Region
+                </label>
+                <input
+                  type="text"
+                  value={(data.region as string) || ""}
+                  onChange={(e) => updateNodeData(selectedNode.id, { region: e.target.value || undefined })}
+                  className="input w-full text-xs"
+                  placeholder="us-east-1"
+                  id="inspector-region"
+                />
+              </div>
+            </div>
+
+            {/* Instances + SLA row */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  Instances
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  value={data.instances !== undefined ? data.instances : ""}
+                  onChange={(e) => {
+                    const val = e.target.value ? parseInt(e.target.value, 10) : undefined;
+                    updateNodeData(selectedNode.id, { instances: val });
+                  }}
+                  className="input w-full text-xs"
+                  placeholder="1"
+                  id="inspector-instances"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-display text-text-muted uppercase tracking-wider mb-1.5">
+                  SLA
+                </label>
+                <input
+                  type="text"
+                  value={(data.sla as string) || ""}
+                  onChange={(e) => updateNodeData(selectedNode.id, { sla: e.target.value || undefined })}
+                  className="input w-full text-xs"
+                  placeholder="99.99%"
+                  id="inspector-sla"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ========== NOTES TAB ========== */}
         {activeTab === "notes" && (
           <div className="animate-fade-in">
             <label className="block text-xs font-display text-text-muted mb-2 uppercase tracking-wider">
@@ -135,6 +347,7 @@ export default function NodeInspector() {
           </div>
         )}
 
+        {/* ========== LINKS TAB ========== */}
         {activeTab === "links" && (
           <div className="animate-fade-in space-y-3">
             <div className="flex items-center justify-between">
@@ -182,6 +395,7 @@ export default function NodeInspector() {
           </div>
         )}
 
+        {/* ========== CODE TAB ========== */}
         {activeTab === "code" && (
           <div className="animate-fade-in">
             <label className="block text-xs font-display text-text-muted mb-2 uppercase tracking-wider">
@@ -198,6 +412,7 @@ export default function NodeInspector() {
           </div>
         )}
 
+        {/* ========== FILES TAB ========== */}
         {activeTab === "files" && (
           <div className="animate-fade-in">
             <label className="block text-xs font-display text-text-muted mb-2 uppercase tracking-wider">
@@ -242,12 +457,7 @@ export default function NodeInspector() {
           id="delete-node-btn"
           onClick={() => {
             if (confirm(`Delete "${data.label}"?`)) {
-              setNodes(nodes.filter((n) => n.id !== selectedNode.id));
-              setEdges(
-                edges.filter(
-                  (e) => e.source !== selectedNode.id && e.target !== selectedNode.id
-                )
-              );
+              deleteNode(selectedNode.id);
               setSelectedNodeId(null);
               setSidebarMode("none");
             }

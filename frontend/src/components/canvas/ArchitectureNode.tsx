@@ -11,6 +11,7 @@ import {
   Monitor,
   Shield,
   Zap,
+  AlertTriangle,
 } from "lucide-react";
 import { useBoardStore } from "@/store/boardStore";
 import type { ArchNodeData, ArchNodeType } from "@system-synthesis/shared";
@@ -45,6 +46,13 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
       : data.status === "analyzing"
       ? "bg-status-warning animate-pulse-slow"
       : "bg-status-inactive";
+
+  // Validation badge: count issues affecting this node
+  const validationResult = useBoardStore((s) => s.validationResult);
+  const nodeIssues = validationResult?.issues.filter((i) => i.nodeIds.includes(id)) || [];
+  const worstSeverity = nodeIssues.length > 0
+    ? nodeIssues[0].severity // issues are sorted critical→warning→info
+    : null;
 
   // Detect text label nodes
   const isTextLabel =
@@ -85,18 +93,25 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
         </div>
       )}
 
-      {/* Metadata indicator */}
-      {(data.metadata?.notes || data.metadata?.codeSnippet || (data.metadata?.links?.length ?? 0) > 0) && (
+      {/* Metadata indicator + tech badge */}
+      {(data.metadata?.notes || data.metadata?.codeSnippet || (data.metadata?.links?.length ?? 0) > 0 || data.tech) && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-t border-border">
-          {data.metadata?.notes && data.metadata.notes !== "__text_label__" && (
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan/60" title="Has notes" />
+          {data.tech && (
+            <span className="text-[9px] font-mono text-text-muted bg-canvas-50 px-1.5 py-0.5 rounded-sm border border-border">
+              {data.tech}
+            </span>
           )}
-          {data.metadata?.codeSnippet && (
-            <span className="w-1.5 h-1.5 rounded-full bg-accent-purple/60" title="Has code" />
-          )}
-          {(data.metadata?.links?.length ?? 0) > 0 && (
-            <span className="w-1.5 h-1.5 rounded-full bg-status-active/60" title="Has links" />
-          )}
+          <div className="flex items-center gap-1 ml-auto">
+            {data.metadata?.notes && data.metadata.notes !== "__text_label__" && (
+              <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan/60" title="Has notes" />
+            )}
+            {data.metadata?.codeSnippet && (
+              <span className="w-1.5 h-1.5 rounded-full bg-accent-purple/60" title="Has code" />
+            )}
+            {(data.metadata?.links?.length ?? 0) > 0 && (
+              <span className="w-1.5 h-1.5 rounded-full bg-status-active/60" title="Has links" />
+            )}
+          </div>
         </div>
       )}
 
@@ -127,6 +142,23 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
       {/* Selection glow overlay */}
       {selected && (
         <div className="absolute -inset-px rounded-md border border-accent-cyan/30 pointer-events-none" />
+      )}
+
+      {/* Validation badge */}
+      {worstSeverity && (
+        <div
+          className={`absolute -top-2 -right-2 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-display font-bold shadow-sm border pointer-events-none z-10 ${
+            worstSeverity === "critical"
+              ? "bg-status-error text-white border-status-error"
+              : worstSeverity === "warning"
+              ? "bg-status-warning text-canvas border-status-warning"
+              : "bg-accent-cyan text-canvas border-accent-cyan"
+          }`}
+          title={`${nodeIssues.length} validation issue(s)`}
+        >
+          <AlertTriangle className="w-2.5 h-2.5" />
+          {nodeIssues.length}
+        </div>
       )}
     </div>
   );

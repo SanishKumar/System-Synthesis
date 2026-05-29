@@ -18,164 +18,9 @@ import type {
   AIAnalysisResult,
   SerializedNode,
   SerializedEdge,
+  BoardOperation,
+  ValidationResult,
 } from "@system-synthesis/shared";
-
-// ---------- Demo Data ----------
-
-const initialNodes: Node<ArchNodeData>[] = [
-  {
-    id: "gateway-1",
-    type: "architectureNode",
-    position: { x: 350, y: 50 },
-    data: {
-      label: "API Gateway",
-      subtitle: "Kong / Nginx\nRate Limit: 10k/min",
-      nodeType: "gateway",
-      status: "active",
-      metadata: {
-        notes: "Main entry point for all client requests. Handles SSL termination and rate limiting.",
-        links: ["https://docs.konghq.com"],
-        codeSnippet: `server {
-  listen 443 ssl;
-  location /api {
-    proxy_pass http://backend;
-  }
-}`,
-        attachedFiles: [],
-      },
-    },
-  },
-  {
-    id: "auth-1",
-    type: "architectureNode",
-    position: { x: 100, y: 220 },
-    data: {
-      label: "Auth Service",
-      subtitle: "Node.js / Express\nPods: 3/3",
-      nodeType: "service",
-      status: "active",
-      metadata: {
-        notes: "JWT-based authentication service. Handles user login, registration, and token refresh.",
-        links: [],
-        codeSnippet: `app.post('/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  const user = await User.findByEmail(email);
-  const token = jwt.sign({ id: user.id }, SECRET);
-  res.json({ token });
-});`,
-        attachedFiles: [],
-      },
-    },
-  },
-  {
-    id: "user-db",
-    type: "architectureNode",
-    position: { x: 100, y: 420 },
-    data: {
-      label: "User DB",
-      subtitle: "PostgreSQL v14\nReplica: Active",
-      nodeType: "database",
-      status: "active",
-      metadata: {
-        notes: "Primary user database with read replicas. Stores user profiles, credentials, and session data.",
-        links: [],
-        codeSnippet: "",
-        attachedFiles: [],
-      },
-    },
-  },
-  {
-    id: "api-1",
-    type: "architectureNode",
-    position: { x: 550, y: 220 },
-    data: {
-      label: "Core API",
-      subtitle: "Node.js / Fastify\nPods: 5/5",
-      nodeType: "service",
-      status: "active",
-      metadata: {
-        notes: "Main business logic service. Handles all CRUD operations for the platform.",
-        links: ["https://www.fastify.io/docs/latest/"],
-        codeSnippet: "",
-        attachedFiles: [],
-      },
-    },
-  },
-  {
-    id: "cache-1",
-    type: "architectureNode",
-    position: { x: 550, y: 420 },
-    data: {
-      label: "Redis Cache",
-      subtitle: "Redis 7.2\nMemory: 2.1GB/4GB",
-      nodeType: "cache",
-      status: "active",
-      metadata: {
-        notes: "Session cache and API response caching layer. TTL: 15min for most keys.",
-        links: [],
-        codeSnippet: "",
-        attachedFiles: [],
-      },
-    },
-  },
-  {
-    id: "queue-1",
-    type: "architectureNode",
-    position: { x: 350, y: 420 },
-    data: {
-      label: "Message Queue",
-      subtitle: "RabbitMQ\nQueues: 12 active",
-      nodeType: "queue",
-      status: "active",
-      metadata: {
-        notes: "Async job processing for emails, notifications, and background tasks.",
-        links: [],
-        codeSnippet: "",
-        attachedFiles: [],
-      },
-    },
-  },
-];
-
-const initialEdges: Edge<ArchEdgeData>[] = [
-  {
-    id: "e-gw-auth",
-    source: "gateway-1",
-    target: "auth-1",
-    type: "smoothstep",
-    animated: true,
-    style: { stroke: "#333", strokeDasharray: "5 5" },
-  },
-  {
-    id: "e-gw-api",
-    source: "gateway-1",
-    target: "api-1",
-    type: "smoothstep",
-    animated: true,
-    style: { stroke: "#333", strokeDasharray: "5 5" },
-  },
-  {
-    id: "e-auth-db",
-    source: "auth-1",
-    target: "user-db",
-    type: "smoothstep",
-    style: { stroke: "#444" },
-  },
-  {
-    id: "e-api-cache",
-    source: "api-1",
-    target: "cache-1",
-    type: "smoothstep",
-    style: { stroke: "#444" },
-  },
-  {
-    id: "e-api-queue",
-    source: "api-1",
-    target: "queue-1",
-    type: "smoothstep",
-    style: { stroke: "#444" },
-  },
-];
 
 // ---------- Store Types ----------
 
@@ -210,8 +55,16 @@ interface BoardStore {
   setNodes: (nodes: Node<ArchNodeData>[]) => void;
   setEdges: (edges: Edge<ArchEdgeData>[]) => void;
 
-  // Add node
+  // Add node/edge
   addNode: (node: Node<ArchNodeData>) => void;
+  addEdgeItem: (edge: Edge<ArchEdgeData>) => void;
+
+  // Edge data mutations
+  updateEdgeData: (edgeId: string, data: Partial<import("@system-synthesis/shared").ArchEdgeData>) => void;
+
+  // Delete node/edge
+  deleteNode: (nodeId: string) => void;
+  deleteEdge: (edgeId: string) => void;
 
   // Multiplayer
   remoteCursors: CursorState[];
@@ -229,14 +82,209 @@ interface BoardStore {
   setAiAnalysis: (result: AIAnalysisResult | null) => void;
   setIsAnalyzing: (analyzing: boolean) => void;
 
+  // Validation
+  validationResult: ValidationResult | null;
+  isValidating: boolean;
+  setValidationResult: (result: ValidationResult | null) => void;
+  setIsValidating: (validating: boolean) => void;
+
   // Sidebar
-  sidebarMode: "none" | "inspector" | "ai-assist";
-  setSidebarMode: (mode: "none" | "inspector" | "ai-assist") => void;
+  sidebarMode: "none" | "inspector" | "ai-assist" | "version-history";
+  setSidebarMode: (mode: "none" | "inspector" | "ai-assist" | "version-history") => void;
 
   // Serialization helpers
   getSerializedNodes: () => SerializedNode[];
   getSerializedEdges: () => SerializedEdge[];
+
+  // --- Operation-based sync ---
+  /** Queue of local ops waiting to be sent to the server */
+  pendingOps: BoardOperation[];
+  /** Consume and clear pending ops (called by multiplayer hook) */
+  flushPendingOps: () => BoardOperation[];
+  /** Apply a remote operation without recording it to undo or pendingOps */
+  applyRemoteOperation: (op: BoardOperation) => void;
+
+  // --- Undo / Redo ---
+  undoStack: BoardOperation[];
+  redoStack: BoardOperation[];
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
+
+// ---------- Helpers ----------
+
+/** Serialize a React Flow node to a SerializedNode */
+function serializeNode(n: Node<ArchNodeData>): SerializedNode {
+  return {
+    id: n.id,
+    type: n.type || "architectureNode",
+    position: n.position,
+    data: n.data,
+  };
+}
+
+/** Compute the inverse of an operation (for undo) */
+function invertOperation(op: BoardOperation, state: BoardStore): BoardOperation | null {
+  switch (op.op) {
+    case "node_created": {
+      return { op: "node_deleted", nodeId: op.node.id };
+    }
+    case "node_deleted": {
+      const node = state.nodes.find((n) => n.id === op.nodeId);
+      if (!node) return null;
+      return { op: "node_created", node: serializeNode(node) };
+    }
+    case "node_moved": {
+      const node = state.nodes.find((n) => n.id === op.nodeId);
+      if (!node) return null;
+      return { op: "node_moved", nodeId: op.nodeId, position: { ...node.position } };
+    }
+    case "node_updated": {
+      const node = state.nodes.find((n) => n.id === op.nodeId);
+      if (!node) return null;
+      // Store the original values for every key in the patch
+      const reversePatch: Partial<ArchNodeData> = {};
+      for (const key of Object.keys(op.patch)) {
+        (reversePatch as any)[key] = (node.data as any)[key];
+      }
+      return { op: "node_updated", nodeId: op.nodeId, patch: reversePatch };
+    }
+    case "edge_created": {
+      return { op: "edge_deleted", edgeId: op.edge.id };
+    }
+    case "edge_updated": {
+      const edge = state.edges.find((e) => e.id === op.edgeId);
+      if (!edge) return null;
+      const reversePatch: Partial<ArchEdgeData> = {};
+      for (const key of Object.keys(op.patch)) {
+        (reversePatch as any)[key] = (edge.data as any)?.[key];
+      }
+      return { op: "edge_updated", edgeId: op.edgeId, patch: reversePatch };
+    }
+    case "edge_deleted": {
+      const edge = state.edges.find((e) => e.id === op.edgeId);
+      if (!edge) return null;
+      return {
+        op: "edge_created",
+        edge: {
+          id: edge.id,
+          source: edge.source,
+          target: edge.target,
+          sourceHandle: edge.sourceHandle ?? undefined,
+          targetHandle: edge.targetHandle ?? undefined,
+          data: edge.data,
+        },
+      };
+    }
+    case "bulk_sync":
+      // Can't invert a full sync — just ignore
+      return null;
+  }
+}
+
+/** Apply a single operation to the store state (mutates nodes/edges in place via set) */
+function applyOperation(
+  op: BoardOperation,
+  get: () => BoardStore,
+  set: (partial: Partial<BoardStore>) => void
+) {
+  switch (op.op) {
+    case "node_created": {
+      const newNode: Node<ArchNodeData> = {
+        id: op.node.id,
+        type: op.node.type || "architectureNode",
+        position: op.node.position,
+        data: op.node.data,
+      };
+      set({ nodes: [...get().nodes, newNode] });
+      break;
+    }
+    case "node_updated": {
+      set({
+        nodes: get().nodes.map((n) =>
+          n.id === op.nodeId
+            ? { ...n, data: { ...n.data, ...op.patch } }
+            : n
+        ),
+      });
+      break;
+    }
+    case "node_moved": {
+      set({
+        nodes: get().nodes.map((n) =>
+          n.id === op.nodeId
+            ? { ...n, position: op.position }
+            : n
+        ),
+      });
+      break;
+    }
+    case "node_deleted": {
+      set({
+        nodes: get().nodes.filter((n) => n.id !== op.nodeId),
+        edges: get().edges.filter(
+          (e) => e.source !== op.nodeId && e.target !== op.nodeId
+        ),
+      });
+      break;
+    }
+    case "edge_created": {
+      const newEdge: Edge<ArchEdgeData> = {
+        id: op.edge.id,
+        source: op.edge.source,
+        target: op.edge.target,
+        sourceHandle: op.edge.sourceHandle,
+        targetHandle: op.edge.targetHandle,
+        type: "smoothstep",
+        style: { stroke: "#444" },
+        data: op.edge.data,
+      };
+      set({ edges: [...get().edges, newEdge] });
+      break;
+    }
+    case "edge_updated": {
+      set({
+        edges: get().edges.map((e) =>
+          e.id === op.edgeId
+            ? { ...e, data: { ...e.data, ...op.patch } as ArchEdgeData }
+            : e
+        ),
+      });
+      break;
+    }
+    case "edge_deleted": {
+      set({
+        edges: get().edges.filter((e) => e.id !== op.edgeId),
+      });
+      break;
+    }
+    case "bulk_sync": {
+      const newNodes = op.nodes.map((n) => ({
+        id: n.id,
+        type: n.type || "architectureNode",
+        position: n.position,
+        data: n.data,
+      }));
+      const newEdges = op.edges.map((e) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle,
+        type: "smoothstep" as const,
+        style: { stroke: "#444" },
+        data: e.data,
+      }));
+      set({ nodes: newNodes, edges: newEdges });
+      break;
+    }
+  }
+}
+
+// Track node positions before a drag to detect when a move completes
+let dragStartPositions: Map<string, { x: number; y: number }> = new Map();
 
 // ---------- Store ----------
 
@@ -248,23 +296,118 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   edges: [],
 
   onNodesChange: (changes) => {
-    set({ nodes: applyNodeChanges(changes, get().nodes) as Node<ArchNodeData>[] });
+    const prevNodes = get().nodes;
+
+    // Capture positions at drag start
+    for (const change of changes) {
+      if (change.type === "position" && change.dragging === true) {
+        const node = prevNodes.find((n) => n.id === change.id);
+        if (node && !dragStartPositions.has(change.id)) {
+          dragStartPositions.set(change.id, { ...node.position });
+        }
+      }
+    }
+
+    // Apply changes
+    const newNodes = applyNodeChanges(changes, prevNodes) as Node<ArchNodeData>[];
+    set({ nodes: newNodes });
+
+    // Detect drag end — record a node_moved operation
+    for (const change of changes) {
+      if (change.type === "position" && change.dragging === false) {
+        const startPos = dragStartPositions.get(change.id);
+        const movedNode = newNodes.find((n) => n.id === change.id);
+        if (startPos && movedNode) {
+          const dx = Math.abs(movedNode.position.x - startPos.x);
+          const dy = Math.abs(movedNode.position.y - startPos.y);
+          // Only emit if the node actually moved (not just a click)
+          if (dx > 1 || dy > 1) {
+            const moveOp: BoardOperation = {
+              op: "node_moved",
+              nodeId: change.id,
+              position: { ...movedNode.position },
+            };
+            // Record inverse (original position) for undo
+            const inverseOp: BoardOperation = {
+              op: "node_moved",
+              nodeId: change.id,
+              position: startPos,
+            };
+            set({
+              pendingOps: [...get().pendingOps, moveOp],
+              undoStack: [...get().undoStack, inverseOp],
+              redoStack: [],
+              canUndo: true,
+              canRedo: false,
+            });
+          }
+        }
+        dragStartPositions.delete(change.id);
+      }
+    }
   },
 
   onEdgesChange: (changes) => {
-    set({ edges: applyEdgeChanges(changes, get().edges) as Edge<ArchEdgeData>[] });
+    const prevEdges = get().edges;
+
+    // Detect edge removals before applying
+    for (const change of changes) {
+      if (change.type === "remove") {
+        const edge = prevEdges.find((e) => e.id === change.id);
+        if (edge) {
+          const deleteOp: BoardOperation = { op: "edge_deleted", edgeId: change.id };
+          const inverseOp: BoardOperation = {
+            op: "edge_created",
+            edge: {
+              id: edge.id,
+              source: edge.source,
+              target: edge.target,
+              sourceHandle: edge.sourceHandle ?? undefined,
+              targetHandle: edge.targetHandle ?? undefined,
+              data: edge.data,
+            },
+          };
+          set({
+            pendingOps: [...get().pendingOps, deleteOp],
+            undoStack: [...get().undoStack, inverseOp],
+            redoStack: [],
+            canUndo: true,
+            canRedo: false,
+          });
+        }
+      }
+    }
+
+    set({ edges: applyEdgeChanges(changes, prevEdges) as Edge<ArchEdgeData>[] });
   },
 
   onConnect: (connection) => {
+    const newEdge: Edge<ArchEdgeData> = {
+      ...connection,
+      id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      type: "smoothstep",
+      style: { stroke: "#444" },
+    } as Edge<ArchEdgeData>;
+
+    const createOp: BoardOperation = {
+      op: "edge_created",
+      edge: {
+        id: newEdge.id,
+        source: newEdge.source,
+        target: newEdge.target,
+        sourceHandle: newEdge.sourceHandle ?? undefined,
+        targetHandle: newEdge.targetHandle ?? undefined,
+        data: newEdge.data,
+      },
+    };
+
     set({
-      edges: addEdge(
-        {
-          ...connection,
-          type: "smoothstep",
-          style: { stroke: "#444" },
-        },
-        get().edges
-      ) as Edge<ArchEdgeData>[],
+      edges: addEdge(newEdge, get().edges) as Edge<ArchEdgeData>[],
+      pendingOps: [...get().pendingOps, createOp],
+      undoStack: [...get().undoStack, { op: "edge_deleted", edgeId: newEdge.id }],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
     });
   },
 
@@ -272,19 +415,175 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
   updateNodeData: (nodeId, data) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    // Compute inverse patch
+    const reversePatch: Partial<ArchNodeData> = {};
+    for (const key of Object.keys(data)) {
+      (reversePatch as any)[key] = (node.data as any)[key];
+    }
+
+    const updateOp: BoardOperation = { op: "node_updated", nodeId, patch: data };
+    const inverseOp: BoardOperation = { op: "node_updated", nodeId, patch: reversePatch };
+
     set({
-      nodes: get().nodes.map((node) =>
-        node.id === nodeId
-          ? { ...node, data: { ...node.data, ...data } }
-          : node
+      nodes: get().nodes.map((n) =>
+        n.id === nodeId
+          ? { ...n, data: { ...n.data, ...data } }
+          : n
       ),
+      pendingOps: [...get().pendingOps, updateOp],
+      undoStack: [...get().undoStack, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
     });
   },
 
   setNodes: (nodes) => set({ nodes }),
   setEdges: (edges) => set({ edges }),
 
-  addNode: (node) => set({ nodes: [...get().nodes, node] }),
+  addNode: (node) => {
+    const createOp: BoardOperation = {
+      op: "node_created",
+      node: serializeNode(node),
+    };
+    const inverseOp: BoardOperation = { op: "node_deleted", nodeId: node.id };
+
+    set({
+      nodes: [...get().nodes, node],
+      pendingOps: [...get().pendingOps, createOp],
+      undoStack: [...get().undoStack, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
+    });
+  },
+
+  addEdgeItem: (edge) => {
+    const createOp: BoardOperation = {
+      op: "edge_created",
+      edge: {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? undefined,
+        targetHandle: edge.targetHandle ?? undefined,
+        data: edge.data,
+      },
+    };
+    const inverseOp: BoardOperation = { op: "edge_deleted", edgeId: edge.id };
+
+    set({
+      edges: [...get().edges, edge],
+      pendingOps: [...get().pendingOps, createOp],
+      undoStack: [...get().undoStack, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
+    });
+  },
+
+  updateEdgeData: (edgeId, data) => {
+    const edge = get().edges.find((e) => e.id === edgeId);
+    if (!edge) return;
+
+    // Compute inverse patch
+    const reversePatch: Partial<ArchEdgeData> = {};
+    for (const key of Object.keys(data)) {
+      (reversePatch as any)[key] = (edge.data as any)?.[key];
+    }
+
+    const updateOp: BoardOperation = { op: "edge_updated", edgeId, patch: data };
+    const inverseOp: BoardOperation = { op: "edge_updated", edgeId, patch: reversePatch };
+
+    set({
+      edges: get().edges.map((e) =>
+        e.id === edgeId
+          ? { ...e, data: { ...e.data, ...data } as ArchEdgeData }
+          : e
+      ),
+      pendingOps: [...get().pendingOps, updateOp],
+      undoStack: [...get().undoStack, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
+    });
+  },
+
+  deleteNode: (nodeId) => {
+    const node = get().nodes.find((n) => n.id === nodeId);
+    if (!node) return;
+
+    const connectedEdges = get().edges.filter(
+      (e) => e.source === nodeId || e.target === nodeId
+    );
+
+    const deleteOp: BoardOperation = { op: "node_deleted", nodeId };
+    // Inverse: recreate the node (connected edges will be handled as separate ops)
+    const inverseOp: BoardOperation = {
+      op: "node_created",
+      node: serializeNode(node),
+    };
+
+    // Also record edge deletion ops
+    const edgeDeleteOps: BoardOperation[] = connectedEdges.map((e) => ({
+      op: "edge_deleted" as const,
+      edgeId: e.id,
+    }));
+    const edgeInverseOps: BoardOperation[] = connectedEdges.map((e) => ({
+      op: "edge_created" as const,
+      edge: {
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        sourceHandle: e.sourceHandle ?? undefined,
+        targetHandle: e.targetHandle ?? undefined,
+        data: e.data,
+      },
+    }));
+
+    set({
+      nodes: get().nodes.filter((n) => n.id !== nodeId),
+      edges: get().edges.filter(
+        (e) => e.source !== nodeId && e.target !== nodeId
+      ),
+      pendingOps: [...get().pendingOps, ...edgeDeleteOps, deleteOp],
+      // Undo: first recreate the node, then recreate edges
+      undoStack: [...get().undoStack, ...edgeInverseOps, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
+    });
+  },
+
+  deleteEdge: (edgeId) => {
+    const edge = get().edges.find((e) => e.id === edgeId);
+    if (!edge) return;
+
+    const deleteOp: BoardOperation = { op: "edge_deleted", edgeId };
+    const inverseOp: BoardOperation = {
+      op: "edge_created",
+      edge: {
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        sourceHandle: edge.sourceHandle ?? undefined,
+        targetHandle: edge.targetHandle ?? undefined,
+        data: edge.data,
+      },
+    };
+
+    set({
+      edges: get().edges.filter((e) => e.id !== edgeId),
+      pendingOps: [...get().pendingOps, deleteOp],
+      undoStack: [...get().undoStack, inverseOp],
+      redoStack: [],
+      canUndo: true,
+      canRedo: false,
+    });
+  },
 
   remoteCursors: [],
   setRemoteCursors: (cursors) => set({ remoteCursors: cursors }),
@@ -310,6 +609,11 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   setAiAnalysis: (result) => set({ aiAnalysis: result }),
   setIsAnalyzing: (analyzing) => set({ isAnalyzing: analyzing }),
 
+  validationResult: null,
+  isValidating: false,
+  setValidationResult: (result) => set({ validationResult: result }),
+  setIsValidating: (validating) => set({ isValidating: validating }),
+
   sidebarMode: "none",
   setSidebarMode: (mode) => set({ sidebarMode: mode }),
 
@@ -330,4 +634,76 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       targetHandle: e.targetHandle ?? undefined,
       data: e.data,
     })),
+
+  // --- Operation-based sync ---
+  pendingOps: [],
+  flushPendingOps: () => {
+    const ops = get().pendingOps;
+    set({ pendingOps: [] });
+    return ops;
+  },
+
+  applyRemoteOperation: (op) => {
+    // Apply without recording to undo or pendingOps
+    applyOperation(op, get, set);
+  },
+
+  // --- Undo / Redo ---
+  undoStack: [],
+  redoStack: [],
+  canUndo: false,
+  canRedo: false,
+
+  undo: () => {
+    const stack = get().undoStack;
+    if (stack.length === 0) return;
+
+    const inverseOp = stack[stack.length - 1];
+
+    // Compute the forward op (to push to redo) BEFORE applying the inverse
+    const forwardOp = invertOperation(inverseOp, get());
+
+    // Apply the inverse operation locally
+    applyOperation(inverseOp, get, set);
+
+    // Also emit the inverse op to sync with other clients
+    const newUndoStack = stack.slice(0, -1);
+    const newRedoStack = forwardOp
+      ? [...get().redoStack, forwardOp]
+      : get().redoStack;
+
+    set({
+      pendingOps: [...get().pendingOps, inverseOp],
+      undoStack: newUndoStack,
+      redoStack: newRedoStack,
+      canUndo: newUndoStack.length > 0,
+      canRedo: newRedoStack.length > 0,
+    });
+  },
+
+  redo: () => {
+    const stack = get().redoStack;
+    if (stack.length === 0) return;
+
+    const forwardOp = stack[stack.length - 1];
+
+    // Compute inverse (to push back to undo) BEFORE applying
+    const inverseOp = invertOperation(forwardOp, get());
+
+    // Apply the forward operation locally
+    applyOperation(forwardOp, get, set);
+
+    const newRedoStack = stack.slice(0, -1);
+    const newUndoStack = inverseOp
+      ? [...get().undoStack, inverseOp]
+      : get().undoStack;
+
+    set({
+      pendingOps: [...get().pendingOps, forwardOp],
+      undoStack: newUndoStack,
+      redoStack: newRedoStack,
+      canUndo: newUndoStack.length > 0,
+      canRedo: newRedoStack.length > 0,
+    });
+  },
 }));
