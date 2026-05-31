@@ -133,7 +133,7 @@ export default function TopNav({
     }, 200);
 
     return () => clearTimeout(timer);
-  }, [searchQuery]);
+  }, [searchQuery, authHeaders]);
 
 
 

@@ -218,8 +218,8 @@ export interface ServerToClientEvents {
   ai_analysis_result: (result: AIAnalysisResult) => void;
   board_access_revoked: (payload: { boardId: string; ownerId: string }) => void;
   error: (message: string) => void;
-  yjs_full_state: (stateUpdate: number[] | Uint8Array) => void;
-  yjs_update: (payload: { update: number[] | Uint8Array; userId: string }) => void;
+  yjs_full_state: (stateUpdate: Uint8Array) => void;
+  yjs_update: (payload: { update: Uint8Array; userId: string }) => void;
 }
 
 export interface ClientToServerEvents {

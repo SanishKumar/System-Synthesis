@@ -32,7 +32,7 @@ export default function NewCanvasRedirect() {
       }
     }
     createAndRedirect();
-  }, [router, isReady]);
+  }, [router, isReady, authHeaders]);
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-canvas">

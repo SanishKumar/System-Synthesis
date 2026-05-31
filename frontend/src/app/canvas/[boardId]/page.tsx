@@ -85,7 +85,7 @@ export default function CanvasBoardPage() {
       }
     }
     checkAccess();
-  }, [boardId, isReady, userId]);
+  }, [boardId, isReady, userId, authHeaders]);
 
   const {
     sidebarMode,

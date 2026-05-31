@@ -141,7 +141,7 @@ export default function ArchitectureAssist() {
     return () => {
       if (validationTimerRef.current) clearTimeout(validationTimerRef.current);
     };
-  }, [nodes.length, edges.length]);
+  }, [nodes.length, edges.length, getSerializedNodes, getSerializedEdges, setValidationResult]);
 
   const applyAiAction = (action: AiAction) => {
     if (action.type === 'add_node') {
@@ -201,7 +201,7 @@ export default function ArchitectureAssist() {
     }
   };
 
-  const handleAnalyze = async () => {
+  const handleAnalyze = useCallback(async () => {
     setIsAnalyzing(true);
     const serializedNodes = getSerializedNodes();
     const serializedEdges = getSerializedEdges();
@@ -234,7 +234,7 @@ export default function ArchitectureAssist() {
     await new Promise((r) => setTimeout(r, 1500));
     setAiAnalysis(mockAnalysis);
     setIsAnalyzing(false);
-  };
+  }, [boardId, getSerializedNodes, getSerializedEdges, setAiAnalysis]);
 
   const [checklist, setChecklist] = useState(analysis.scalabilityChecklist);
 

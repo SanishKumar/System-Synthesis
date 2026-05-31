@@ -58,7 +58,7 @@ export default function HistoryPage() {
       setLoading(false);
     }
     fetchBoards();
-  }, [isReady, userId]);
+  }, [isReady, userId, authHeaders]);
 
   const handleDelete = async (boardId: string) => {
     if (!confirm("Delete this architecture? This cannot be undone.")) return;

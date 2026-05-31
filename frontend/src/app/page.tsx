@@ -113,7 +113,7 @@ export default function DashboardPage() {
       setLoading(false);
     }
     fetchData();
-  }, [isReady, userId]);
+  }, [isReady, userId, authHeaders]);
 
   const handleCreateBoard = async () => {
     if (!isReady) return;

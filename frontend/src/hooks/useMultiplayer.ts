@@ -238,7 +238,7 @@ export function useMultiplayer(
       socket.off("error", onError);
       listenersRegisteredRef.current = false;
     };
-  }, [boardId, userName, identityId, isReady]);
+  }, [boardId, userName, identityId, isReady, onAccessRevokedCallback]);
 
   // --- Throttled cursor emission ---
   const emitCursor = useCallback(
