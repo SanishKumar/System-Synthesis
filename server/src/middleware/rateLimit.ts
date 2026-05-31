@@ -66,7 +66,7 @@ export const exportLimiter = rateLimit({
 // ── Socket.io cursor throttle guard ────────────────────────────────
 
 const cursorTimestamps = new Map<string, number>();
-const CURSOR_THROTTLE_MS = 50; // max 20 cursor updates/sec per user
+const CURSOR_THROTTLE_MS = 100; // max 10 cursor updates/sec per user
 
 /**
  * Returns true if the cursor update should be BLOCKED (too frequent).

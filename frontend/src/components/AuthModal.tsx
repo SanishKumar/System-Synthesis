@@ -9,9 +9,9 @@ interface AuthModalProps {
 }
 
 export default function AuthModal({ onClose }: AuthModalProps) {
-  const { register, login } = useUser();
-  const [mode, setMode] = useState<"login" | "register">("login");
-  const [userName, setUserName] = useState("");
+  const { register, login, isGuest, userName: currentName, upgradeGuest } = useUser();
+  const [mode, setMode] = useState<"login" | "register">(isGuest ? "register" : "login");
+  const [userName, setUserName] = useState(isGuest ? currentName : "");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +54,13 @@ export default function AuthModal({ onClose }: AuthModalProps) {
         setLoading(false);
         return;
       }
-      const result = await register(userName.trim(), email.trim(), password);
+      let result;
+      if (isGuest) {
+        result = await upgradeGuest(userName.trim(), email.trim(), password);
+      } else {
+        result = await register(userName.trim(), email.trim(), password);
+      }
+      
       if (result.success) {
         onClose();
       } else {
@@ -98,12 +104,12 @@ export default function AuthModal({ onClose }: AuthModalProps) {
             </div>
             <div>
               <h2 className="font-display font-bold text-base text-text-primary">
-                {mode === "login" ? "Welcome Back" : "Create Account"}
+                {mode === "login" ? "Welcome Back" : isGuest ? "Save Account" : "Create Account"}
               </h2>
               <p className="text-[11px] text-text-muted">
                 {mode === "login"
                   ? "Sign in to your account"
-                  : "Join System Synthesis"}
+                  : isGuest ? "Upgrade guest to permanent account" : "Join System Synthesis"}
               </p>
             </div>
           </div>
@@ -137,7 +143,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
             }`}
           >
             <UserPlus className="w-3.5 h-3.5" />
-            Register
+            {isGuest ? "Save Account" : "Register"}
           </button>
         </div>
 
@@ -203,7 +209,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
             {loading ? (
               <>
                 <Loader2 className="w-4 h-4 animate-spin" />
-                {mode === "login" ? "Signing in..." : "Creating account..."}
+                {mode === "login" ? "Signing in..." : isGuest ? "Saving account..." : "Creating account..."}
               </>
             ) : (
               <>
@@ -212,7 +218,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
                 ) : (
                   <UserPlus className="w-4 h-4" />
                 )}
-                {mode === "login" ? "Sign In" : "Create Account"}
+                {mode === "login" ? "Sign In" : isGuest ? "Save Account" : "Create Account"}
               </>
             )}
           </button>

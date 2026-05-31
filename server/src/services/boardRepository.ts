@@ -37,7 +37,7 @@ import {
 // ============================================================
 
 /**
- * Upsert board metadata into Postgres.
+ * Upsert board metadata and current_data into Postgres.
  */
 async function pgUpsertBoard(board: BoardState): Promise<void> {
   const pool = getPool();
@@ -45,15 +45,16 @@ async function pgUpsertBoard(board: BoardState): Promise<void> {
 
   try {
     await pool.query(
-      `INSERT INTO boards (id, name, description, owner_id, owner_name, is_public, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO boards (id, name, description, owner_id, owner_name, is_public, created_at, updated_at, current_data)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          owner_id = EXCLUDED.owner_id,
          owner_name = EXCLUDED.owner_name,
          is_public = EXCLUDED.is_public,
-         updated_at = EXCLUDED.updated_at`,
+         updated_at = EXCLUDED.updated_at,
+         current_data = EXCLUDED.current_data`,
       [
         board.id,
         board.name,
@@ -63,6 +64,7 @@ async function pgUpsertBoard(board: BoardState): Promise<void> {
         board.isPublic,
         board.createdAt,
         board.updatedAt,
+        JSON.stringify({ nodes: board.nodes, edges: board.edges })
       ]
     );
   } catch (err: any) {
@@ -97,6 +99,18 @@ async function pgSaveSnapshot(
       `INSERT INTO board_snapshots (board_id, version, data, created_by)
        VALUES ($1, $2, $3, $4)`,
       [boardId, nextVersion, JSON.stringify({ nodes, edges }), createdBy]
+    );
+
+    // Enforce retention policy (max 10 snapshots)
+    await pool.query(
+      `DELETE FROM board_snapshots
+       WHERE board_id = $1 AND version NOT IN (
+         SELECT version FROM board_snapshots
+         WHERE board_id = $1
+         ORDER BY version DESC
+         LIMIT 10
+       )`,
+      [boardId]
     );
 
     return nextVersion;
@@ -145,14 +159,14 @@ async function pgGetBoard(boardId: string): Promise<BoardState | null> {
 
   try {
     const result = await pool.query(
-      `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at
+      `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at, current_data
        FROM boards WHERE id = $1 AND deleted_at IS NULL`,
       [boardId]
     );
     if (result.rows.length === 0) return null;
 
     const row = result.rows[0];
-    const snapshot = await pgGetLatestSnapshot(boardId);
+    const data = row.current_data || { nodes: [], edges: [] };
 
     return {
       id: row.id,
@@ -161,8 +175,8 @@ async function pgGetBoard(boardId: string): Promise<BoardState | null> {
       ownerId: row.owner_id,
       ownerName: row.owner_name,
       isPublic: row.is_public,
-      nodes: snapshot?.nodes || [],
-      edges: snapshot?.edges || [],
+      nodes: data.nodes || [],
+      edges: data.edges || [],
       createdAt: row.created_at.toISOString(),
       updatedAt: row.updated_at.toISOString(),
     };
@@ -183,7 +197,7 @@ async function pgListBoards(requesterId?: string): Promise<BoardState[]> {
     let result;
     if (requesterId) {
       result = await pool.query(
-        `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at
+        `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at, current_data
          FROM boards 
          WHERE deleted_at IS NULL AND (owner_id = $1 OR is_public = true)
          ORDER BY updated_at DESC`,
@@ -191,15 +205,15 @@ async function pgListBoards(requesterId?: string): Promise<BoardState[]> {
       );
     } else {
       result = await pool.query(
-        `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at
+        `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at, current_data
          FROM boards WHERE deleted_at IS NULL ORDER BY updated_at DESC`
       );
     }
 
-    // For the listing, we fetch just the latest snapshot to get node/edge counts
+    // We use current_data for node/edge counts
     const boards: BoardState[] = [];
     for (const row of result.rows) {
-      const snapshot = await pgGetLatestSnapshot(row.id);
+      const data = row.current_data || { nodes: [], edges: [] };
       boards.push({
         id: row.id,
         name: row.name,
@@ -207,8 +221,8 @@ async function pgListBoards(requesterId?: string): Promise<BoardState[]> {
         ownerId: row.owner_id,
         ownerName: row.owner_name,
         isPublic: row.is_public,
-        nodes: snapshot?.nodes || [],
-        edges: snapshot?.edges || [],
+        nodes: data.nodes || [],
+        edges: data.edges || [],
         createdAt: row.created_at.toISOString(),
         updatedAt: row.updated_at.toISOString(),
       });
@@ -248,7 +262,7 @@ export async function getBoardState(boardId: string): Promise<BoardState | null>
 
 /**
  * Save board state — writes to both Redis and Postgres.
- * Creates a new version snapshot in Postgres.
+ * Note: No longer creates a snapshot on every auto-save.
  */
 export async function saveBoardState(
   boardId: string,
@@ -259,13 +273,28 @@ export async function saveBoardState(
   // 1. Always update Redis (fast real-time cache)
   await redisSaveBoard(boardId, nodes, edges);
 
-  // 2. Persist to Postgres (durable + versioned)
+  // 2. Persist to Postgres (durable)
   if (isDbAvailable()) {
     // Ensure board row exists
     const board = await redisGetBoard(boardId);
     if (board) {
+      board.nodes = nodes;
+      board.edges = edges;
       await pgUpsertBoard(board);
     }
+  }
+}
+
+/**
+ * Manually save a snapshot version.
+ */
+export async function saveBoardSnapshot(
+  boardId: string,
+  nodes: SerializedNode[],
+  edges: SerializedEdge[],
+  savedBy?: string
+): Promise<void> {
+  if (isDbAvailable()) {
     const version = await pgSaveSnapshot(boardId, nodes, edges, savedBy);
     if (version !== null) {
       console.log(`  📸 Snapshot v${version} saved for "${boardId}"`);
@@ -482,6 +511,7 @@ export async function restoreBoardVersion(
 
   // Save as a new version (creates a new snapshot)
   await saveBoardState(boardId, snapshot.nodes, snapshot.edges, restoredBy);
+  await saveBoardSnapshot(boardId, snapshot.nodes, snapshot.edges, restoredBy);
 
   // Return the updated board
   return getBoardState(boardId);

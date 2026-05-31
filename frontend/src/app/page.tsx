@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import TopNav from "@/components/TopNav";
 import { useUser } from "@/hooks/useUser";
+import { toast } from "sonner";
 import {
   LayoutGrid,
   Boxes,
@@ -125,10 +126,13 @@ export default function DashboardPage() {
       });
       if (res.ok) {
         const board = await res.json();
+        toast.success("Project created successfully");
         router.push(`/canvas/${board.id}`);
         return;
       }
-    } catch {}
+    } catch {
+      toast.error("Failed to create project");
+    }
     router.push("/canvas/demo-ecommerce");
     setCreating(false);
   };
@@ -148,7 +152,10 @@ export default function DashboardPage() {
         headers: authHeaders,
       });
       if (metricsRes.ok) setMetrics(await metricsRes.json());
-    } catch {}
+      toast.success("Project deleted");
+    } catch {
+      toast.error("Failed to delete project");
+    }
   };
 
   const metricsCards = [
@@ -282,7 +289,51 @@ export default function DashboardPage() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-            {/* Real board cards */}
+          {loading ? (
+            Array.from({ length: 4 }).map((_, i) => (
+              <div key={i} className="card min-h-[240px] animate-pulse flex flex-col overflow-hidden">
+                <div className="h-32 bg-surface-light border-b border-border" />
+                <div className="p-3 flex-1 flex flex-col gap-2 mt-2">
+                  <div className="h-4 bg-surface-light rounded w-3/4" />
+                  <div className="h-3 bg-surface-light rounded w-1/2" />
+                  <div className="mt-auto flex justify-between">
+                    <div className="h-3 bg-surface-light rounded w-1/3" />
+                  </div>
+                </div>
+              </div>
+            ))
+          ) : boards.length === 0 ? (
+            <div className="col-span-1 sm:col-span-2 lg:col-span-4 flex flex-col items-center justify-center py-20 px-4 card border-dashed text-center">
+              <div className="w-16 h-16 bg-accent-cyan/10 rounded-full flex items-center justify-center mb-6 border border-accent-cyan/20">
+                <Boxes className="w-8 h-8 text-accent-cyan" />
+              </div>
+              <h3 className="font-display text-xl font-bold text-text-primary mb-2">
+                No architectures yet
+              </h3>
+              <p className="text-text-muted text-sm max-w-md mb-8">
+                Design your first system architecture from scratch, or start with our pre-built e-commerce example to see how it works.
+              </p>
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                <Link
+                  href="/canvas/demo-ecommerce"
+                  className="btn-primary flex items-center gap-2"
+                >
+                  <Globe className="w-4 h-4" />
+                  Try the Demo Board
+                </Link>
+                <button
+                  onClick={handleCreateBoard}
+                  disabled={creating}
+                  className="btn-ghost flex items-center gap-2"
+                >
+                  {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                  Blank Canvas
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {/* Real board cards */}
             {boards.map((board, idx) => (
               <Link
                 key={board.id}
@@ -387,6 +438,8 @@ export default function DashboardPage() {
                 Start a new architecture
               </span>
             </button>
+            </>
+          )}
           </div>
         </div>
       </main>

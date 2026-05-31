@@ -4,7 +4,8 @@ import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
 import { registerSocketHandlers } from "./socket/handlers.js";
-import { initRedis } from "./services/redis.js";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { initRedis, redis } from "./services/redis.js";
 import { initDatabase, isDbAvailable } from "./services/db.js";
 import { optionalAuth } from "./middleware/auth.js";
 import { apiLimiter, boardCreateLimiter, aiLimiter, exportLimiter } from "./middleware/rateLimit.js";
@@ -91,6 +92,13 @@ async function main() {
     pingTimeout: 60000,
     pingInterval: 25000,
   });
+
+  // Configure Redis Adapter if Redis is available
+  if (redis) {
+    const pubClient = redis.duplicate();
+    const subClient = redis.duplicate();
+    io.adapter(createAdapter(pubClient, subClient));
+  }
 
   // Expose Socket.io to Express routes (for active ejection)
   app.set("io", io);

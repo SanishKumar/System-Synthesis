@@ -218,6 +218,8 @@ export interface ServerToClientEvents {
   ai_analysis_result: (result: AIAnalysisResult) => void;
   board_access_revoked: (payload: { boardId: string; ownerId: string }) => void;
   error: (message: string) => void;
+  yjs_full_state: (stateUpdate: number[] | Uint8Array) => void;
+  yjs_update: (payload: { update: number[] | Uint8Array; userId: string }) => void;
 }
 
 export interface ClientToServerEvents {
@@ -229,6 +231,7 @@ export interface ClientToServerEvents {
   board_operation: (payload: { boardId: string; operation: BoardOperation }) => void;
   cursor_moved: (payload: { boardId: string; cursor: CursorPosition }) => void;
   request_ai_analysis: (payload: { boardId: string; nodes: SerializedNode[]; edges: SerializedEdge[] }) => void;
+  yjs_update: (payload: { boardId: string; update: number[] | Uint8Array }) => void;
 }
 
 // --- Dashboard ---

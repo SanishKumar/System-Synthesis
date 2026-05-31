@@ -12,6 +12,7 @@ import VersionHistory from "@/components/sidebar/VersionHistory";
 import { useBoardStore } from "@/store/boardStore";
 import { useMultiplayer } from "@/hooks/useMultiplayer";
 import { useUser } from "@/hooks/useUser";
+import { toast } from "sonner";
 import { autoLayoutNodes } from "@/lib/layout";
 import {
   Share2,
@@ -96,7 +97,7 @@ export default function CanvasBoardPage() {
 
   // Active ejection callback
   const handleAccessRevoked = useCallback(() => {
-    alert("Access revoked — the board owner made this board private.");
+    toast.error("Access revoked — the board owner made this board private.");
     router.push("/");
   }, [router]);
 
@@ -120,8 +121,13 @@ export default function CanvasBoardPage() {
       if (res.ok) {
         const data = await res.json();
         setIsPublic(data.isPublic);
+        toast.success(`Board is now ${data.isPublic ? "public" : "private"}`);
+      } else {
+        toast.error("Failed to update visibility");
       }
-    } catch {}
+    } catch {
+      toast.error("Failed to update visibility");
+    }
     setTogglingVisibility(false);
   };
 
@@ -129,6 +135,7 @@ export default function CanvasBoardPage() {
   const handleCopyLink = () => {
     const url = `${window.location.origin}/canvas/${boardId}`;
     navigator.clipboard.writeText(url);
+    toast.success("Link copied to clipboard");
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -169,7 +176,20 @@ export default function CanvasBoardPage() {
       });
 
       useBoardStore.getState().setNodes(interpolatedNodes);
-      if (progress < 1) requestAnimationFrame(animate);
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        useBoardStore.getState().applyToYjs({
+          op: "bulk_sync",
+          nodes: interpolatedNodes.map(n => ({
+            id: n.id,
+            type: n.type || "architectureNode",
+            position: n.position,
+            data: n.data
+          })),
+          edges: useBoardStore.getState().getSerializedEdges()
+        });
+      }
     }
 
     requestAnimationFrame(animate);

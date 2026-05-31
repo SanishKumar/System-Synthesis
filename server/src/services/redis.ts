@@ -166,7 +166,7 @@ const demoBoardState: BoardState = {
   updatedAt: new Date().toISOString(),
 };
 
-let redisClient: any = null;
+export let redis: any = null;
 const serverStartTime = Date.now();
 
 /**
@@ -185,27 +185,27 @@ export async function initRedis(): Promise<void> {
     
     const isTls = redisUrl.startsWith("rediss://");
     
-    redisClient = new Redis(redisUrl, {
+    redis = new Redis(redisUrl, {
       family: 0, // Crucial for Upstash on Render: Force IPv4
       tls: isTls ? { rejectUnauthorized: false } : undefined,
       maxRetriesPerRequest: 3,
       retryStrategy: (times: number) => {
         if (times > 3) {
           console.log("  ⚠ Redis connection failed — falling back to in-memory store");
-          redisClient = null;
+          redis = null;
           return null;
         }
         return Math.min(times * 200, 2000);
       },
     });
 
-    redisClient.on("connect", () => {
+    redis.on("connect", () => {
       console.log("  ✅ Redis connected");
       // Explicitly seed the demo board into Redis so it appears in the database GUI
-      redisClient?.set("board:demo-ecommerce", JSON.stringify(demoBoardState));
+      redis?.set("board:demo-ecommerce", JSON.stringify(demoBoardState));
     });
 
-    redisClient.on("error", (err: Error) => {
+    redis.on("error", (err: Error) => {
       console.error("  ⚠ Redis error:", err.message);
     });
   } catch (err) {
@@ -220,9 +220,9 @@ export async function initRedis(): Promise<void> {
 export async function getBoardState(boardId: string): Promise<BoardState | null> {
   const key = `board:${boardId}`;
 
-  if (redisClient) {
+  if (redis) {
     try {
-      const data = await redisClient.get(key);
+      const data = await redis.get(key);
       if (data) return migrateBoardState(JSON.parse(data));
     } catch {
       // fallback
@@ -278,10 +278,10 @@ export async function saveBoardState(
 
   const serialized = JSON.stringify(state);
 
-  if (redisClient) {
+  if (redis) {
     try {
-      await redisClient.set(key, serialized);
-      await redisClient.expire(key, 86400);
+      await redis.set(key, serialized);
+      await redis.expire(key, 86400);
       return;
     } catch {
       // fallback
@@ -317,10 +317,10 @@ export async function createBoard(
   const key = `board:${id}`;
   const serialized = JSON.stringify(state);
 
-  if (redisClient) {
+  if (redis) {
     try {
-      await redisClient.set(key, serialized);
-      await redisClient.expire(key, 86400);
+      await redis.set(key, serialized);
+      await redis.expire(key, 86400);
       return state;
     } catch {
       // fallback
@@ -349,9 +349,9 @@ export async function updateBoardMeta(
   const key = `board:${boardId}`;
   const serialized = JSON.stringify(existing);
 
-  if (redisClient) {
+  if (redis) {
     try {
-      await redisClient.set(key, serialized);
+      await redis.set(key, serialized);
       return existing;
     } catch {
       // fallback
@@ -383,9 +383,9 @@ export async function toggleBoardVisibility(
   const key = `board:${boardId}`;
   const serialized = JSON.stringify(board);
 
-  if (redisClient) {
+  if (redis) {
     try {
-      await redisClient.set(key, serialized);
+      await redis.set(key, serialized);
     } catch {
       memoryStore.set(key, serialized);
     }
@@ -409,9 +409,9 @@ export async function deleteBoard(boardId: string, requesterId?: string): Promis
 
   const key = `board:${boardId}`;
 
-  if (redisClient) {
+  if (redis) {
     try {
-      await redisClient.del(key);
+      await redis.del(key);
       return true;
     } catch {
       // fallback
@@ -428,11 +428,11 @@ export async function deleteBoard(boardId: string, requesterId?: string): Promis
 export async function listBoards(requesterId?: string): Promise<BoardState[]> {
   let allBoards: BoardState[] = [];
 
-  if (redisClient) {
+  if (redis) {
     try {
-      const keys = await redisClient.keys("board:*");
+      const keys = await redis.keys("board:*");
       for (const key of keys) {
-        const data = await redisClient.get(key);
+        const data = await redis.get(key);
         if (data) allBoards.push(migrateBoardState(JSON.parse(data)));
       }
     } catch {

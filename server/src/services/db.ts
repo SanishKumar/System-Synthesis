@@ -17,8 +17,11 @@ const MIGRATION_SQL = `
     is_public     BOOLEAN NOT NULL DEFAULT false,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    deleted_at    TIMESTAMPTZ
+    deleted_at    TIMESTAMPTZ,
+    current_data  JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb
   );
+
+  ALTER TABLE boards ADD COLUMN IF NOT EXISTS current_data JSONB NOT NULL DEFAULT '{"nodes": [], "edges": []}'::jsonb;
 
   CREATE TABLE IF NOT EXISTS board_snapshots (
     id            SERIAL PRIMARY KEY,
@@ -29,6 +32,16 @@ const MIGRATION_SQL = `
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(board_id, version)
   );
+
+  -- Backfill current_data from the latest snapshot for existing boards
+  UPDATE boards b
+  SET current_data = s.data
+  FROM (
+      SELECT board_id, data,
+             ROW_NUMBER() OVER(PARTITION BY board_id ORDER BY version DESC) as rn
+      FROM board_snapshots
+  ) s
+  WHERE b.id = s.board_id AND s.rn = 1 AND b.current_data = '{"nodes": [], "edges": []}'::jsonb;
 
   CREATE INDEX IF NOT EXISTS idx_snapshots_board_id ON board_snapshots(board_id);
   CREATE INDEX IF NOT EXISTS idx_snapshots_board_version ON board_snapshots(board_id, version DESC);

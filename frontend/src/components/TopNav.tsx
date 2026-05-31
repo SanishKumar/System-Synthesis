@@ -352,6 +352,30 @@ export default function TopNav({
                 </div>
               </button>
 
+              {/* JSON */}
+              <button
+                onClick={() => {
+                  const store = useBoardStore.getState();
+                  const jsonStr = JSON.stringify({
+                    boardName: store.boardName,
+                    nodes: store.getSerializedNodes(),
+                    edges: store.getSerializedEdges(),
+                  }, null, 2);
+                  const blob = new Blob([jsonStr], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a'); a.href = url; a.download = `${store.boardName || 'architecture'}.json`; a.click();
+                  URL.revokeObjectURL(url);
+                  setShowExportMenu(false);
+                }}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border"
+              >
+                <FileCode className="w-4 h-4 text-accent-cyan" />
+                <div>
+                  <p className="font-semibold">Export as JSON</p>
+                  <p className="text-[10px] text-text-muted">Raw architecture data</p>
+                </div>
+              </button>
+
               {/* Docker Compose */}
               <button
                 disabled={exportLoading === 'docker'}

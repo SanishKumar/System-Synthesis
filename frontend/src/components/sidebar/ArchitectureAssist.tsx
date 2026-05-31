@@ -490,6 +490,12 @@ export default function ArchitectureAssist() {
                     store.setNodes(newNodes);
                     store.setEdges(newEdges);
 
+                    store.applyToYjs({
+                      op: "bulk_sync",
+                      nodes: newNodes,
+                      edges: newEdges,
+                    });
+
                     setTerminalLines(prev => [
                       ...prev,
                       { type: "success", text: `✓ Generated ${result.nodes.length} nodes and ${result.edges.length} edges` },
@@ -1038,6 +1044,12 @@ function TemplatesPanel({
 
         setNodes(newNodes);
         setEdges(newEdges);
+
+        useBoardStore.getState().applyToYjs({
+          op: "bulk_sync",
+          nodes: newNodes,
+          edges: newEdges,
+        });
       }
     } catch {}
     setApplying(null);

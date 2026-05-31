@@ -12,6 +12,7 @@
     "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "@system-synthesis/shared": "*",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
@@ -23,7 +24,9 @@
     "openai": "^4.73.0",
     "pg": "^8.21.0",
     "socket.io": "^4.8.1",
-    "uuid": "^11.0.3"
+    "uuid": "^11.0.3",
+    "yjs": "^13.6.31",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",

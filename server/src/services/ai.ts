@@ -5,6 +5,7 @@ import type {
   SerializedEdge,
   ArchNodeType,
 } from "@system-synthesis/shared";
+import { z } from "zod";
 
 // ---------- Mock Analysis ----------
 
@@ -166,6 +167,36 @@ For "add_edge" actions: sourceId and targetId should reference existing node IDs
 Analyze for: missing dependencies, single points of failure, scalability gaps, security concerns, and best practice violations.
 Return ONLY the JSON, no markdown or explanation.`;
 
+const AnalysisSchema = z.object({
+  missingComponents: z.array(z.object({
+    title: z.string(),
+    description: z.string(),
+    severity: z.enum(["critical", "warning", "info"]),
+    actions: z.array(z.object({
+      type: z.enum(["add_node", "add_edge", "update_node"]),
+      nodeType: z.string().optional(),
+      label: z.string().optional(),
+      sourceId: z.string().optional(),
+      targetId: z.string().optional()
+    })).optional()
+  })),
+  suggestedStorage: z.array(z.object({
+    name: z.string(),
+    type: z.enum(["primary", "cache", "search", "queue"]),
+    reason: z.string().optional()
+  })),
+  apiRecommendations: z.array(z.object({
+    name: z.string(),
+    description: z.string(),
+    badge: z.string()
+  })),
+  scalabilityChecklist: z.array(z.object({
+    label: z.string(),
+    checked: z.boolean()
+  })),
+  summary: z.string()
+});
+
 async function analyzeWithOpenAI(
   nodes: SerializedNode[],
   edges: SerializedEdge[]
@@ -196,7 +227,7 @@ async function analyzeWithOpenAI(
   );
 
   const response = await client.chat.completions.create({
-    model: "gpt-4o",
+    model: "gpt-4o-mini",
     messages: [
       { role: "system", content: ANALYSIS_SYSTEM_PROMPT },
       {
@@ -212,7 +243,9 @@ async function analyzeWithOpenAI(
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Empty response from OpenAI");
 
-  return JSON.parse(content) as AIAnalysisResult;
+  const parsedJson = JSON.parse(content);
+  // Strictly validate the structure with Zod
+  return AnalysisSchema.parse(parsedJson) as AIAnalysisResult;
 }
 
 // ---------- Local LLM Adapter ----------
@@ -325,7 +358,7 @@ export async function generateArchitecture(
       const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
       const response = await client.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         messages: [
           { role: "system", content: GENERATE_SYSTEM_PROMPT },
           { role: "user", content: `Design an architecture for: ${scenario}` },

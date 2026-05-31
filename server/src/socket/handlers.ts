@@ -14,17 +14,17 @@ import { verifyToken } from "../middleware/auth.js";
 import { shouldThrottleCursor, clearCursorThrottle } from "../middleware/rateLimit.js";
 import { v4 as uuid } from "uuid";
 
+import * as Y from "yjs";
+
 // Track active users per room
 const roomUsers = new Map<
   string,
   Map<string, { userName: string; color: string; identityId: string }>
 >();
 
-// --- Server-side authoritative graph state per room ---
-const roomGraphs = new Map<
-  string,
-  { nodes: SerializedNode[]; edges: SerializedEdge[] }
->();
+// --- Server-side Yjs Documents per room ---
+const roomDocs = new Map<string, Y.Doc>();
+const roomCleanupTimers = new Map<string, NodeJS.Timeout>();
 
 // Multiplayer cursor colors
 const CURSOR_COLORS = [
@@ -53,92 +53,49 @@ function debouncedSave(boardId: string) {
     boardId,
     setTimeout(async () => {
       try {
-        const graph = roomGraphs.get(boardId);
-        if (graph) {
-          await saveBoardState(boardId, graph.nodes, graph.edges);
-          console.log(`  💾 Board "${boardId}" saved (${graph.nodes.length} nodes)`);
+        const doc = roomDocs.get(boardId);
+        if (doc) {
+          const nodes = Array.from(doc.getMap<SerializedNode>("nodes").values());
+          const edges = Array.from(doc.getMap<SerializedEdge>("edges").values());
+          await saveBoardState(boardId, nodes, edges);
+          console.log(`  💾 Board "${boardId}" saved (${nodes.length} nodes)`);
         }
       } catch (err: any) {
         console.error(`  ⚠ Save error for "${boardId}":`, err.message);
       }
       saveTimers.delete(boardId);
-    }, 1000)
+    }, 5000)
   );
 }
 
 /**
- * Apply a BoardOperation to the server-side authoritative graph.
- * Returns true if the operation was applied successfully.
+ * Schedule room cleanup to free up memory when empty
  */
-function applyOperationToGraph(
-  boardId: string,
-  operation: BoardOperation
-): boolean {
-  let graph = roomGraphs.get(boardId);
-  if (!graph) {
-    graph = { nodes: [], edges: [] };
-    roomGraphs.set(boardId, graph);
-  }
+function scheduleRoomCleanup(boardId: string) {
+  const existing = roomCleanupTimers.get(boardId);
+  if (existing) clearTimeout(existing);
 
-  switch (operation.op) {
-    case "node_created": {
-      // Don't duplicate if node already exists
-      if (graph.nodes.some((n) => n.id === operation.node.id)) return false;
-      graph.nodes.push(operation.node);
-      return true;
-    }
-    case "node_updated": {
-      const idx = graph.nodes.findIndex((n) => n.id === operation.nodeId);
-      if (idx === -1) return false;
-      graph.nodes[idx] = {
-        ...graph.nodes[idx],
-        data: { ...graph.nodes[idx].data, ...operation.patch },
-      };
-      return true;
-    }
-    case "node_moved": {
-      const idx = graph.nodes.findIndex((n) => n.id === operation.nodeId);
-      if (idx === -1) return false;
-      graph.nodes[idx] = {
-        ...graph.nodes[idx],
-        position: operation.position,
-      };
-      return true;
-    }
-    case "node_deleted": {
-      const prevLen = graph.nodes.length;
-      graph.nodes = graph.nodes.filter((n) => n.id !== operation.nodeId);
-      // Also remove connected edges
-      graph.edges = graph.edges.filter(
-        (e) => e.source !== operation.nodeId && e.target !== operation.nodeId
-      );
-      return graph.nodes.length < prevLen;
-    }
-    case "edge_created": {
-      if (graph.edges.some((e) => e.id === operation.edge.id)) return false;
-      graph.edges.push(operation.edge);
-      return true;
-    }
-    case "edge_updated": {
-      const idx = graph.edges.findIndex((e) => e.id === operation.edgeId);
-      if (idx === -1) return false;
-      graph.edges[idx] = {
-        ...graph.edges[idx],
-        data: { ...graph.edges[idx].data, ...operation.patch },
-      };
-      return true;
-    }
-    case "edge_deleted": {
-      const prevLen = graph.edges.length;
-      graph.edges = graph.edges.filter((e) => e.id !== operation.edgeId);
-      return graph.edges.length < prevLen;
-    }
-    case "bulk_sync": {
-      graph.nodes = [...operation.nodes];
-      graph.edges = [...operation.edges];
-      return true;
-    }
-  }
+  roomCleanupTimers.set(
+    boardId,
+    setTimeout(async () => {
+      try {
+        const doc = roomDocs.get(boardId);
+        if (doc) {
+          // Final save before destroy
+          const nodes = Array.from(doc.getMap<SerializedNode>("nodes").values());
+          const edges = Array.from(doc.getMap<SerializedEdge>("edges").values());
+          await saveBoardState(boardId, nodes, edges);
+          
+          doc.destroy();
+          roomDocs.delete(boardId);
+          console.log(`  🧹 Cleaned up Y.Doc for "${boardId}"`);
+        }
+      } catch (err: any) {
+        console.error(`  ⚠ Cleanup error for "${boardId}":`, err.message);
+      }
+      roomCleanupTimers.delete(boardId);
+    }, 10000) // 10 seconds wait before GC
+  );
 }
 
 /**
@@ -202,11 +159,23 @@ export function registerSocketHandlers(io: Server): void {
       roomUsers.get(boardId)!.set(userId, { userName, color: userColor, identityId });
 
       // Initialize server-side graph from persisted state (if not already loaded)
-      if (!roomGraphs.has(boardId) && board) {
-        roomGraphs.set(boardId, {
-          nodes: [...board.nodes],
-          edges: [...board.edges],
-        });
+      let doc = roomDocs.get(boardId);
+      if (!doc) {
+        doc = new Y.Doc();
+        if (board) {
+          const nodesMap = doc.getMap<SerializedNode>("nodes");
+          const edgesMap = doc.getMap<SerializedEdge>("edges");
+          board.nodes.forEach(n => nodesMap.set(n.id, n));
+          board.edges.forEach(e => edgesMap.set(e.id, e));
+        }
+        roomDocs.set(boardId, doc);
+      }
+
+      // Cancel any pending cleanup for this room
+      const cleanupTimer = roomCleanupTimers.get(boardId);
+      if (cleanupTimer) {
+        clearTimeout(cleanupTimer);
+        roomCleanupTimers.delete(boardId);
       }
 
       const userCount = roomUsers.get(boardId)!.size;
@@ -214,10 +183,14 @@ export function registerSocketHandlers(io: Server): void {
         `  📋 ${userName} joined board "${boardId}" (${userCount} user${userCount !== 1 ? "s" : ""})`
       );
 
-      // Send current board state to the joining user
+      // Send the current metadata, then the full binary Yjs state
       if (board) {
-        socket.emit("board_state", board);
+        // Send basic board metadata (for name/id)
+        socket.emit("board_state", { id: board.id, name: board.name });
       }
+      
+      const stateUpdate = Y.encodeStateAsUpdate(doc);
+      socket.emit("yjs_full_state", stateUpdate);
 
       // Notify others in room
       socket.to(boardId).emit("user_joined", {
@@ -228,51 +201,25 @@ export function registerSocketHandlers(io: Server): void {
       });
     });
 
-    // --- board_operation (NEW: granular operation) ---
-    socket.on(
-      "board_operation",
-      (payload: { boardId: string; operation: BoardOperation }) => {
-        // Apply to server-side authoritative graph
-        const applied = applyOperationToGraph(payload.boardId, payload.operation);
+    // --- yjs_update (binary sync) ---
+    socket.on("yjs_update", (payload: { boardId: string; update: Uint8Array }) => {
+      // Buffer over socket.io comes as a Node Buffer or Uint8Array
+      const updateArray = new Uint8Array(payload.update);
+      const doc = roomDocs.get(payload.boardId);
+      if (doc) {
+        // Apply the incoming update to the server document
+        Y.applyUpdate(doc, updateArray);
 
-        if (applied) {
-          // Broadcast the operation to all OTHER users in the room
-          socket.to(payload.boardId).emit("operation_applied", {
-            operation: payload.operation,
-            userId,
-          });
-
-          // Debounced save to Redis
-          debouncedSave(payload.boardId);
-        }
-      }
-    );
-
-    // --- update_nodes (LEGACY: full graph sync — kept for backward compat) ---
-    socket.on(
-      "update_nodes",
-      (payload: {
-        boardId: string;
-        nodes: SerializedNode[];
-        edges: SerializedEdge[];
-      }) => {
-        // Update server-side graph
-        roomGraphs.set(payload.boardId, {
-          nodes: [...payload.nodes],
-          edges: [...payload.edges],
-        });
-
-        // Broadcast to all other users in the room
-        socket.to(payload.boardId).emit("nodes_updated", {
-          nodes: payload.nodes,
-          edges: payload.edges,
+        // Broadcast to others in room
+        socket.to(payload.boardId).emit("yjs_update", {
+          update: updateArray,
           userId,
         });
 
-        // Debounced save to Redis
+        // Debounced save
         debouncedSave(payload.boardId);
       }
-    );
+    });
 
     // --- cursor_moved (with server-side throttle guard) ---
     socket.on(
@@ -324,7 +271,8 @@ export function registerSocketHandlers(io: Server): void {
         if (users.size === 0) {
           roomUsers.delete(boardId);
           // Keep the graph in memory for a while in case someone rejoins quickly
-          // It will be cleaned up naturally or on next save
+          // Cleaned up after 10s by scheduleRoomCleanup
+          scheduleRoomCleanup(boardId);
         }
       }
       socket.to(boardId).emit("user_left", userId);
@@ -353,6 +301,7 @@ export function registerSocketHandlers(io: Server): void {
           users.delete(userId);
           if (users.size === 0) {
             roomUsers.delete(currentBoard);
+            scheduleRoomCleanup(currentBoard);
           }
         }
         socket.to(currentBoard).emit("user_left", userId);

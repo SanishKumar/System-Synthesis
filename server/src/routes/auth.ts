@@ -194,6 +194,41 @@ router.get("/me", requireAuth, async (req, res) => {
 });
 
 /**
+ * PUT /api/auth/me — Update current user's profile
+ * Body: { userName: string }
+ */
+router.put("/me", requireAuth, async (req, res) => {
+  try {
+    const { userId } = req.user!;
+    const { userName } = req.body;
+
+    if (!userName || typeof userName !== "string" || userName.length < 2) {
+      return res.status(400).json({ error: "userName is required (min 2 characters)" });
+    }
+
+    const pool = getDbOrNull();
+    if (pool) {
+      await pool.query(
+        "UPDATE users SET user_name = $1, updated_at = NOW() WHERE id = $2",
+        [userName.trim(), userId]
+      );
+    } else {
+      const user = IN_MEMORY_USERS.find(u => u.id === userId);
+      if (user) {
+        user.user_name = userName.trim();
+        user.updated_at = new Date();
+      }
+    }
+
+    // We must return a new token because userName is baked into the JWT
+    const token = signToken({ userId, userName: userName.trim() });
+    res.json({ token, userName: userName.trim() });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * POST /api/auth/guest — Issue a guest JWT for anonymous access
  * Guest tokens allow creating/viewing public boards but
  * don't persist a user account.
@@ -224,6 +259,56 @@ router.post("/guest", async (req, res) => {
       token,
       user: { userId: guestId, userName: guestName, isGuest: true },
     });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/auth/upgrade — Convert a guest account to a permanent account
+ * Body: { userName: string, email: string, password: string }
+ */
+router.post("/upgrade", requireAuth, async (req, res) => {
+  try {
+    const { userId } = req.user!;
+    const { userName, email, password } = req.body;
+
+    if (!userName || typeof userName !== "string" || userName.length < 2) {
+      return res.status(400).json({ error: "userName is required (min 2 characters)" });
+    }
+    if (!email) return res.status(400).json({ error: "email is required" });
+    if (!password || typeof password !== "string" || password.length < 6) {
+      return res.status(400).json({ error: "password is required (min 6 characters)" });
+    }
+
+    const pool = getDbOrNull();
+    const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+
+    if (pool) {
+      const existing = await pool.query("SELECT id FROM users WHERE email = $1", [email.toLowerCase()]);
+      if (existing.rows.length > 0 && existing.rows[0].id !== userId) {
+        return res.status(409).json({ error: "Email already registered" });
+      }
+
+      await pool.query(
+        `UPDATE users 
+         SET user_name = $1, email = $2, password_hash = $3, is_guest = false 
+         WHERE id = $4 AND is_guest = true`,
+        [userName.trim(), email.toLowerCase(), passwordHash, userId]
+      );
+    } else {
+      const user = IN_MEMORY_USERS.find(u => u.id === userId && u.is_guest);
+      if (!user) return res.status(404).json({ error: "Guest user not found" });
+      const existing = IN_MEMORY_USERS.find(u => u.email === email.toLowerCase());
+      if (existing && existing.id !== userId) return res.status(409).json({ error: "Email already registered" });
+      user.user_name = userName.trim();
+      user.email = email.toLowerCase();
+      user.password_hash = passwordHash;
+      user.is_guest = false;
+    }
+
+    const token = signToken({ userId, userName: userName.trim() });
+    res.json({ token, user: { userId, userName: userName.trim(), email: email.toLowerCase() } });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

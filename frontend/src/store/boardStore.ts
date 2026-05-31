@@ -21,6 +21,7 @@ import type {
   BoardOperation,
   ValidationResult,
 } from "@system-synthesis/shared";
+import * as Y from "yjs";
 
 // ---------- Store Types ----------
 
@@ -96,13 +97,13 @@ interface BoardStore {
   getSerializedNodes: () => SerializedNode[];
   getSerializedEdges: () => SerializedEdge[];
 
-  // --- Operation-based sync ---
-  /** Queue of local ops waiting to be sent to the server */
-  pendingOps: BoardOperation[];
-  /** Consume and clear pending ops (called by multiplayer hook) */
-  flushPendingOps: () => BoardOperation[];
-  /** Apply a remote operation without recording it to undo or pendingOps */
-  applyRemoteOperation: (op: BoardOperation) => void;
+  // --- Yjs Conflict Resolution ---
+  yDoc: Y.Doc | null;
+  yNodes: Y.Map<SerializedNode> | null;
+  yEdges: Y.Map<SerializedEdge> | null;
+  initYjs: () => void;
+  applyToYjs: (op: BoardOperation) => void;
+  applyYjsToLocal: () => void; // Syncs from Yjs -> Zustand when remote update arrives
 
   // --- Undo / Redo ---
   undoStack: BoardOperation[];
@@ -295,6 +296,91 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   nodes: [],
   edges: [],
 
+  yDoc: null,
+  yNodes: null,
+  yEdges: null,
+
+  initYjs: () => {
+    const currentDoc = get().yDoc;
+    if (currentDoc) {
+      currentDoc.destroy();
+    }
+    const doc = new Y.Doc();
+    set({
+      yDoc: doc,
+      yNodes: doc.getMap<SerializedNode>("nodes"),
+      yEdges: doc.getMap<SerializedEdge>("edges"),
+      nodes: [],
+      edges: []
+    });
+  },
+
+  applyYjsToLocal: () => {
+    const { yNodes, yEdges } = get();
+    if (!yNodes || !yEdges) return;
+    const nodes = Array.from(yNodes.values()).map(n => ({
+      id: n.id,
+      type: n.type || "architectureNode",
+      position: n.position,
+      data: n.data,
+    }));
+    const edges = Array.from(yEdges.values()).map(e => ({
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      sourceHandle: e.sourceHandle,
+      targetHandle: e.targetHandle,
+      type: "smoothstep" as const,
+      style: { stroke: "#444" },
+      data: e.data,
+    }));
+    set({ nodes, edges });
+  },
+
+  applyToYjs: (op) => {
+    const { yDoc, yNodes, yEdges } = get();
+    if (!yDoc || !yNodes || !yEdges) return;
+
+    yDoc.transact(() => {
+      switch (op.op) {
+        case "node_created":
+          yNodes.set(op.node.id, op.node);
+          break;
+        case "node_updated":
+        case "node_moved": {
+          const n = yNodes.get(op.nodeId);
+          if (n) {
+            yNodes.set(op.nodeId, op.op === "node_updated" ? { ...n, data: { ...n.data, ...op.patch } } : { ...n, position: op.position });
+          }
+          break;
+        }
+        case "node_deleted":
+          yNodes.delete(op.nodeId);
+          Array.from(yEdges.values()).forEach(e => {
+            if (e.source === op.nodeId || e.target === op.nodeId) yEdges.delete(e.id);
+          });
+          break;
+        case "edge_created":
+          yEdges.set(op.edge.id, op.edge);
+          break;
+        case "edge_updated": {
+          const e = yEdges.get(op.edgeId);
+          if (e) yEdges.set(op.edgeId, { ...e, data: { ...e.data, ...op.patch } });
+          break;
+        }
+        case "edge_deleted":
+          yEdges.delete(op.edgeId);
+          break;
+        case "bulk_sync":
+          Array.from(yNodes.keys()).forEach(k => yNodes.delete(k));
+          Array.from(yEdges.keys()).forEach(k => yEdges.delete(k));
+          op.nodes.forEach(n => yNodes.set(n.id, n));
+          op.edges.forEach(e => yEdges.set(e.id, e));
+          break;
+      }
+    }, "local");
+  },
+
   onNodesChange: (changes) => {
     const prevNodes = get().nodes;
 
@@ -333,8 +419,8 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
               nodeId: change.id,
               position: startPos,
             };
+            get().applyToYjs(moveOp);
             set({
-              pendingOps: [...get().pendingOps, moveOp],
               undoStack: [...get().undoStack, inverseOp],
               redoStack: [],
               canUndo: true,
@@ -367,8 +453,8 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
               data: edge.data,
             },
           };
+          get().applyToYjs(deleteOp);
           set({
-            pendingOps: [...get().pendingOps, deleteOp],
             undoStack: [...get().undoStack, inverseOp],
             redoStack: [],
             canUndo: true,
@@ -401,9 +487,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       },
     };
 
+    get().applyToYjs(createOp);
+
     set({
       edges: addEdge(newEdge, get().edges) as Edge<ArchEdgeData>[],
-      pendingOps: [...get().pendingOps, createOp],
       undoStack: [...get().undoStack, { op: "edge_deleted", edgeId: newEdge.id }],
       redoStack: [],
       canUndo: true,
@@ -427,13 +514,14 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     const updateOp: BoardOperation = { op: "node_updated", nodeId, patch: data };
     const inverseOp: BoardOperation = { op: "node_updated", nodeId, patch: reversePatch };
 
+    get().applyToYjs(updateOp);
+
     set({
       nodes: get().nodes.map((n) =>
         n.id === nodeId
           ? { ...n, data: { ...n.data, ...data } }
           : n
       ),
-      pendingOps: [...get().pendingOps, updateOp],
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -451,9 +539,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     };
     const inverseOp: BoardOperation = { op: "node_deleted", nodeId: node.id };
 
+    get().applyToYjs(createOp);
+
     set({
       nodes: [...get().nodes, node],
-      pendingOps: [...get().pendingOps, createOp],
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -475,9 +564,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     };
     const inverseOp: BoardOperation = { op: "edge_deleted", edgeId: edge.id };
 
+    get().applyToYjs(createOp);
+
     set({
       edges: [...get().edges, edge],
-      pendingOps: [...get().pendingOps, createOp],
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -498,13 +588,14 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     const updateOp: BoardOperation = { op: "edge_updated", edgeId, patch: data };
     const inverseOp: BoardOperation = { op: "edge_updated", edgeId, patch: reversePatch };
 
+    get().applyToYjs(updateOp);
+
     set({
       edges: get().edges.map((e) =>
         e.id === edgeId
           ? { ...e, data: { ...e.data, ...data } as ArchEdgeData }
           : e
       ),
-      pendingOps: [...get().pendingOps, updateOp],
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -544,13 +635,14 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       },
     }));
 
+    get().applyToYjs(deleteOp);
+    edgeDeleteOps.forEach(op => get().applyToYjs(op));
+
     set({
       nodes: get().nodes.filter((n) => n.id !== nodeId),
       edges: get().edges.filter(
         (e) => e.source !== nodeId && e.target !== nodeId
       ),
-      pendingOps: [...get().pendingOps, ...edgeDeleteOps, deleteOp],
-      // Undo: first recreate the node, then recreate edges
       undoStack: [...get().undoStack, ...edgeInverseOps, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -575,9 +667,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       },
     };
 
+    get().applyToYjs(deleteOp);
+
     set({
       edges: get().edges.filter((e) => e.id !== edgeId),
-      pendingOps: [...get().pendingOps, deleteOp],
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -635,19 +728,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       data: e.data,
     })),
 
-  // --- Operation-based sync ---
-  pendingOps: [],
-  flushPendingOps: () => {
-    const ops = get().pendingOps;
-    set({ pendingOps: [] });
-    return ops;
-  },
-
-  applyRemoteOperation: (op) => {
-    // Apply without recording to undo or pendingOps
-    applyOperation(op, get, set);
-  },
-
   // --- Undo / Redo ---
   undoStack: [],
   redoStack: [],
@@ -665,6 +745,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
 
     // Apply the inverse operation locally
     applyOperation(inverseOp, get, set);
+    get().applyToYjs(inverseOp);
 
     // Also emit the inverse op to sync with other clients
     const newUndoStack = stack.slice(0, -1);
@@ -673,7 +754,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       : get().redoStack;
 
     set({
-      pendingOps: [...get().pendingOps, inverseOp],
       undoStack: newUndoStack,
       redoStack: newRedoStack,
       canUndo: newUndoStack.length > 0,
@@ -692,6 +772,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
 
     // Apply the forward operation locally
     applyOperation(forwardOp, get, set);
+    get().applyToYjs(forwardOp);
 
     const newRedoStack = stack.slice(0, -1);
     const newUndoStack = inverseOp
@@ -699,7 +780,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       : get().undoStack;
 
     set({
-      pendingOps: [...get().pendingOps, forwardOp],
       undoStack: newUndoStack,
       redoStack: newRedoStack,
       canUndo: newUndoStack.length > 0,

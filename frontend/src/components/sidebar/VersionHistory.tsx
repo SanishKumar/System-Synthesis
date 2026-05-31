@@ -136,6 +136,12 @@ export default function VersionHistory() {
           }));
           setNodes(newNodes);
           setEdges(newEdges);
+
+          useBoardStore.getState().applyToYjs({
+            op: "bulk_sync",
+            nodes: newNodes,
+            edges: newEdges,
+          });
         }
         // Refresh version list
         await fetchVersions();

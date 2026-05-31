@@ -99,10 +99,32 @@ export function useUser() {
     setIsReady(true);
   }
 
-  const setUserName = useCallback((name: string) => {
+  const setUserName = useCallback(async (name: string) => {
     setUserNameState(name);
     localStorage.setItem(USER_NAME_KEY, name);
-  }, []);
+
+    // Persist to server
+    try {
+      const res = await fetch(`${API_URL}/api/auth/me`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": token ? `Bearer ${token}` : ""
+        },
+        body: JSON.stringify({ userName: name }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.token) {
+          setTokenState(data.token);
+          localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+          reconnectSocket();
+        }
+      }
+    } catch {
+      // Best effort update
+    }
+  }, [token]);
 
   /**
    * Register a new account. Returns true on success.
@@ -132,6 +154,37 @@ export function useUser() {
       return { success: false, error: "Server not reachable" };
     }
   }, []);
+
+  /**
+   * Convert a guest account to a permanent account. Returns true on success.
+   */
+  const upgradeGuest = useCallback(async (userName: string, email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+    try {
+      const res = await fetch(`${API_URL}/api/auth/upgrade`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          "Authorization": token ? `Bearer ${token}` : ""
+        },
+        body: JSON.stringify({ userName, email, password }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setUserId(data.user.userId);
+        setUserNameState(data.user.userName);
+        setTokenState(data.token);
+        setIsGuest(false);
+        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+        localStorage.setItem(USER_ID_KEY, data.user.userId);
+        localStorage.setItem(USER_NAME_KEY, data.user.userName);
+        reconnectSocket();
+        return { success: true };
+      }
+      return { success: false, error: data.error };
+    } catch {
+      return { success: false, error: "Server not reachable" };
+    }
+  }, [token]);
 
   /**
    * Login with email + password. Returns true on success.
@@ -199,6 +252,7 @@ export function useUser() {
     authHeaders,
     isReady,
     register,
+    upgradeGuest,
     login,
     logout,
   };
