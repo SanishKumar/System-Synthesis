@@ -392,13 +392,18 @@ export async function deleteBoard(
  * Uses Postgres if available (canonical source), otherwise Redis.
  */
 export async function listBoards(requesterId?: string): Promise<BoardState[]> {
-  if (isDbAvailable()) {
-    const pgBoards = await pgListBoards(requesterId);
-    if (pgBoards.length > 0) return pgBoards;
+  // 1. Try Redis/memory (fast path)
+  const cachedBoards = await redisListBoards(requesterId);
+  if (cachedBoards && cachedBoards.length > 0) {
+    return cachedBoards;
   }
 
-  // Fallback to Redis/memory
-  return redisListBoards(requesterId);
+  // 2. Try Postgres (durable path) if cache is empty
+  if (isDbAvailable()) {
+    return await pgListBoards(requesterId);
+  }
+
+  return [];
 }
 
 /**

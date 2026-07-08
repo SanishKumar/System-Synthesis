@@ -234,7 +234,7 @@ export default function ArchitectureAssist() {
     await new Promise((r) => setTimeout(r, 1500));
     setAiAnalysis(mockAnalysis);
     setIsAnalyzing(false);
-  }, [boardId, getSerializedNodes, getSerializedEdges, setAiAnalysis]);
+  }, [boardId, getSerializedNodes, getSerializedEdges, setAiAnalysis, setIsAnalyzing]);
 
   const [checklist, setChecklist] = useState(analysis.scalabilityChecklist);
 

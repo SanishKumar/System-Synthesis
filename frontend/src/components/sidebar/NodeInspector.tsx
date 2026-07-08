@@ -124,11 +124,13 @@ export default function NodeInspector() {
     [nodes, selectedNodeId]
   );
 
+  const nodeType = selectedNode?.data?.nodeType;
+  const tabs = useMemo(() => getTabsForNodeType(nodeType), [nodeType]);
+
   if (!selectedNode) return null;
 
   const { data } = selectedNode;
   const metadata = data.metadata;
-  const tabs = useMemo(() => getTabsForNodeType(data.nodeType), [data.nodeType]);
   const codeConfig = CODE_TAB_CONFIG[data.nodeType] || { label: "Code", placeholder: "// Paste or write code here..." };
 
   const handleNotesChange = (notes: string) => {
