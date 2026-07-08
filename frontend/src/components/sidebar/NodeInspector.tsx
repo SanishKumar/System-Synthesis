@@ -125,7 +125,7 @@ export default function NodeInspector() {
   );
 
   const nodeType = selectedNode?.data?.nodeType;
-  const tabs = useMemo(() => getTabsForNodeType(nodeType), [nodeType]);
+  const tabs = useMemo(() => getTabsForNodeType(nodeType || ""), [nodeType]);
 
   if (!selectedNode) return null;
 
