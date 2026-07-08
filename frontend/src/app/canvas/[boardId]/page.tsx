@@ -226,6 +226,11 @@ export default function CanvasBoardPage() {
     useBoardStore.getState().redo();
   }, []);
 
+  const handleToolReset = useCallback(() => {
+    setActiveTool("select");
+    setPendingNodeType(null);
+  }, []);
+
   // --- Access Denied Screen ---
   if (accessDenied) {
     return (
@@ -271,6 +276,7 @@ export default function CanvasBoardPage() {
             activeTool={activeTool}
             pendingNodeType={pendingNodeType}
             onNodePlaced={handleNodePlaced}
+            onToolReset={handleToolReset}
           />
         </main>
 

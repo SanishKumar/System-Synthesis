@@ -238,8 +238,7 @@ function applyOperation(
         target: op.edge.target,
         sourceHandle: op.edge.sourceHandle,
         targetHandle: op.edge.targetHandle,
-        type: "smoothstep",
-        style: { stroke: "#444" },
+        type: "architectureEdge",
         data: op.edge.data,
       };
       set({ edges: [...get().edges, newEdge] });
@@ -274,8 +273,7 @@ function applyOperation(
         target: e.target,
         sourceHandle: e.sourceHandle,
         targetHandle: e.targetHandle,
-        type: "smoothstep" as const,
-        style: { stroke: "#444" },
+        type: "architectureEdge" as const,
         data: e.data,
       }));
       set({ nodes: newNodes, edges: newEdges });
@@ -330,8 +328,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       target: e.target,
       sourceHandle: e.sourceHandle,
       targetHandle: e.targetHandle,
-      type: "smoothstep" as const,
-      style: { stroke: "#444" },
+      type: "architectureEdge" as const,
       data: e.data,
     }));
     set({ nodes, edges });
@@ -468,11 +465,37 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   },
 
   onConnect: (connection) => {
+    // Guard: prevent self-connections
+    if (connection.source === connection.target) return;
+
+    // Guard: prevent duplicate edges — only ONE edge between any node pair
+    const existingEdges = get().edges;
+    const alreadyConnected = existingEdges.some(
+      (e) =>
+        (e.source === connection.source && e.target === connection.target) ||
+        (e.source === connection.target && e.target === connection.source)
+    );
+    if (alreadyConnected) return;
+
+    // SANITIZE HANDLES:
+    // React Flow requires sourceHandle to be a 'source' type handle, and targetHandle to be a 'target' type handle.
+    // Because we use ConnectionMode.Loose and stacked handles, users might drag target-to-target or source-to-source.
+    // We seamlessly fix the IDs here so the edge renders correctly without Error 008.
+    let { sourceHandle, targetHandle } = connection;
+    
+    if (sourceHandle) {
+      sourceHandle = sourceHandle.replace("-target", "-source");
+    }
+    if (targetHandle) {
+      targetHandle = targetHandle.replace("-source", "-target");
+    }
+
     const newEdge: Edge<ArchEdgeData> = {
       ...connection,
+      sourceHandle,
+      targetHandle,
       id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-      type: "smoothstep",
-      style: { stroke: "#444" },
+      type: "architectureEdge",
     } as Edge<ArchEdgeData>;
 
     const createOp: BoardOperation = {

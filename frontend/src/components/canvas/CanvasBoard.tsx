@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useRef, useEffect } from "react";
+import React, { useCallback, useRef, useEffect, useMemo } from "react";
 import {
   ReactFlow,
   Background,
@@ -10,6 +10,7 @@ import {
   type NodeTypes,
   type EdgeTypes,
   type Node,
+  type Connection,
   useReactFlow,
   ConnectionMode,
   getNodesBounds,
@@ -40,6 +41,21 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   client: "New Client",
   loadbalancer: "New Load Balancer",
   storage: "New Storage",
+  cdn: "New CDN",
+  firewall: "New Firewall",
+  dns: "New DNS",
+  proxy: "New Proxy",
+  container: "New Container",
+  function: "New Function",
+  search: "New Search Engine",
+  warehouse: "New Data Warehouse",
+  stream: "New Stream Processor",
+  broker: "New Message Broker",
+  auth: "New Auth Provider",
+  vault: "New Secrets Vault",
+  monitor: "New Monitor",
+  registry: "New Service Registry",
+  scheduler: "New Scheduler",
 };
 
 interface CanvasBoardProps {
@@ -47,6 +63,7 @@ interface CanvasBoardProps {
   activeTool?: string;
   pendingNodeType?: string | null;
   onNodePlaced?: () => void;
+  onToolReset?: () => void;
 }
 
 export default function CanvasBoard({
@@ -54,6 +71,7 @@ export default function CanvasBoard({
   activeTool = "select",
   pendingNodeType,
   onNodePlaced,
+  onToolReset,
 }: CanvasBoardProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
   const reactFlowInstance = useReactFlow();
@@ -73,11 +91,47 @@ export default function CanvasBoard({
     setEdges,
   } = useBoardStore();
 
-  // ——— Keyboard shortcuts: Delete, Undo (Ctrl+Z), Redo (Ctrl+Shift+Z) ———
+  // Filter out corrupted edges that might be stuck in the store from previous bugs
+  // React Flow strictly expects sourceHandle to end in '-source' and targetHandle to end in '-target'
+  const validEdges = useMemo(() => {
+    return edges.filter((e) => {
+      if (e.sourceHandle && !e.sourceHandle.endsWith("-source")) return false;
+      if (e.targetHandle && !e.targetHandle.endsWith("-target")) return false;
+      return true;
+    });
+  }, [edges]);
+
+  // Validate connections: prevent self-loops and duplicate node pairs
+  const isValidConnection = useCallback(
+    (connection: Connection | { source: string; target: string; sourceHandle?: string | null; targetHandle?: string | null }) => {
+      // Prevent self-connection
+      if (connection.source === connection.target) return false;
+
+      // Only ONE edge between any two nodes (regardless of handles or direction)
+      // This matches how draw.io and Lucidchart work
+      const alreadyConnected = validEdges.some(
+        (e: any) =>
+          (e.source === connection.source && e.target === connection.target) ||
+          (e.source === connection.target && e.target === connection.source)
+      );
+      if (alreadyConnected) return false;
+
+      return true;
+    },
+    [validEdges]
+  );
+
+  // ——— Keyboard shortcuts ———
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       const isTyping = tag === "INPUT" || tag === "TEXTAREA";
+
+      // ESC: cancel current tool, return to select mode
+      if (e.key === "Escape" && !isTyping) {
+        onToolReset?.();
+        return;
+      }
 
       // Undo: Ctrl+Z (not while typing)
       if ((e.ctrlKey || e.metaKey) && e.key === "z" && !e.shiftKey && !isTyping) {
@@ -100,22 +154,33 @@ export default function CanvasBoard({
         return;
       }
 
-      // Delete selected node
+      // Delete selected node or edges
       if (e.key === "Delete" || e.key === "Backspace") {
         if (isTyping) return;
 
         const state = useBoardStore.getState();
         const selectedId = state.selectedNodeId;
+
+        // Delete selected node first
         if (selectedId) {
           state.deleteNode(selectedId);
           state.setSelectedNodeId(null);
           state.setSidebarMode("none");
+          return;
+        }
+
+        // Otherwise delete selected edges
+        const selectedEdges = state.edges.filter((edge) => edge.selected);
+        if (selectedEdges.length > 0) {
+          for (const edge of selectedEdges) {
+            state.deleteEdge(edge.id);
+          }
         }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [onToolReset]);
 
   // ——— Export PNG handler ———
   useEffect(() => {
@@ -339,7 +404,7 @@ export default function CanvasBoard({
     >
       <ReactFlow
         nodes={nodes}
-        edges={edges}
+        edges={validEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
@@ -347,13 +412,12 @@ export default function CanvasBoard({
         onPaneClick={handlePaneClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        isValidConnection={isValidConnection}
         fitView
         fitViewOptions={{ padding: 0.2 }}
         connectOnClick={isConnectMode}
-        nodesDraggable={!isConnectMode}
-        connectionMode={
-          isConnectMode ? ConnectionMode.Loose : ConnectionMode.Strict
-        }
+        nodesDraggable
+        connectionMode={ConnectionMode.Loose}
         defaultEdgeOptions={{
           type: "architectureEdge",
           style: { stroke: "var(--color-rf-edge)", strokeWidth: 1.5 },

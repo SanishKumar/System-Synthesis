@@ -12,7 +12,28 @@ export type ArchNodeType =
   | 'cache'
   | 'client'
   | 'loadbalancer'
-  | 'storage';
+  | 'storage'
+  // Networking & Edge
+  | 'cdn'            // Content Delivery Network (CloudFront, Akamai, Fastly)
+  | 'firewall'       // WAF / Firewall (Cloudflare, AWS WAF)
+  | 'dns'            // DNS Service (Route53, Cloudflare DNS)
+  | 'proxy'          // Reverse Proxy (Nginx, Envoy, Traefik)
+  // Compute
+  | 'container'      // Container Orchestrator (Kubernetes, ECS, Docker Swarm)
+  | 'function'       // Serverless Function (Lambda, Cloud Functions, Azure Functions)
+  // Data & Search
+  | 'search'         // Search Engine (Elasticsearch, Algolia, Meilisearch)
+  | 'warehouse'      // Data Warehouse (BigQuery, Snowflake, Redshift)
+  | 'stream'         // Stream Processor (Flink, Spark Streaming, Kinesis)
+  // Messaging
+  | 'broker'         // Message Broker (Kafka Broker, NATS, RabbitMQ)
+  // Security & Auth
+  | 'auth'           // Auth Provider (Auth0, Cognito, Keycloak)
+  | 'vault'          // Secrets Manager (HashiCorp Vault, AWS Secrets Manager)
+  // Observability & Infra
+  | 'monitor'        // Monitoring / Observability (Datadog, Grafana, Prometheus)
+  | 'registry'       // Service Registry / Discovery (Consul, Eureka, Zookeeper)
+  | 'scheduler';     // Task Scheduler / Cron (Airflow, Celery Beat, Temporal)
 
 export interface NodeMetadata {
   notes: string;

@@ -20,15 +20,44 @@ import type {
   ArchNodeType,
 } from "@system-synthesis/shared";
 
-type TabId = "properties" | "notes" | "links" | "code" | "files";
+type TabId = "properties" | "notes" | "links" | "code";
 
-const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: "properties", label: "Properties", icon: <Settings2 className="w-4 h-4" /> },
-  { id: "notes", label: "Notes", icon: <FileText className="w-4 h-4" /> },
-  { id: "links", label: "Links", icon: <Link2 className="w-4 h-4" /> },
-  { id: "code", label: "Code", icon: <Code2 className="w-4 h-4" /> },
-  { id: "files", label: "Files", icon: <Paperclip className="w-4 h-4" /> },
-];
+// Dynamic code tab label and placeholder per node type
+const CODE_TAB_CONFIG: Record<string, { label: string; placeholder: string }> = {
+  service:      { label: "Code",     placeholder: "// Service implementation, API handlers..." },
+  function:     { label: "Code",     placeholder: "// Function handler, event processor..." },
+  container:    { label: "Config",   placeholder: "# Dockerfile / K8s manifest / docker-compose..." },
+  database:     { label: "Schema",   placeholder: "-- CREATE TABLE, indexes, migrations..." },
+  cache:        { label: "Config",   placeholder: "# Redis / Memcached configuration..." },
+  warehouse:    { label: "Schema",   placeholder: "-- Data warehouse schema, ETL queries..." },
+  search:       { label: "Mapping",  placeholder: "// Index mapping, search queries..." },
+  gateway:      { label: "Config",   placeholder: "# API Gateway routes, rate limits..." },
+  proxy:        { label: "Config",   placeholder: "# Nginx / Envoy / Traefik config..." },
+  loadbalancer: { label: "Config",   placeholder: "# Load balancer upstream config..." },
+  cdn:          { label: "Config",   placeholder: "# CDN distribution, cache behaviors..." },
+  dns:          { label: "Records",  placeholder: "# DNS zone records, A/CNAME/MX..." },
+  firewall:     { label: "Rules",    placeholder: "# Firewall / WAF rules, IP allowlists..." },
+  queue:        { label: "Config",   placeholder: "# Queue config, DLQ, retention..." },
+  broker:       { label: "Config",   placeholder: "# Broker topics, partitions, config..." },
+  stream:       { label: "Pipeline", placeholder: "# Stream processing pipeline / DAG..." },
+  auth:         { label: "Config",   placeholder: "# Auth provider config, scopes, flows..." },
+  vault:        { label: "Policies", placeholder: "# Access policies, secret paths..." },
+  monitor:      { label: "Alerts",   placeholder: "# Alert rules, dashboards, queries..." },
+  registry:     { label: "Config",   placeholder: "# Service discovery, health checks..." },
+  scheduler:    { label: "Schedule", placeholder: "# Cron expressions, DAG tasks..." },
+  client:       { label: "Embed",    placeholder: "<!-- Frontend embed, SDK config... -->" },
+  storage:      { label: "Policy",   placeholder: "# Storage policies, lifecycle rules..." },
+};
+
+function getTabsForNodeType(nodeType: string): { id: TabId; label: string; icon: React.ReactNode }[] {
+  const codeConfig = CODE_TAB_CONFIG[nodeType] || { label: "Code", placeholder: "" };
+  return [
+    { id: "properties", label: "Properties", icon: <Settings2 className="w-4 h-4" /> },
+    { id: "notes", label: "Notes", icon: <FileText className="w-4 h-4" /> },
+    { id: "code", label: codeConfig.label, icon: <Code2 className="w-4 h-4" /> },
+    { id: "links", label: "Links", icon: <Link2 className="w-4 h-4" /> },
+  ];
+}
 
 const TIER_OPTIONS: { value: ArchTier; label: string }[] = [
   { value: "frontend", label: "Frontend" },
@@ -55,12 +84,27 @@ const ENV_OPTIONS: { value: ArchEnvironment; label: string }[] = [
 const NODE_TYPE_OPTIONS: { value: ArchNodeType; label: string }[] = [
   { value: "service", label: "Service" },
   { value: "database", label: "Database" },
-  { value: "gateway", label: "Gateway" },
+  { value: "gateway", label: "API Gateway" },
   { value: "queue", label: "Queue" },
   { value: "cache", label: "Cache" },
   { value: "client", label: "Client" },
   { value: "loadbalancer", label: "Load Balancer" },
-  { value: "storage", label: "Storage" },
+  { value: "storage", label: "Object Storage" },
+  { value: "cdn", label: "CDN" },
+  { value: "firewall", label: "Firewall / WAF" },
+  { value: "dns", label: "DNS" },
+  { value: "proxy", label: "Reverse Proxy" },
+  { value: "container", label: "Container" },
+  { value: "function", label: "Serverless Function" },
+  { value: "search", label: "Search Engine" },
+  { value: "warehouse", label: "Data Warehouse" },
+  { value: "stream", label: "Stream Processor" },
+  { value: "broker", label: "Message Broker" },
+  { value: "auth", label: "Auth Provider" },
+  { value: "vault", label: "Secrets Vault" },
+  { value: "monitor", label: "Monitoring" },
+  { value: "registry", label: "Service Registry" },
+  { value: "scheduler", label: "Scheduler" },
 ];
 
 export default function NodeInspector() {
@@ -84,6 +128,8 @@ export default function NodeInspector() {
 
   const { data } = selectedNode;
   const metadata = data.metadata;
+  const tabs = useMemo(() => getTabsForNodeType(data.nodeType), [data.nodeType]);
+  const codeConfig = CODE_TAB_CONFIG[data.nodeType] || { label: "Code", placeholder: "// Paste or write code here..." };
 
   const handleNotesChange = (notes: string) => {
     updateNodeData(selectedNode.id, {
@@ -395,56 +441,23 @@ export default function NodeInspector() {
           </div>
         )}
 
-        {/* ========== CODE TAB ========== */}
+        {/* ========== CODE / CONFIG / SCHEMA TAB ========== */}
         {activeTab === "code" && (
           <div className="animate-fade-in">
             <label className="block text-xs font-display text-text-muted mb-2 uppercase tracking-wider">
-              Code Snippet
+              {codeConfig.label}
             </label>
             <textarea
               id="inspector-code"
               value={metadata.codeSnippet}
               onChange={(e) => handleCodeChange(e.target.value)}
-              placeholder="// Paste or write code here..."
+              placeholder={codeConfig.placeholder}
               className="input w-full min-h-[250px] resize-y font-mono text-xs leading-relaxed"
               spellCheck="false"
             />
           </div>
         )}
 
-        {/* ========== FILES TAB ========== */}
-        {activeTab === "files" && (
-          <div className="animate-fade-in">
-            <label className="block text-xs font-display text-text-muted mb-2 uppercase tracking-wider">
-              Attached Files
-            </label>
-            <div className="border-2 border-dashed border-border rounded-md p-8 text-center hover:border-accent-cyan/40 transition-colors cursor-pointer">
-              <Paperclip className="w-6 h-6 text-text-muted mx-auto mb-2" />
-              <p className="text-xs text-text-muted">
-                Drag & drop files here, or{" "}
-                <span className="text-accent-cyan">browse</span>
-              </p>
-            </div>
-            {metadata.attachedFiles.length > 0 && (
-              <ul className="mt-3 space-y-2">
-                {metadata.attachedFiles.map((file) => (
-                  <li
-                    key={file.id}
-                    className="flex items-center gap-2 p-2 bg-canvas-50 rounded-sm border border-border"
-                  >
-                    <Paperclip className="w-3.5 h-3.5 text-text-muted" />
-                    <span className="text-xs text-text-secondary font-mono truncate">
-                      {file.name}
-                    </span>
-                    <span className="text-[10px] text-text-muted ml-auto">
-                      {(file.size / 1024).toFixed(1)}KB
-                    </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Footer */}

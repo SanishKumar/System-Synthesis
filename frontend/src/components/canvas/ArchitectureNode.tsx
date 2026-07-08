@@ -12,6 +12,20 @@ import {
   Shield,
   Zap,
   AlertTriangle,
+  Cloud,
+  ShieldCheck,
+  Waypoints,
+  Container,
+  CircuitBoard,
+  Search,
+  BarChart3,
+  Radio,
+  Network,
+  KeyRound,
+  Lock,
+  Activity,
+  BookOpen,
+  Timer,
 } from "lucide-react";
 import { useBoardStore } from "@/store/boardStore";
 import type { ArchNodeData, ArchNodeType } from "@system-synthesis/shared";
@@ -25,6 +39,21 @@ const nodeIcons: Record<ArchNodeType, React.ReactNode> = {
   client: <Monitor className="w-4 h-4" />,
   loadbalancer: <Shield className="w-4 h-4" />,
   storage: <HardDrive className="w-4 h-4" />,
+  cdn: <Cloud className="w-4 h-4" />,
+  firewall: <ShieldCheck className="w-4 h-4" />,
+  dns: <Waypoints className="w-4 h-4" />,
+  proxy: <Network className="w-4 h-4" />,
+  container: <Container className="w-4 h-4" />,
+  function: <CircuitBoard className="w-4 h-4" />,
+  search: <Search className="w-4 h-4" />,
+  warehouse: <BarChart3 className="w-4 h-4" />,
+  stream: <Radio className="w-4 h-4" />,
+  broker: <Network className="w-4 h-4" />,
+  auth: <KeyRound className="w-4 h-4" />,
+  vault: <Lock className="w-4 h-4" />,
+  monitor: <Activity className="w-4 h-4" />,
+  registry: <BookOpen className="w-4 h-4" />,
+  scheduler: <Timer className="w-4 h-4" />,
 };
 
 const nodeColors: Record<ArchNodeType, string> = {
@@ -36,6 +65,21 @@ const nodeColors: Record<ArchNodeType, string> = {
   client: "#60a5fa",
   loadbalancer: "#f472b6",
   storage: "#fb923c",
+  cdn: "#38bdf8",
+  firewall: "#f43f5e",
+  dns: "#2dd4bf",
+  proxy: "#818cf8",
+  container: "#34d399",
+  function: "#fbbf24",
+  search: "#c084fc",
+  warehouse: "#fb7185",
+  stream: "#22d3ee",
+  broker: "#e879f9",
+  auth: "#4ade80",
+  vault: "#f97316",
+  monitor: "#a3e635",
+  registry: "#67e8f9",
+  scheduler: "#fcd34d",
 };
 
 function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeData }) {
@@ -115,29 +159,22 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
         </div>
       )}
 
-      {/* Handles */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
-      <Handle
-        type="target"
-        position={Position.Left}
-        id="left"
-        className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
-      <Handle
-        type="source"
-        position={Position.Right}
-        id="right"
-        className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
+      {/* Handles — bidirectional (source+target) at each position, perfectly stacked */}
+      {/* Top */}
+      <Handle type="target" position={Position.Top} id="top-target" isConnectable={true} className="!bg-transparent !border-transparent !w-3 !h-3 !-mt-0.5" />
+      <Handle type="source" position={Position.Top} id="top-source" isConnectable={true} className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
+      
+      {/* Bottom */}
+      <Handle type="target" position={Position.Bottom} id="bottom-target" isConnectable={true} className="!bg-transparent !border-transparent !w-3 !h-3 !-mb-0.5" />
+      <Handle type="source" position={Position.Bottom} id="bottom-source" isConnectable={true} className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
+      
+      {/* Left */}
+      <Handle type="target" position={Position.Left} id="left-target" isConnectable={true} className="!bg-transparent !border-transparent !w-3 !h-3 !-ml-0.5" />
+      <Handle type="source" position={Position.Left} id="left-source" isConnectable={true} className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
+      
+      {/* Right */}
+      <Handle type="target" position={Position.Right} id="right-target" isConnectable={true} className="!bg-transparent !border-transparent !w-3 !h-3 !-mr-0.5" />
+      <Handle type="source" position={Position.Right} id="right-source" isConnectable={true} className="!bg-border !border-border-light !w-2 !h-2 !rounded-sm hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
 
       {/* Selection glow overlay */}
       {selected && (
@@ -276,17 +313,12 @@ function TextLabelNode({
         </p>
       )}
 
-      {/* Minimal handles */}
-      <Handle
-        type="target"
-        position={Position.Top}
-        className="!bg-transparent !border-transparent !w-1.5 !h-1.5 hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!bg-transparent !border-transparent !w-1.5 !h-1.5 hover:!bg-accent-cyan hover:!border-accent-cyan"
-      />
+      {/* Minimal handles — bidirectional */}
+      <Handle type="target" position={Position.Top} id="top-target" isConnectable={true} className="!bg-transparent !border-transparent !w-2 !h-2" />
+      <Handle type="source" position={Position.Top} id="top-source" isConnectable={true} className="!bg-transparent !border-transparent !w-1.5 !h-1.5 hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
+      
+      <Handle type="target" position={Position.Bottom} id="bottom-target" isConnectable={true} className="!bg-transparent !border-transparent !w-2 !h-2" />
+      <Handle type="source" position={Position.Bottom} id="bottom-source" isConnectable={true} className="!bg-transparent !border-transparent !w-1.5 !h-1.5 hover:!bg-accent-cyan hover:!border-accent-cyan z-10" />
       {selected && (
         <div className="absolute -inset-px rounded-sm border border-accent-cyan/20 pointer-events-none" />
       )}

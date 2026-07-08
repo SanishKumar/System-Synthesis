@@ -13,19 +13,31 @@ import {
   Server,
   Monitor,
   Container,
-  Cpu,
+  CircuitBoard,
   // Data
   Database,
   HardDrive,
+  Zap,
+  BarChart3,
   // Networking
   Globe,
   Shield,
-  Wifi,
+  Cloud,
+  Waypoints,
+  Network,
+  // Security
+  ShieldCheck,
+  KeyRound,
+  Lock,
   // Messaging
   Layers,
-  Mail,
+  Radio,
   // Storage
   Archive,
+  // Infrastructure
+  Activity,
+  BookOpen,
+  Timer,
 } from "lucide-react";
 
 type Tool = "select" | "draw" | "shapes" | "text" | "undo" | "redo";
@@ -60,6 +72,8 @@ const nodeCategories: NodeCategory[] = [
     nodes: [
       { type: "service", label: "Service", icon: <Server className="w-4 h-4" />, description: "Microservice / API" },
       { type: "client", label: "Client", icon: <Monitor className="w-4 h-4" />, description: "Browser / Mobile app" },
+      { type: "container", label: "Container", icon: <Container className="w-4 h-4" />, description: "Kubernetes / ECS / Docker" },
+      { type: "function", label: "Function", icon: <CircuitBoard className="w-4 h-4" />, description: "Lambda / Cloud Functions" },
     ],
   },
   {
@@ -67,29 +81,54 @@ const nodeCategories: NodeCategory[] = [
     color: "text-accent-purple",
     nodes: [
       { type: "database", label: "Database", icon: <Database className="w-4 h-4" />, description: "SQL / NoSQL store" },
-      { type: "cache", label: "Cache", icon: <HardDrive className="w-4 h-4" />, description: "Redis / Memcached" },
+      { type: "cache", label: "Cache", icon: <Zap className="w-4 h-4" />, description: "Redis / Memcached" },
+      { type: "warehouse", label: "Data Warehouse", icon: <BarChart3 className="w-4 h-4" />, description: "BigQuery / Snowflake / Redshift" },
+      { type: "search", label: "Search Engine", icon: <Search className="w-4 h-4" />, description: "Elasticsearch / Algolia" },
     ],
   },
   {
     name: "Networking",
     color: "text-status-active",
     nodes: [
-      { type: "gateway", label: "Gateway", icon: <Globe className="w-4 h-4" />, description: "API Gateway / Proxy" },
-      { type: "loadbalancer", label: "Load Balancer", icon: <Shield className="w-4 h-4" />, description: "HAProxy / ALB" },
+      { type: "gateway", label: "API Gateway", icon: <Globe className="w-4 h-4" />, description: "Kong / AWS API Gateway" },
+      { type: "loadbalancer", label: "Load Balancer", icon: <Shield className="w-4 h-4" />, description: "ALB / HAProxy / Nginx" },
+      { type: "cdn", label: "CDN", icon: <Cloud className="w-4 h-4" />, description: "CloudFront / Akamai / Fastly" },
+      { type: "dns", label: "DNS", icon: <Waypoints className="w-4 h-4" />, description: "Route53 / Cloudflare DNS" },
+      { type: "proxy", label: "Reverse Proxy", icon: <Network className="w-4 h-4" />, description: "Nginx / Envoy / Traefik" },
+    ],
+  },
+  {
+    name: "Security",
+    color: "text-status-error",
+    nodes: [
+      { type: "firewall", label: "Firewall / WAF", icon: <ShieldCheck className="w-4 h-4" />, description: "AWS WAF / Cloudflare" },
+      { type: "auth", label: "Auth Provider", icon: <KeyRound className="w-4 h-4" />, description: "Auth0 / Cognito / Keycloak" },
+      { type: "vault", label: "Secrets Vault", icon: <Lock className="w-4 h-4" />, description: "HashiCorp Vault / AWS Secrets" },
     ],
   },
   {
     name: "Messaging",
     color: "text-status-warning",
     nodes: [
-      { type: "queue", label: "Queue", icon: <Layers className="w-4 h-4" />, description: "Kafka / RabbitMQ" },
+      { type: "queue", label: "Queue", icon: <Layers className="w-4 h-4" />, description: "SQS / RabbitMQ" },
+      { type: "broker", label: "Message Broker", icon: <Network className="w-4 h-4" />, description: "Kafka / NATS / Pulsar" },
+      { type: "stream", label: "Stream Processor", icon: <Radio className="w-4 h-4" />, description: "Flink / Spark / Kinesis" },
     ],
   },
   {
     name: "Storage",
-    color: "text-status-error",
+    color: "text-[#fb923c]",
     nodes: [
-      { type: "storage", label: "Storage", icon: <Archive className="w-4 h-4" />, description: "S3 / Blob / File" },
+      { type: "storage", label: "Object Storage", icon: <Archive className="w-4 h-4" />, description: "S3 / Blob / GCS" },
+    ],
+  },
+  {
+    name: "Infrastructure",
+    color: "text-[#a3e635]",
+    nodes: [
+      { type: "monitor", label: "Monitoring", icon: <Activity className="w-4 h-4" />, description: "Datadog / Grafana / Prometheus" },
+      { type: "registry", label: "Service Registry", icon: <BookOpen className="w-4 h-4" />, description: "Consul / Eureka / Zookeeper" },
+      { type: "scheduler", label: "Scheduler", icon: <Timer className="w-4 h-4" />, description: "Airflow / Celery / Temporal" },
     ],
   },
 ];

@@ -22,6 +22,8 @@ A real-time, collaborative architecture whiteboard built for designing and discu
 - **Multiplayer Collaboration:** Real-time updates and live cursors powered by Socket.io and Redis.
 - **Architecture Nodes:** Purpose-built nodes for databases, gateways, queues, caches, and services.
 - **Node Inspector:** Add rich metadata to components including notes, related code snippets, and external links.
+- **Dynamic Auto-Layout:** A built-in "Mess Cleanup" engine powered by Dagre that intelligently detects your diagram's aspect ratio (horizontal vs vertical) and auto-routes edges cleanly without breaking complex microservice topologies.
+- **Context-Aware Properties:** The Node Inspector dynamically adapts its UI to the selected component (e.g. presenting a "Schema" tab for Databases, "Rules" for Firewalls, or "Alerts" for Monitors).
 - **Zero-Friction Identity:** Device-bound stateless identity so you can share a link and start collaborating immediately without forcing users through a login wall.
 - **Access Control:** Board owners can toggle visibility between public and private. Private boards actively eject unauthorized guests.
 - **AI Architecture Assist:** A pluggable LLM adapter that analyzes the graph's JSON state and returns structured feedback (e.g., catching missing caching layers or single points of failure).

@@ -64,7 +64,7 @@ export async function initDatabase(): Promise<boolean> {
       connectionString: databaseUrl,
       max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 5000,
+      connectionTimeoutMillis: 20000, // 20s to allow Serverless DBs (like Neon) to wake up from cold starts
       // Support SSL for cloud-hosted Postgres (Neon, Supabase, etc.)
       ssl: databaseUrl.includes("sslmode=require") || databaseUrl.startsWith("postgresql://") 
         ? { rejectUnauthorized: false }

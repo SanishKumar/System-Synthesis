@@ -40,15 +40,21 @@ function ruleClientToDatabase(
   const dbIds = new Set(nodes.filter((n) => n.data.nodeType === "database").map((n) => n.id));
 
   for (const edge of edges) {
-    if (clientIds.has(edge.source) && dbIds.has(edge.target)) {
-      const client = nodes.find((n) => n.id === edge.source);
-      const db = nodes.find((n) => n.id === edge.target);
+    // Check both directions: client→db AND db→client
+    const isClientToDb = clientIds.has(edge.source) && dbIds.has(edge.target);
+    const isDbToClient = dbIds.has(edge.source) && clientIds.has(edge.target);
+
+    if (isClientToDb || isDbToClient) {
+      const clientId = isClientToDb ? edge.source : edge.target;
+      const dbId = isClientToDb ? edge.target : edge.source;
+      const client = nodes.find((n) => n.id === clientId);
+      const db = nodes.find((n) => n.id === dbId);
       issues.push({
         id: makeId("client-to-db", edge.id),
         severity: "critical",
-        title: "Client → Database Direct Connection",
-        description: `"${client?.data.label}" connects directly to "${db?.data.label}". Route traffic through a service or API gateway instead.`,
-        nodeIds: [edge.source, edge.target],
+        title: "Client ↔ Database Direct Connection",
+        description: `"${client?.data.label}" is directly connected to "${db?.data.label}". Route traffic through a service or API gateway instead.`,
+        nodeIds: [clientId, dbId],
         edgeIds: [edge.id],
         ruleId: "client-to-db",
       });
@@ -71,17 +77,61 @@ function ruleGatewayToDatabase(
   const dbIds = new Set(nodes.filter((n) => n.data.nodeType === "database").map((n) => n.id));
 
   for (const edge of edges) {
-    if (gwIds.has(edge.source) && dbIds.has(edge.target)) {
-      const gw = nodes.find((n) => n.id === edge.source);
-      const db = nodes.find((n) => n.id === edge.target);
+    // Check both directions: gateway→db AND db→gateway
+    const isGwToDb = gwIds.has(edge.source) && dbIds.has(edge.target);
+    const isDbToGw = dbIds.has(edge.source) && gwIds.has(edge.target);
+
+    if (isGwToDb || isDbToGw) {
+      const gwId = isGwToDb ? edge.source : edge.target;
+      const dbId = isGwToDb ? edge.target : edge.source;
+      const gw = nodes.find((n) => n.id === gwId);
+      const db = nodes.find((n) => n.id === dbId);
       issues.push({
         id: makeId("gateway-to-db", edge.id),
         severity: "critical",
-        title: "Gateway → Database Direct Access",
-        description: `"${gw?.data.label}" connects directly to "${db?.data.label}". API gateways should route to services, not databases.`,
-        nodeIds: [edge.source, edge.target],
+        title: "Gateway ↔ Database Direct Access",
+        description: `"${gw?.data.label}" is directly connected to "${db?.data.label}". API gateways should route to services, not databases.`,
+        nodeIds: [gwId, dbId],
         edgeIds: [edge.id],
         ruleId: "gateway-to-db",
+      });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * CRITICAL: Client → Queue direct connection.
+ * Clients should publish messages through a service, not directly to queues.
+ */
+function ruleClientToQueue(
+  nodes: SerializedNode[],
+  edges: SerializedEdge[]
+): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+  const clientIds = new Set(nodes.filter((n) => n.data.nodeType === "client").map((n) => n.id));
+  const queueIds = new Set(
+    nodes.filter((n) => n.data.nodeType === "queue" || n.data.nodeType === "broker").map((n) => n.id)
+  );
+
+  for (const edge of edges) {
+    const isClientToQueue = clientIds.has(edge.source) && queueIds.has(edge.target);
+    const isQueueToClient = queueIds.has(edge.source) && clientIds.has(edge.target);
+
+    if (isClientToQueue || isQueueToClient) {
+      const clientId = isClientToQueue ? edge.source : edge.target;
+      const queueId = isClientToQueue ? edge.target : edge.source;
+      const client = nodes.find((n) => n.id === clientId);
+      const queue = nodes.find((n) => n.id === queueId);
+      issues.push({
+        id: makeId("client-to-queue", edge.id),
+        severity: "critical",
+        title: "Client ↔ Queue Direct Connection",
+        description: `"${client?.data.label}" is directly connected to "${queue?.data.label}". Clients should produce/consume through a service layer.`,
+        nodeIds: [clientId, queueId],
+        edgeIds: [edge.id],
+        ruleId: "client-to-queue",
       });
     }
   }
@@ -355,6 +405,7 @@ const ALL_RULES = [
   // Critical
   ruleClientToDatabase,
   ruleGatewayToDatabase,
+  ruleClientToQueue,
   // Warning
   ruleOrphanedQueue,
   ruleMonolithicDatabase,
