@@ -47,6 +47,7 @@ const CODE_TAB_CONFIG: Record<string, { label: string; placeholder: string }> = 
   scheduler:    { label: "Schedule", placeholder: "# Cron expressions, DAG tasks..." },
   client:       { label: "Embed",    placeholder: "<!-- Frontend embed, SDK config... -->" },
   storage:      { label: "Policy",   placeholder: "# Storage policies, lifecycle rules..." },
+  group:        { label: "Notes",    placeholder: "# Group description, component inventory..." },
 };
 
 function getTabsForNodeType(nodeType: string): { id: TabId; label: string; icon: React.ReactNode }[] {
@@ -105,6 +106,7 @@ const NODE_TYPE_OPTIONS: { value: ArchNodeType; label: string }[] = [
   { value: "monitor", label: "Monitoring" },
   { value: "registry", label: "Service Registry" },
   { value: "scheduler", label: "Scheduler" },
+  { value: "group", label: "Group Box" },
 ];
 
 export default function NodeInspector() {

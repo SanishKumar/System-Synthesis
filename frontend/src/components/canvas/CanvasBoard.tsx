@@ -20,12 +20,14 @@ import "@xyflow/react/dist/style.css";
 
 import { useBoardStore } from "@/store/boardStore";
 import ArchitectureNode from "./ArchitectureNode";
+import GroupNode from "./GroupNode";
 import ArchitectureEdge from "./ArchitectureEdge";
 import RemoteCursors from "./RemoteCursors";
 import type { ArchNodeData, ArchEdgeData } from "@system-synthesis/shared";
 
 const nodeTypes: NodeTypes = {
   architectureNode: ArchitectureNode as any,
+  groupNode: GroupNode as any,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -56,6 +58,7 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   monitor: "New Monitor",
   registry: "New Service Registry",
   scheduler: "New Scheduler",
+  group: "New Group",
 };
 
 interface CanvasBoardProps {
@@ -151,6 +154,35 @@ export default function CanvasBoard({
       if ((e.ctrlKey || e.metaKey) && e.key === "y" && !isTyping) {
         e.preventDefault();
         useBoardStore.getState().redo();
+        return;
+      }
+
+      // Duplicate selected node: Ctrl+D (not while typing)
+      if ((e.ctrlKey || e.metaKey) && e.key === "d" && !isTyping) {
+        e.preventDefault();
+        const state = useBoardStore.getState();
+        const selectedId = state.selectedNodeId;
+        if (selectedId) {
+          const sourceNode = state.nodes.find((n) => n.id === selectedId);
+          if (sourceNode) {
+            const clonedNode: Node<ArchNodeData> = {
+              id: `node-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              type: sourceNode.type,
+              position: {
+                x: sourceNode.position.x + 30,
+                y: sourceNode.position.y + 30,
+              },
+              data: {
+                ...sourceNode.data,
+                label: `${sourceNode.data.label} (copy)`,
+                metadata: { ...sourceNode.data.metadata },
+              },
+            };
+            state.addNode(clonedNode);
+            state.setSelectedNodeId(clonedNode.id);
+            state.setSidebarMode("inspector");
+          }
+        }
         return;
       }
 
@@ -260,13 +292,15 @@ export default function CanvasBoard({
           y: event.clientY,
         });
 
+        const isGroup = pendingNodeType === "group";
+
         const newNode: Node<ArchNodeData> = {
           id: `node-${Date.now()}`,
-          type: "architectureNode",
+          type: isGroup ? "groupNode" : "architectureNode",
           position,
           data: {
             label: NODE_TYPE_LABELS[pendingNodeType] || `New ${pendingNodeType}`,
-            subtitle: "Click to configure",
+            subtitle: isGroup ? "" : "Click to configure",
             nodeType: pendingNodeType as any,
             status: "inactive",
             metadata: {
@@ -276,6 +310,13 @@ export default function CanvasBoard({
               attachedFiles: [],
             },
           },
+          ...(isGroup
+            ? {
+                style: { width: 500, height: 300 },
+                // Groups should render behind child nodes
+                zIndex: -1,
+              }
+            : {}),
         };
 
         addNode(newNode);
@@ -394,6 +435,92 @@ export default function CanvasBoard({
   // and disable node dragging so drag = connection instead of move
   const isConnectMode = activeTool === "draw";
 
+  // --- Drag-into-group detection ---
+  const handleNodeDragStop = useCallback(
+    (_event: React.MouseEvent, draggedNode: Node) => {
+      // Don't reparent groups themselves
+      if (draggedNode.type === "groupNode") return;
+
+      // Use setTimeout to ensure React Flow's onNodesChange has fully completed and updated the local state
+      // before we attempt to calculate and apply reparenting relative coordinates.
+      setTimeout(() => {
+        const state = useBoardStore.getState();
+        const groupNodes = state.nodes.filter((n) => n.type === "groupNode" && n.id !== draggedNode.id);
+
+      const currentParent = (draggedNode as any).parentId || null;
+      const parentNode = currentParent ? state.nodes.find((n) => n.id === currentParent) : null;
+
+      // Get the absolute position of the dragged node
+      const dragX = (draggedNode as any).positionAbsolute?.x ?? (draggedNode.position.x + (parentNode ? parentNode.position.x : 0));
+      const dragY = (draggedNode as any).positionAbsolute?.y ?? (draggedNode.position.y + (parentNode ? parentNode.position.y : 0));
+
+      // Check if the dragged node's center is inside any group
+      const nodeW = 200; // approximate node width
+      const nodeH = 80;  // approximate node height
+      const centerX = dragX + nodeW / 2;
+      const centerY = dragY + nodeH / 2;
+
+      let targetGroup: Node | null = null;
+      for (const group of groupNodes) {
+        const gx = group.position.x;
+        const gy = group.position.y;
+        const gw = (group.style?.width as number) || 500;
+        const gh = (group.style?.height as number) || 300;
+
+        if (centerX >= gx && centerX <= gx + gw && centerY >= gy && centerY <= gy + gh) {
+          targetGroup = group;
+          break;
+        }
+      }
+
+      if (targetGroup && currentParent !== targetGroup.id) {
+        // Reparent: convert position from absolute to relative-to-parent
+        const relativeX = dragX - targetGroup.position.x;
+        const relativeY = dragY - targetGroup.position.y;
+
+        const updatedNodes = state.nodes.map((n) => {
+          if (n.id === draggedNode.id) {
+            return {
+              ...n,
+              parentId: targetGroup!.id,
+              position: { x: Math.max(10, relativeX), y: Math.max(40, relativeY) },
+            };
+          }
+          return n;
+        });
+        state.setNodes(updatedNodes);
+        
+        // Ensure this containment change is synced to other clients immediately
+        state.applyToYjs({
+          op: "bulk_sync",
+          nodes: state.getSerializedNodes(),
+          edges: state.getSerializedEdges()
+        });
+      } else if (!targetGroup && currentParent) {
+        // Dragged out of group — remove parentId and convert to absolute position
+        const updatedNodes = state.nodes.map((n) => {
+          if (n.id === draggedNode.id) {
+            const { parentId, ...rest } = n as any;
+            return {
+              ...rest,
+              position: { x: dragX, y: dragY },
+            };
+          }
+          return n;
+        });
+        state.setNodes(updatedNodes);
+
+        state.applyToYjs({
+          op: "bulk_sync",
+          nodes: state.getSerializedNodes(),
+          edges: state.getSerializedEdges()
+        });
+      }
+      }, 0);
+    },
+    []
+  );
+
   return (
     <div
       ref={reactFlowWrapper}
@@ -409,6 +536,7 @@ export default function CanvasBoard({
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
         onNodeClick={handleNodeClick}
+        onNodeDragStop={handleNodeDragStop}
         onPaneClick={handlePaneClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}

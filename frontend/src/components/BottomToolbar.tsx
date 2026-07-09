@@ -38,6 +38,8 @@ import {
   Activity,
   BookOpen,
   Timer,
+  // Grouping
+  FolderOpen,
 } from "lucide-react";
 
 type Tool = "select" | "draw" | "shapes" | "text" | "undo" | "redo";
@@ -129,6 +131,13 @@ const nodeCategories: NodeCategory[] = [
       { type: "monitor", label: "Monitoring", icon: <Activity className="w-4 h-4" />, description: "Datadog / Grafana / Prometheus" },
       { type: "registry", label: "Service Registry", icon: <BookOpen className="w-4 h-4" />, description: "Consul / Eureka / Zookeeper" },
       { type: "scheduler", label: "Scheduler", icon: <Timer className="w-4 h-4" />, description: "Airflow / Celery / Temporal" },
+    ],
+  },
+  {
+    name: "Grouping",
+    color: "text-[#94a3b8]",
+    nodes: [
+      { type: "group", label: "Group Box", icon: <FolderOpen className="w-4 h-4" />, description: "Visual container / subgraph" },
     ],
   },
 ];

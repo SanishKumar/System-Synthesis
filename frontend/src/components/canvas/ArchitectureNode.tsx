@@ -26,6 +26,7 @@ import {
   Activity,
   BookOpen,
   Timer,
+  FolderOpen,
 } from "lucide-react";
 import { useBoardStore } from "@/store/boardStore";
 import type { ArchNodeData, ArchNodeType } from "@system-synthesis/shared";
@@ -54,6 +55,7 @@ const nodeIcons: Record<ArchNodeType, React.ReactNode> = {
   monitor: <Activity className="w-4 h-4" />,
   registry: <BookOpen className="w-4 h-4" />,
   scheduler: <Timer className="w-4 h-4" />,
+  group: <FolderOpen className="w-4 h-4" />,
 };
 
 const nodeColors: Record<ArchNodeType, string> = {
@@ -80,6 +82,7 @@ const nodeColors: Record<ArchNodeType, string> = {
   monitor: "#a3e635",
   registry: "#67e8f9",
   scheduler: "#fcd34d",
+  group: "#94a3b8",
 };
 
 function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeData }) {
@@ -90,6 +93,50 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
       : data.status === "analyzing"
       ? "bg-status-warning animate-pulse-slow"
       : "bg-status-inactive";
+
+  // --- Inline rename state ---
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameText, setRenameText] = useState(data.label);
+  const renameInputRef = useRef<HTMLInputElement>(null);
+
+  // Focus input when rename starts
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [isRenaming]);
+
+  // Sync from external data changes (e.g., multiplayer)
+  useEffect(() => {
+    if (!isRenaming) setRenameText(data.label);
+  }, [data.label, isRenaming]);
+
+  const saveRename = useCallback(() => {
+    const finalLabel = renameText.trim() || data.label;
+    setIsRenaming(false);
+    if (finalLabel !== data.label) {
+      useBoardStore.getState().updateNodeData(id, { label: finalLabel });
+    }
+  }, [id, renameText, data.label]);
+
+  const handleLabelDoubleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsRenaming(true);
+  };
+
+  const handleRenameKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveRename();
+    }
+    if (e.key === "Escape") {
+      setRenameText(data.label);
+      setIsRenaming(false);
+    }
+    // Prevent node deletion/undo/redo while typing
+    e.stopPropagation();
+  };
 
   // Validation badge: count issues affecting this node
   const validationResult = useBoardStore((s) => s.validationResult);
@@ -122,9 +169,25 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
         >
           {icon}
         </span>
-        <span className="font-display font-semibold text-sm text-text-primary flex-1 truncate">
-          {data.label}
-        </span>
+        {isRenaming ? (
+          <input
+            ref={renameInputRef}
+            value={renameText}
+            onChange={(e) => setRenameText(e.target.value)}
+            onBlur={saveRename}
+            onKeyDown={handleRenameKeyDown}
+            className="font-display font-semibold text-sm text-text-primary flex-1 bg-transparent border-b border-accent-cyan/50 outline-none nodrag nopan nowheel"
+            spellCheck={false}
+          />
+        ) : (
+          <span
+            className="font-display font-semibold text-sm text-text-primary flex-1 truncate cursor-text"
+            onDoubleClick={handleLabelDoubleClick}
+            title="Double-click to rename"
+          >
+            {data.label}
+          </span>
+        )}
         <span className={`status-dot ${statusColor} shrink-0`} />
       </div>
 

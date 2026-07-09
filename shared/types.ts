@@ -33,7 +33,9 @@ export type ArchNodeType =
   // Observability & Infra
   | 'monitor'        // Monitoring / Observability (Datadog, Grafana, Prometheus)
   | 'registry'       // Service Registry / Discovery (Consul, Eureka, Zookeeper)
-  | 'scheduler';     // Task Scheduler / Cron (Airflow, Celery Beat, Temporal)
+  | 'scheduler'      // Task Scheduler / Cron (Airflow, Celery Beat, Temporal)
+  // Grouping
+  | 'group';         // Visual group box / subgraph container
 
 export interface NodeMetadata {
   notes: string;
@@ -139,6 +141,9 @@ export interface SerializedNode {
   type: string;
   position: { x: number; y: number };
   data: ArchNodeData;
+  parentId?: string;          // For group box containment
+  extent?: 'parent';          // Constrain child within parent bounds
+  style?: Record<string, unknown>; // For dynamic sizing (group boxes)
 }
 
 export interface SerializedEdge {

@@ -118,12 +118,34 @@ interface BoardStore {
 
 /** Serialize a React Flow node to a SerializedNode */
 function serializeNode(n: Node<ArchNodeData>): SerializedNode {
-  return {
+  const serialized: SerializedNode = {
     id: n.id,
     type: n.type || "architectureNode",
     position: n.position,
     data: n.data,
   };
+  // Preserve group containment fields
+  if ((n as any).parentId) serialized.parentId = (n as any).parentId;
+  if ((n as any).extent) serialized.extent = (n as any).extent;
+  if (n.style) serialized.style = n.style as Record<string, unknown>;
+  return serialized;
+}
+
+/** React Flow requires parent nodes to appear before their children in the array */
+function sortNodesForReactFlow<T extends { type?: string; parentId?: string; id: string }>(nodes: T[]): T[] {
+  return [...nodes].sort((a, b) => {
+    const aHasParent = !!(a as any).parentId;
+    const bHasParent = !!(b as any).parentId;
+    if (aHasParent && !bHasParent) return 1; // child comes after non-child
+    if (!aHasParent && bHasParent) return -1;
+    
+    const aIsGroup = a.type === "groupNode";
+    const bIsGroup = b.type === "groupNode";
+    if (aIsGroup && !bIsGroup) return -1; // groups come before normal nodes
+    if (!aIsGroup && bIsGroup) return 1;
+    
+    return 0;
+  });
 }
 
 /** Compute the inverse of an operation (for undo) */
@@ -193,38 +215,43 @@ function applyOperation(
 ) {
   switch (op.op) {
     case "node_created": {
-      const newNode: Node<ArchNodeData> = {
+      const newNode: any = {
         id: op.node.id,
         type: op.node.type || "architectureNode",
         position: op.node.position,
         data: op.node.data,
       };
-      set({ nodes: [...get().nodes, newNode] });
+      if (op.node.parentId) newNode.parentId = op.node.parentId;
+      if (op.node.extent) newNode.extent = op.node.extent;
+      if (op.node.style) newNode.style = op.node.style;
+      if (op.node.type === "groupNode") newNode.zIndex = -1;
+      
+      set({ nodes: sortNodesForReactFlow([...get().nodes, newNode]) });
       break;
     }
     case "node_updated": {
       set({
-        nodes: get().nodes.map((n) =>
+        nodes: sortNodesForReactFlow(get().nodes.map((n) =>
           n.id === op.nodeId
             ? { ...n, data: { ...n.data, ...op.patch } }
             : n
-        ),
+        )),
       });
       break;
     }
     case "node_moved": {
       set({
-        nodes: get().nodes.map((n) =>
+        nodes: sortNodesForReactFlow(get().nodes.map((n) =>
           n.id === op.nodeId
             ? { ...n, position: op.position }
             : n
-        ),
+        )),
       });
       break;
     }
     case "node_deleted": {
       set({
-        nodes: get().nodes.filter((n) => n.id !== op.nodeId),
+        nodes: sortNodesForReactFlow(get().nodes.filter((n) => n.id !== op.nodeId)),
         edges: get().edges.filter(
           (e) => e.source !== op.nodeId && e.target !== op.nodeId
         ),
@@ -316,12 +343,19 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   applyYjsToLocal: () => {
     const { yNodes, yEdges } = get();
     if (!yNodes || !yEdges) return;
-    const nodes = Array.from(yNodes.values()).map(n => ({
-      id: n.id,
-      type: n.type || "architectureNode",
-      position: n.position,
-      data: n.data,
-    }));
+    const nodes = Array.from(yNodes.values()).map(n => {
+      const node: any = {
+        id: n.id,
+        type: n.type || "architectureNode",
+        position: n.position,
+        data: n.data,
+      };
+      if (n.parentId) node.parentId = n.parentId;
+      if (n.extent) node.extent = n.extent;
+      if (n.style) node.style = n.style;
+      if (n.type === "groupNode") node.zIndex = -1;
+      return node;
+    });
     const edges = Array.from(yEdges.values()).map(e => ({
       id: e.id,
       source: e.source,
@@ -331,7 +365,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       type: "architectureEdge" as const,
       data: e.data,
     }));
-    set({ nodes, edges });
+    set({ nodes: sortNodesForReactFlow(nodes), edges });
   },
 
   applyToYjs: (op) => {
@@ -393,7 +427,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
 
     // Apply changes
     const newNodes = applyNodeChanges(changes, prevNodes) as Node<ArchNodeData>[];
-    set({ nodes: newNodes });
+    set({ nodes: sortNodesForReactFlow(newNodes) });
 
     // Detect drag end — record a node_moved operation
     for (const change of changes) {
@@ -540,11 +574,11 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     get().applyToYjs(updateOp);
 
     set({
-      nodes: get().nodes.map((n) =>
+      nodes: sortNodesForReactFlow(get().nodes.map((n) =>
         n.id === nodeId
           ? { ...n, data: { ...n.data, ...data } }
           : n
-      ),
+      )),
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -552,7 +586,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     });
   },
 
-  setNodes: (nodes) => set({ nodes }),
+  setNodes: (nodes) => set({ nodes: sortNodesForReactFlow(nodes) }),
   setEdges: (edges) => set({ edges }),
 
   addNode: (node) => {
@@ -565,7 +599,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     get().applyToYjs(createOp);
 
     set({
-      nodes: [...get().nodes, node],
+      nodes: sortNodesForReactFlow([...get().nodes, node]),
       undoStack: [...get().undoStack, inverseOp],
       redoStack: [],
       canUndo: true,
@@ -734,12 +768,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   setSidebarMode: (mode) => set({ sidebarMode: mode }),
 
   getSerializedNodes: () =>
-    get().nodes.map((n) => ({
-      id: n.id,
-      type: n.type || "architectureNode",
-      position: n.position,
-      data: n.data,
-    })),
+    get().nodes.map((n) => serializeNode(n)),
 
   getSerializedEdges: () =>
     get().edges.map((e) => ({

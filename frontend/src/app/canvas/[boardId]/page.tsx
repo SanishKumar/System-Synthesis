@@ -147,15 +147,19 @@ export default function CanvasBoardPage() {
     const layoutedNodes = autoLayoutNodes(serializedNodes, serializedEdges);
     const currentNodes = useBoardStore.getState().nodes;
 
+    // Build a lookup of layout results
+    const layoutMap = new Map(layoutedNodes.map((n) => [n.id, n]));
+
     const DURATION = 500;
     const startTime = performance.now();
 
-    const startPositions = currentNodes.map((n) => ({
-      id: n.id, x: n.position.x, y: n.position.y,
-    }));
-    const endPositions = layoutedNodes.map((n) => ({
-      id: n.id, x: n.position.x, y: n.position.y,
-    }));
+    // Record start positions for each non-group node
+    const startPositions = new Map(
+      currentNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }])
+    );
+    const endPositions = new Map(
+      layoutedNodes.map((n) => [n.id, { x: n.position.x, y: n.position.y }])
+    );
 
     function animate(now: number) {
       const elapsed = now - startTime;
@@ -163,31 +167,44 @@ export default function CanvasBoardPage() {
       const eased = 1 - Math.pow(1 - progress, 3);
 
       const interpolatedNodes: Node<ArchNodeData>[] = currentNodes.map((node) => {
-        const start = startPositions.find((s) => s.id === node.id);
-        const end = endPositions.find((e) => e.id === node.id);
+        const layoutResult = layoutMap.get(node.id);
+
+        if (node.type === "groupNode" && layoutResult?.style) {
+          node = { ...node, style: layoutResult.style, zIndex: -1 } as any;
+        }
+
+        const start = startPositions.get(node.id);
+        const end = endPositions.get(node.id);
         if (!start || !end) return node;
-        return {
+
+        const result: any = {
           ...node,
           position: {
             x: start.x + (end.x - start.x) * eased,
             y: start.y + (end.y - start.y) * eased,
           },
         };
+
+        // Apply group containment from layout
+        if (layoutResult) {
+          if (layoutResult.parentId) {
+            result.parentId = layoutResult.parentId;
+          }
+        }
+
+        return result;
       });
 
       useBoardStore.getState().setNodes(interpolatedNodes);
       if (progress < 1) {
         requestAnimationFrame(animate);
       } else {
-        useBoardStore.getState().applyToYjs({
+        // Final sync
+        const store = useBoardStore.getState();
+        store.applyToYjs({
           op: "bulk_sync",
-          nodes: interpolatedNodes.map(n => ({
-            id: n.id,
-            type: n.type || "architectureNode",
-            position: n.position,
-            data: n.data
-          })),
-          edges: useBoardStore.getState().getSerializedEdges()
+          nodes: store.getSerializedNodes(),
+          edges: store.getSerializedEdges()
         });
       }
     }
