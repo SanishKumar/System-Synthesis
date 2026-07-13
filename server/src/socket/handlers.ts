@@ -1,311 +1,400 @@
 import type { Server, Socket } from "socket.io";
 import type {
-  CursorPosition,
-  SerializedNode,
-  SerializedEdge,
-  ServerToClientEvents,
-  ClientToServerEvents,
-  BoardOperation,
+  BoardRole,
   BoardState,
+  CursorPosition,
+  SerializedEdge,
+  SerializedNode,
 } from "@system-synthesis/shared";
+import { z } from "zod";
+import * as Y from "yjs";
 import { getBoardState, saveBoardState } from "../services/boardRepository.js";
 import { analyzeArchitecture } from "../services/ai.js";
-import { verifyToken } from "../middleware/auth.js";
-import { shouldThrottleCursor, clearCursorThrottle } from "../middleware/rateLimit.js";
-import { v4 as uuid } from "uuid";
+import { verifyToken, type JwtPayload } from "../middleware/auth.js";
+import {
+  clearCursorThrottle,
+  shouldThrottleCursor,
+  shouldThrottleSocketEvent,
+} from "../middleware/rateLimit.js";
+import {
+  recordAudit,
+  resolveBoardRole,
+  roleAllows,
+} from "../services/accessControl.js";
+import {
+  initializeGraphDoc,
+  serializeGraphDoc,
+} from "../services/yjsGraph.js";
+import {
+  appendCollaborationUpdate,
+  compactCollaborationDocument,
+  ensureCollaborationSnapshot,
+  replayCollaborationUpdates,
+} from "../services/collaborationUpdates.js";
 
-import * as Y from "yjs";
+export const MAX_YJS_UPDATE_BYTES = 128 * 1024;
 
-// Track active users per room
-const roomUsers = new Map<
-  string,
-  Map<string, { userName: string; color: string; identityId: string }>
->();
+const boardIdSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-zA-Z0-9_-]+$/, "Invalid board identifier");
 
-// --- Server-side Yjs Documents per room ---
+const joinBoardSchema = z.object({ boardId: boardIdSchema });
+const yjsUpdateSchema = z
+  .object({
+    boardId: boardIdSchema,
+    update: z.union([
+      z.instanceof(Uint8Array),
+      z.array(z.number().int().min(0).max(255)).max(MAX_YJS_UPDATE_BYTES),
+    ]),
+  })
+  .superRefine((payload, context) => {
+    if (payload.update.length > MAX_YJS_UPDATE_BYTES) {
+      context.addIssue({
+        code: z.ZodIssueCode.too_big,
+        maximum: MAX_YJS_UPDATE_BYTES,
+        inclusive: true,
+        type: "array",
+        message: "Yjs update exceeds the maximum payload size",
+      });
+    }
+  });
+const cursorSchema = z.object({
+  boardId: boardIdSchema,
+  cursor: z.object({
+    x: z.number().finite().min(-1_000_000).max(1_000_000),
+    y: z.number().finite().min(-1_000_000).max(1_000_000),
+  }),
+});
+const analysisSchema = z.object({ boardId: boardIdSchema });
+
+type RoomUser = {
+  userName: string;
+  color: string;
+  userId: string;
+  role: BoardRole;
+};
+
+const roomUsers = new Map<string, Map<string, RoomUser>>();
 const roomDocs = new Map<string, Y.Doc>();
+const roomLoadPromises = new Map<string, Promise<Y.Doc>>();
 const roomCleanupTimers = new Map<string, NodeJS.Timeout>();
+const saveTimers = new Map<string, NodeJS.Timeout>();
 
-// Multiplayer cursor colors
+/** Apply a pub/sub update to this process's loaded authoritative document. */
+export function applyRemoteCollaborationUpdate(
+  boardId: string,
+  update: Uint8Array,
+  actorId: string
+): boolean {
+  const doc = roomDocs.get(boardId);
+  if (!doc) return false;
+  Y.applyUpdate(doc, update, "remote-server");
+  debouncedSave(boardId, actorId);
+  return true;
+}
+
+/** Read the current authoritative in-process graph for REST checkpoints. */
+export function getLoadedCollaborationState(boardId: string): {
+  nodes: SerializedNode[];
+  edges: SerializedEdge[];
+} | null {
+  const doc = roomDocs.get(boardId);
+  return doc ? serializeGraphDoc(doc) : null;
+}
+
+/** Replay the durable tail into every loaded room after transport recovery. */
+export async function reconcileLoadedCollaborationDocuments(): Promise<number> {
+  let reconciled = 0;
+  for (const [boardId, doc] of roomDocs.entries()) {
+    await replayCollaborationUpdates(boardId, doc);
+    debouncedSave(boardId, "durable-reconciliation");
+    reconciled += 1;
+  }
+  return reconciled;
+}
+
 const CURSOR_COLORS = [
-  "#ebb2ff", // purple
-  "#00dbe9", // cyan
-  "#22c55e", // green
-  "#f59e0b", // amber
-  "#ef4444", // red
-  "#60a5fa", // blue
-  "#f472b6", // pink
-  "#a78bfa", // violet
+  "#6c4ff7",
+  "#218a69",
+  "#b7791f",
+  "#c84f64",
+  "#4f6eb6",
+  "#8b6ff7",
 ];
 
 function getRandomColor(): string {
   return CURSOR_COLORS[Math.floor(Math.random() * CURSOR_COLORS.length)];
 }
 
-// Debounce save timers per board
-const saveTimers = new Map<string, NodeJS.Timeout>();
+async function getOrLoadRoomDoc(board: BoardState): Promise<Y.Doc> {
+  const loaded = roomDocs.get(board.id);
+  if (loaded) return loaded;
+  const loading = roomLoadPromises.get(board.id);
+  if (loading) return loading;
 
-function debouncedSave(boardId: string) {
+  const promise = (async () => {
+    const doc = new Y.Doc();
+    // Publish the doc before replay so live pub/sub updates cannot fall into a
+    // gap between the durable range read and installing the in-memory state.
+    roomDocs.set(board.id, doc);
+    try {
+      const replayed = await replayCollaborationUpdates(board.id, doc);
+      if (replayed === 0) {
+        const fallback = new Y.Doc();
+        initializeGraphDoc(fallback, board.nodes, board.edges);
+        const canonicalBase = await ensureCollaborationSnapshot(board.id, fallback);
+        fallback.destroy();
+        Y.applyUpdate(doc, canonicalBase, "canonical-base");
+      }
+      return doc;
+    } catch (error) {
+      roomDocs.delete(board.id);
+      doc.destroy();
+      throw error;
+    } finally {
+      roomLoadPromises.delete(board.id);
+    }
+  })();
+  roomLoadPromises.set(board.id, promise);
+  return promise;
+}
+
+function serializeDoc(doc: Y.Doc): {
+  nodes: SerializedNode[];
+  edges: SerializedEdge[];
+} {
+  return serializeGraphDoc(doc);
+}
+
+function debouncedSave(boardId: string, actorId: string) {
   const existing = saveTimers.get(boardId);
   if (existing) clearTimeout(existing);
-
   saveTimers.set(
     boardId,
     setTimeout(async () => {
       try {
         const doc = roomDocs.get(boardId);
         if (doc) {
-          const nodes = Array.from(doc.getMap<SerializedNode>("nodes").values());
-          const edges = Array.from(doc.getMap<SerializedEdge>("edges").values());
-          await saveBoardState(boardId, nodes, edges);
-          console.log(`  💾 Board "${boardId}" saved (${nodes.length} nodes)`);
+          const { nodes, edges } = serializeDoc(doc);
+          await saveBoardState(boardId, nodes, edges, actorId);
         }
-      } catch (err: any) {
-        console.error(`  ⚠ Save error for "${boardId}":`, err.message);
+      } finally {
+        saveTimers.delete(boardId);
       }
-      saveTimers.delete(boardId);
-    }, 5000)
+    }, 1500)
   );
 }
 
-/**
- * Schedule room cleanup to free up memory when empty
- */
 function scheduleRoomCleanup(boardId: string) {
   const existing = roomCleanupTimers.get(boardId);
   if (existing) clearTimeout(existing);
-
   roomCleanupTimers.set(
     boardId,
     setTimeout(async () => {
       try {
         const doc = roomDocs.get(boardId);
         if (doc) {
-          // Final save before destroy
-          const nodes = Array.from(doc.getMap<SerializedNode>("nodes").values());
-          const edges = Array.from(doc.getMap<SerializedEdge>("edges").values());
+          const { nodes, edges } = serializeDoc(doc);
           await saveBoardState(boardId, nodes, edges);
-          
+          await compactCollaborationDocument(boardId, doc);
           doc.destroy();
           roomDocs.delete(boardId);
-          console.log(`  🧹 Cleaned up Y.Doc for "${boardId}"`);
         }
-      } catch (err: any) {
-        console.error(`  ⚠ Cleanup error for "${boardId}":`, err.message);
+      } finally {
+        roomCleanupTimers.delete(boardId);
       }
-      roomCleanupTimers.delete(boardId);
-    }, 10000) // 10 seconds wait before GC
+    }, 10_000)
   );
 }
 
-/**
- * Register all Socket.io event handlers.
- */
+function emitError(socket: Socket, message: string): void {
+  socket.emit("error", message);
+}
+
 export function registerSocketHandlers(io: Server): void {
-  // --- Socket.io JWT auth middleware ---
   io.use((socket, next) => {
-    const token = socket.handshake.auth?.token || socket.handshake.query?.token;
-    if (token && typeof token === "string") {
-      const payload = verifyToken(token);
-      if (payload) {
-        (socket as any).authUser = payload;
-        return next();
-      }
-    }
-    // Legacy fallback: accept connections without token (migration period)
-    // They'll use socket.handshake.auth.userName / userId
-    (socket as any).authUser = null;
+    const token = socket.handshake.auth?.token;
+    if (typeof token !== "string") return next(new Error("Authentication required"));
+    const payload = verifyToken(token);
+    if (!payload) return next(new Error("Invalid or expired token"));
+    (socket as Socket & { authUser: JwtPayload }).authUser = payload;
     next();
   });
 
   io.on("connection", (socket: Socket) => {
-    const authUser = (socket as any).authUser;
-    const userId = socket.id;
+    const authUser = (socket as Socket & { authUser: JwtPayload }).authUser;
+    const socketId = socket.id;
+    const userId = authUser.userId;
+    const userName = authUser.userName;
+    socket.data.userId = userId;
+    socket.data.userName = userName;
+    const userColor = getRandomColor();
     let currentBoard: string | null = null;
-    let userName = authUser?.userName || "Anonymous";
-    let identityId = authUser?.userId || "";
-    let userColor = getRandomColor();
+    let currentRole: BoardRole | null = null;
 
-    console.log(`  🔌 Client connected: ${userId}`);
+    const leaveCurrentBoard = (boardId: string) => {
+      if (currentBoard !== boardId) return;
+      socket.leave(boardId);
+      const users = roomUsers.get(boardId);
+      users?.delete(socketId);
+      if (users?.size === 0) {
+        roomUsers.delete(boardId);
+        scheduleRoomCleanup(boardId);
+      }
+      socket.to(boardId).emit("user_left", socketId);
+      currentBoard = null;
+      currentRole = null;
+    };
 
-    // --- join_board (with access check) ---
-    socket.on("join_board", async (boardId: string, name: string, userIdentityId: string) => {
-      // If already in a board, leave it first
-      if (currentBoard && currentBoard !== boardId) {
-        socket.leave(currentBoard);
-        roomUsers.get(currentBoard)?.delete(userId);
-        socket.to(currentBoard).emit("user_left", userId);
+    const isJoinedWithRole = (boardId: string, requiredRole: BoardRole): boolean => {
+      return (
+        currentBoard === boardId &&
+        socket.rooms.has(boardId) &&
+        roleAllows(currentRole, requiredRole)
+      );
+    };
+
+    socket.on("join_board", async (rawPayload: unknown) => {
+      const parsed = joinBoardSchema.safeParse(
+        typeof rawPayload === "string" ? { boardId: rawPayload } : rawPayload
+      );
+      if (!parsed.success) return emitError(socket, "Invalid board join request");
+      const { boardId } = parsed.data;
+
+      if (currentBoard && currentBoard !== boardId) leaveCurrentBoard(currentBoard);
+      const board = await getBoardState(boardId);
+      if (!board) return emitError(socket, "Board not found");
+      const role = await resolveBoardRole(board, userId);
+      if (!role) {
+        await recordAudit(boardId, userId, "board.join.denied");
+        return emitError(socket, "Access denied — you are not a member of this board");
       }
 
       currentBoard = boardId;
-      userName = name || "Anonymous";
-      identityId = userIdentityId || "";
+      currentRole = role;
+      await socket.join(boardId);
+      if (!roomUsers.has(boardId)) roomUsers.set(boardId, new Map());
+      roomUsers.get(boardId)!.set(socketId, {
+        userId,
+        userName,
+        color: userColor,
+        role,
+      });
 
-      // Access check: private boards require matching ownerId
-      const board = await getBoardState(boardId);
-      if (board && !board.isPublic && board.ownerId !== identityId && board.ownerId !== "system") {
-        socket.emit("error", "Access denied — this board is private");
-        currentBoard = null;
-        return;
-      }
+      const doc = await getOrLoadRoomDoc(board);
 
-      // Join Socket.io room
-      socket.join(boardId);
-
-      // Track user in room
-      if (!roomUsers.has(boardId)) {
-        roomUsers.set(boardId, new Map());
-      }
-      roomUsers.get(boardId)!.set(userId, { userName, color: userColor, identityId });
-
-      // Initialize server-side graph from persisted state (if not already loaded)
-      let doc = roomDocs.get(boardId);
-      if (!doc) {
-        doc = new Y.Doc();
-        if (board) {
-          const nodesMap = doc.getMap<SerializedNode>("nodes");
-          const edgesMap = doc.getMap<SerializedEdge>("edges");
-          board.nodes.forEach(n => nodesMap.set(n.id, n));
-          board.edges.forEach(e => edgesMap.set(e.id, e));
-        }
-        roomDocs.set(boardId, doc);
-      }
-
-      // Cancel any pending cleanup for this room
       const cleanupTimer = roomCleanupTimers.get(boardId);
       if (cleanupTimer) {
         clearTimeout(cleanupTimer);
         roomCleanupTimers.delete(boardId);
       }
 
-      const userCount = roomUsers.get(boardId)!.size;
-      console.log(
-        `  📋 ${userName} joined board "${boardId}" (${userCount} user${userCount !== 1 ? "s" : ""})`
-      );
-
-      // Send the current metadata, then the full binary Yjs state
-      if (board) {
-        // Send basic board metadata (for name/id)
-        socket.emit("board_state", { id: board.id, name: board.name });
-      }
-      
-      const stateUpdate = Y.encodeStateAsUpdate(doc);
-      socket.emit("yjs_full_state", stateUpdate);
-
-      // Notify others in room
+      socket.emit("board_state", { ...board, role });
+      socket.emit("yjs_full_state", Y.encodeStateAsUpdate(doc));
       socket.to(boardId).emit("user_joined", {
-        userId,
+        userId: socketId,
         userName,
         color: userColor,
         connectedAt: new Date().toISOString(),
+        role,
       });
+      await recordAudit(boardId, userId, "board.join", { role });
     });
 
-    // --- yjs_update (binary sync) ---
-    socket.on("yjs_update", (payload: { boardId: string; update: Uint8Array }) => {
-      // Buffer over socket.io comes as a Node Buffer or Uint8Array
-      const updateArray = new Uint8Array(payload.update);
-      const doc = roomDocs.get(payload.boardId);
-      if (doc) {
-        // Apply the incoming update to the server document
-        Y.applyUpdate(doc, updateArray);
+    socket.on("yjs_update", async (rawPayload: unknown) => {
+      if (shouldThrottleSocketEvent(socketId, "yjs_update", 80, 1000)) {
+        return emitError(socket, "Mutation rate limit exceeded");
+      }
+      const parsed = yjsUpdateSchema.safeParse(rawPayload);
+      if (!parsed.success) return emitError(socket, "Malformed or oversized Yjs update");
+      const { boardId } = parsed.data;
+      if (!isJoinedWithRole(boardId, "editor")) {
+        await recordAudit(boardId, userId, "mutation.denied", { reason: "insufficient_role" });
+        return emitError(socket, "Editor role required for board mutations");
+      }
 
-        // Broadcast to others in room
-        socket.to(payload.boardId).emit("yjs_update", {
-          update: updateArray,
-          userId,
-        });
+      // Resolve the role again for every mutation so a revoked editor cannot
+      // continue writing with a stale joined-room state.
+      const board = await getBoardState(boardId);
+      const freshRole = board ? await resolveBoardRole(board, userId) : null;
+      if (!roleAllows(freshRole, "editor")) {
+        currentRole = freshRole;
+        await recordAudit(boardId, userId, "mutation.denied", { reason: "role_revoked" });
+        return emitError(socket, "Editor role required for board mutations");
+      }
+      currentRole = freshRole;
 
-        // Debounced save
-        debouncedSave(payload.boardId);
+      const doc = roomDocs.get(boardId);
+      if (!doc) return emitError(socket, "Board document is not loaded");
+      const update = new Uint8Array(parsed.data.update);
+      const candidate = new Y.Doc();
+      try {
+        Y.applyUpdate(candidate, Y.encodeStateAsUpdate(doc), "validation-base");
+        Y.applyUpdate(candidate, update, "validation-candidate");
+      } catch {
+        candidate.destroy();
+        await recordAudit(boardId, userId, "mutation.denied", { reason: "invalid_yjs_update" });
+        return emitError(socket, "Invalid Yjs update");
+      }
+      candidate.destroy();
+
+      try {
+        await appendCollaborationUpdate(boardId, update, userId);
+      } catch {
+        await recordAudit(boardId, userId, "mutation.denied", { reason: "persistence_unavailable" });
+        return emitError(socket, "Mutation could not be durably stored");
+      }
+
+      Y.applyUpdate(doc, update, "authorized-client");
+
+      socket.to(boardId).emit("yjs_update", { update, userId: socketId });
+      debouncedSave(boardId, userId);
+      await recordAudit(boardId, userId, "board.mutation", { bytes: update.byteLength });
+    });
+
+    socket.on("cursor_moved", (rawPayload: unknown) => {
+      if (shouldThrottleCursor(socketId)) return;
+      const parsed = cursorSchema.safeParse(rawPayload);
+      if (!parsed.success || !isJoinedWithRole(parsed.data.boardId, "viewer")) return;
+      const cursor: CursorPosition = {
+        ...parsed.data.cursor,
+        userId: socketId,
+        userName,
+        color: userColor,
+      };
+      socket.to(parsed.data.boardId).emit("cursor_moved", cursor);
+    });
+
+    socket.on("request_ai_analysis", async (rawPayload: unknown) => {
+      if (shouldThrottleSocketEvent(socketId, "ai_analysis", 5, 60_000)) {
+        return emitError(socket, "AI analysis rate limit exceeded");
+      }
+      const parsed = analysisSchema.safeParse(rawPayload);
+      if (!parsed.success || !isJoinedWithRole(parsed.data.boardId, "viewer")) {
+        return emitError(socket, "Board access required for analysis");
+      }
+      const doc = roomDocs.get(parsed.data.boardId);
+      if (!doc) return emitError(socket, "Board document is not loaded");
+      try {
+        const { nodes, edges } = serializeDoc(doc);
+        const result = await analyzeArchitecture(nodes, edges);
+        socket.emit("ai_analysis_result", result);
+        await recordAudit(parsed.data.boardId, userId, "board.ai_explanation");
+      } catch {
+        emitError(socket, "AI analysis failed");
       }
     });
 
-    // --- cursor_moved (with server-side throttle guard) ---
-    socket.on(
-      "cursor_moved",
-      (payload: { boardId: string; cursor: CursorPosition }) => {
-        // Server-side throttle: max 20 updates/sec per socket
-        if (shouldThrottleCursor(userId)) return;
-
-        socket.to(payload.boardId).emit("cursor_moved", {
-          ...payload.cursor,
-          userId,
-          userName,
-          color: userColor,
-        });
-      }
-    );
-
-    // --- request_ai_analysis ---
-    socket.on(
-      "request_ai_analysis",
-      async (payload: {
-        boardId: string;
-        nodes: SerializedNode[];
-        edges: SerializedEdge[];
-      }) => {
-        try {
-          console.log(
-            `  🤖 AI analysis requested for board "${payload.boardId}"`
-          );
-          const result = await analyzeArchitecture(
-            payload.nodes,
-            payload.edges
-          );
-          socket.emit("ai_analysis_result", result);
-        } catch (err: any) {
-          socket.emit("error", `AI analysis failed: ${err.message}`);
-        }
-      }
-    );
-
-    // --- leave_board ---
-    socket.on("leave_board", (boardId: string) => {
-      if (!boardId) return;
-
-      socket.leave(boardId);
-      const users = roomUsers.get(boardId);
-      if (users) {
-        users.delete(userId);
-        if (users.size === 0) {
-          roomUsers.delete(boardId);
-          // Keep the graph in memory for a while in case someone rejoins quickly
-          // Cleaned up after 10s by scheduleRoomCleanup
-          scheduleRoomCleanup(boardId);
-        }
-      }
-      socket.to(boardId).emit("user_left", userId);
-
-      if (userName !== "Anonymous") {
-        console.log(`  📋 ${userName} left board "${boardId}"`);
-      }
-
-      if (currentBoard === boardId) {
-        currentBoard = null;
-      }
+    socket.on("leave_board", (rawBoardId: unknown) => {
+      const parsed = boardIdSchema.safeParse(rawBoardId);
+      if (parsed.success) leaveCurrentBoard(parsed.data);
     });
 
-    // --- disconnect ---
     socket.on("disconnect", () => {
-      // Clean up cursor throttle state
-      clearCursorThrottle(userId);
-
-      if (userName !== "Anonymous") {
-        console.log(`  🔌 Client disconnected: ${userId} (${userName})`);
-      }
-
-      if (currentBoard) {
-        const users = roomUsers.get(currentBoard);
-        if (users) {
-          users.delete(userId);
-          if (users.size === 0) {
-            roomUsers.delete(currentBoard);
-            scheduleRoomCleanup(currentBoard);
-          }
-        }
-        socket.to(currentBoard).emit("user_left", userId);
-      }
+      clearCursorThrottle(socketId);
+      if (currentBoard) leaveCurrentBoard(currentBoard);
     });
   });
 }

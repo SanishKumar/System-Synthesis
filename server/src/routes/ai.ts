@@ -1,44 +1,47 @@
 import { Router } from "express";
+import { z } from "zod";
 import { analyzeArchitecture, generateArchitecture } from "../services/ai.js";
+import { getBoardState } from "../services/boardRepository.js";
+import { recordAudit, resolveBoardRole, roleAllows } from "../services/accessControl.js";
 
 const router = Router();
+const boardIdSchema = z.object({
+  boardId: z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/),
+});
+const generationSchema = z.object({
+  scenario: z.string().trim().min(3).max(2_000),
+});
 
-/**
- * POST /api/ai/analyze — Analyze architecture with AI
- */
 router.post("/analyze", async (req, res) => {
+  const parsed = boardIdSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "A valid boardId is required" });
   try {
-    const { nodes, edges } = req.body;
-
-    if (!nodes || !Array.isArray(nodes)) {
-      return res.status(400).json({ error: "nodes array is required" });
+    const board = await getBoardState(parsed.data.boardId);
+    if (!board) return res.status(404).json({ error: "Board not found" });
+    const role = await resolveBoardRole(board, req.user!.userId);
+    if (!roleAllows(role, "viewer")) {
+      await recordAudit(board.id, req.user!.userId, "board.ai_explanation.denied");
+      return res.status(403).json({ error: "Board access required" });
     }
-
-    const result = await analyzeArchitecture(nodes, edges || []);
+    const result = await analyzeArchitecture(board.nodes, board.edges);
+    await recordAudit(board.id, req.user!.userId, "board.ai_explanation");
     res.json(result);
-  } catch (err: any) {
-    console.error("AI analysis error:", err);
-    res.status(500).json({ error: err.message });
+  } catch (error: any) {
+    console.error("AI analysis error:", error);
+    res.status(500).json({ error: "AI analysis failed" });
   }
 });
 
-/**
- * POST /api/ai/generate — Generate a complete architecture from a text description
- * Body: { scenario: string }
- */
 router.post("/generate", async (req, res) => {
+  const parsed = generationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "A scenario between 3 and 2000 characters is required" });
   try {
-    const { scenario } = req.body;
-
-    if (!scenario || typeof scenario !== "string") {
-      return res.status(400).json({ error: "scenario string is required" });
-    }
-
-    const result = await generateArchitecture(scenario);
+    const result = await generateArchitecture(parsed.data.scenario);
+    await recordAudit(null, req.user!.userId, "ai.generation");
     res.json(result);
-  } catch (err: any) {
-    console.error("AI generation error:", err);
-    res.status(500).json({ error: err.message });
+  } catch (error: any) {
+    console.error("AI generation error:", error);
+    res.status(500).json({ error: "AI generation failed" });
   }
 });
 

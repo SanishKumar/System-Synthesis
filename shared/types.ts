@@ -96,6 +96,8 @@ export type BoardOperation =
 
 // --- Board State ---
 
+export type BoardRole = 'owner' | 'editor' | 'viewer';
+
 export interface BoardState {
   id: string;
   name: string;
@@ -107,6 +109,8 @@ export interface BoardState {
   edges: SerializedEdge[];
   createdAt: string;
   updatedAt: string;
+  /** Requesting user's effective role. Added by authenticated API/socket responses. */
+  role?: BoardRole;
 }
 
 // --- Validation ---
@@ -171,6 +175,7 @@ export interface UserPresence {
   userName: string;
   color: string;
   connectedAt: string;
+  role?: BoardRole;
 }
 
 // --- AI Analysis ---
@@ -181,6 +186,8 @@ export interface AIAnalysisResult {
   apiRecommendations: APIRecommendation[];
   scalabilityChecklist: ScalabilityItem[];
   summary?: string;
+  analysisMode?: 'deterministic' | 'deterministic-with-ai-explanation';
+  findingsGeneratedBy?: 'rule-engine';
 }
 
 export type AiAction =
@@ -206,6 +213,8 @@ export interface ArchTemplate {
 }
 
 export interface MissingComponent {
+  findingId?: string;
+  ruleId?: string;
   title: string;
   description: string;
   severity: 'critical' | 'warning' | 'info';
@@ -234,10 +243,6 @@ export interface ScalabilityItem {
 
 export interface ServerToClientEvents {
   board_state: (state: BoardState) => void;
-  /** @deprecated Use operation_applied instead */
-  nodes_updated: (payload: { nodes: SerializedNode[]; edges: SerializedEdge[]; userId: string }) => void;
-  /** New: granular operation broadcast */
-  operation_applied: (payload: { operation: BoardOperation; userId: string }) => void;
   cursor_moved: (cursor: CursorPosition) => void;
   user_joined: (user: UserPresence) => void;
   user_left: (userId: string) => void;
@@ -246,17 +251,14 @@ export interface ServerToClientEvents {
   error: (message: string) => void;
   yjs_full_state: (stateUpdate: Uint8Array) => void;
   yjs_update: (payload: { update: Uint8Array; userId: string }) => void;
+  yjs_state_replaced: (payload: { state: Uint8Array; restoredVersion: number }) => void;
 }
 
 export interface ClientToServerEvents {
-  join_board: (boardId: string, userName: string, identityId: string) => void;
+  join_board: (payload: { boardId: string }) => void;
   leave_board: (boardId: string) => void;
-  /** @deprecated Use board_operation instead */
-  update_nodes: (payload: { boardId: string; nodes: SerializedNode[]; edges: SerializedEdge[] }) => void;
-  /** New: emit a single granular operation */
-  board_operation: (payload: { boardId: string; operation: BoardOperation }) => void;
-  cursor_moved: (payload: { boardId: string; cursor: CursorPosition }) => void;
-  request_ai_analysis: (payload: { boardId: string; nodes: SerializedNode[]; edges: SerializedEdge[] }) => void;
+  cursor_moved: (payload: { boardId: string; cursor: { x: number; y: number } }) => void;
+  request_ai_analysis: (payload: { boardId: string }) => void;
   yjs_update: (payload: { boardId: string; update: number[] | Uint8Array }) => void;
 }
 

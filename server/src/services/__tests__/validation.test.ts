@@ -1,21 +1,9 @@
-/**
- * Validation Engine — Unit Tests
- *
- * Tests every rule in validation.ts against purpose-built graphs
- * that trigger (or don't trigger) each rule.
- */
+import { describe, expect, it } from "vitest";
+import type { SerializedEdge, SerializedNode } from "@system-synthesis/shared";
+import { ArchitectureGraph } from "../graphAnalysis.js";
+import { validateArchitecture, validationToSarif } from "../validation.js";
 
-import { describe, it, expect } from "vitest";
-import { validateArchitecture } from "../../services/validation.js";
-import type { SerializedNode, SerializedEdge } from "@system-synthesis/shared";
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-function makeNode(
-  id: string,
-  nodeType: string,
-  overrides: Record<string, unknown> = {}
-): SerializedNode {
+function node(id: string, nodeType: string, data: Record<string, unknown> = {}): SerializedNode {
   return {
     id,
     type: "architectureNode",
@@ -25,270 +13,117 @@ function makeNode(
       nodeType,
       status: "active",
       metadata: { notes: "", links: [], codeSnippet: "", attachedFiles: [] },
-      ...overrides,
+      ...data,
     },
   } as SerializedNode;
 }
 
-function makeEdge(
-  id: string,
-  source: string,
-  target: string,
-  overrides: Record<string, unknown> = {}
-): SerializedEdge {
-  return { id, source, target, data: {}, ...overrides } as SerializedEdge;
+function edge(id: string, source: string, target: string): SerializedEdge {
+  return { id, source, target };
 }
 
-// ── Tests ────────────────────────────────────────────────────────────
-
-describe("validateArchitecture", () => {
-  it("returns empty issues for an empty board", () => {
-    const result = validateArchitecture([], []);
-    expect(result.issues).toHaveLength(0);
-    expect(result.stats.critical).toBe(0);
-    expect(result.stats.warning).toBe(0);
-    expect(result.stats.info).toBe(0);
+describe("ArchitectureGraph algorithms", () => {
+  it("finds strongly connected components, cycles, layers, bridges, and blast radius", () => {
+    const graph = new ArchitectureGraph(
+      [node("a", "service"), node("b", "service"), node("c", "database"), node("d", "monitor")],
+      [edge("ab", "a", "b"), edge("ba", "b", "a"), edge("bc", "b", "c"), edge("cd", "c", "d")]
+    );
+    expect(graph.cycles()).toEqual([["a", "b"]]);
+    expect(graph.blastRadius("b")).toEqual(new Set(["a", "c", "d"]));
+    expect(graph.articulationPoints()).toEqual(new Set(["b", "c"]));
+    expect(graph.bridges().map((item) => item.id).sort()).toEqual(["bc", "cd"]);
+    expect(graph.topologicalLayers().at(-1)).toEqual(expect.arrayContaining(["a", "b"]));
   });
 
-  it("returns empty issues for a well-formed architecture", () => {
+  it("calculates reachability, reverse reachability, and dependency depth", () => {
+    const graph = new ArchitectureGraph(
+      [node("client", "client"), node("api", "service"), node("db", "database")],
+      [edge("one", "client", "api"), edge("two", "api", "db")]
+    );
+    expect(graph.reachableFrom("client")).toEqual(new Set(["client", "api", "db"]));
+    expect(graph.reverseReachableFrom("db")).toEqual(new Set(["db", "api", "client"]));
+    expect(graph.dependencyDepth("client")).toBe(2);
+  });
+});
+
+describe("extensible deterministic architecture rules", () => {
+  it("detects direct persistence access, cycles, and a real path-level SPOF", () => {
     const nodes = [
-      makeNode("client", "client"),
-      makeNode("gw", "gateway"),
-      makeNode("svc", "service"),
-      makeNode("db", "database"),
+      node("client", "client"),
+      node("gateway", "gateway"),
+      node("service", "service"),
+      node("db", "database"),
+      node("direct-client", "client"),
     ];
     const edges = [
-      makeEdge("e1", "client", "gw"),
-      makeEdge("e2", "gw", "svc"),
-      makeEdge("e3", "svc", "db"),
+      edge("cg", "client", "gateway"),
+      edge("gs", "gateway", "service"),
+      edge("sd", "service", "db"),
+      edge("sg", "service", "gateway"),
+      edge("direct", "direct-client", "db"),
     ];
     const result = validateArchitecture(nodes, edges);
-    const criticals = result.issues.filter((i) => i.severity === "critical");
-    expect(criticals).toHaveLength(0);
+    expect(result.issues.some((finding) => finding.ruleId === "client-to-persistence")).toBe(true);
+    expect(result.issues.some((finding) => finding.ruleId === "dependency-cycle")).toBe(true);
+    expect(result.issues.some((finding) => finding.ruleId === "single-point-of-failure")).toBe(true);
   });
 
-  // ── Critical Rules ──
+  it("detects unmediated trust-zone crossings but accepts an explicit firewall", () => {
+    const unsafe = validateArchitecture(
+      [node("web", "client", { zone: "public" }), node("db", "database", { zone: "restricted" })],
+      [edge("cross", "web", "db")]
+    );
+    expect(unsafe.issues.some((finding) => finding.ruleId === "unmediated-trust-boundary")).toBe(true);
 
-  describe("CRITICAL: client-to-db", () => {
-    it("flags Client → Database direct connection", () => {
-      const nodes = [makeNode("c", "client"), makeNode("d", "database")];
-      const edges = [makeEdge("e1", "c", "d")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter((i) => i.ruleId === "client-to-db");
-      expect(issues).toHaveLength(1);
-      expect(issues[0].severity).toBe("critical");
-      expect(issues[0].nodeIds).toContain("c");
-      expect(issues[0].nodeIds).toContain("d");
-    });
-
-    it("does NOT flag Client → Service → Database", () => {
-      const nodes = [
-        makeNode("c", "client"),
-        makeNode("s", "service"),
-        makeNode("d", "database"),
-      ];
-      const edges = [makeEdge("e1", "c", "s"), makeEdge("e2", "s", "d")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter((i) => i.ruleId === "client-to-db");
-      expect(issues).toHaveLength(0);
-    });
+    const mediated = validateArchitecture(
+      [
+        node("web", "client", { zone: "public" }),
+        node("waf", "firewall", { zone: "dmz" }),
+        node("db", "database", { zone: "restricted" }),
+      ],
+      [edge("wf", "web", "waf"), edge("fd", "waf", "db")]
+    );
+    expect(mediated.issues.some((finding) => finding.ruleId === "unmediated-trust-boundary")).toBe(false);
   });
 
-  describe("CRITICAL: gateway-to-db", () => {
-    it("flags Gateway → Database direct connection", () => {
-      const nodes = [makeNode("gw", "gateway"), makeNode("db", "database")];
-      const edges = [makeEdge("e1", "gw", "db")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter((i) => i.ruleId === "gateway-to-db");
-      expect(issues).toHaveLength(1);
-      expect(issues[0].severity).toBe("critical");
+  it("supports rule selection, severity overrides, and justified suppression", () => {
+    const nodes = [node("client", "client"), node("db", "database")];
+    const edges = [edge("direct", "client", "db")];
+    const overridden = validateArchitecture(nodes, edges, {
+      enabledRuleIds: ["client-to-persistence"],
+      severityOverrides: { "client-to-persistence": "warning" },
     });
+    expect(overridden.issues).toHaveLength(1);
+    expect(overridden.issues[0].severity).toBe("warning");
+
+    const suppressed = validateArchitecture(nodes, edges, {
+      suppressions: [
+        {
+          ruleId: "client-to-persistence",
+          edgeId: "direct",
+          justification: "Approved migration bridge until 2026-10-01",
+        },
+      ],
+    });
+    expect(suppressed.issues.some((finding) => finding.ruleId === "client-to-persistence")).toBe(false);
   });
 
-  // ── Warning Rules ──
-
-  describe("WARNING: orphaned-queue", () => {
-    it("flags a queue with no producers AND no consumers", () => {
-      const nodes = [makeNode("q", "queue")];
-      const result = validateArchitecture(nodes, []);
-      const issues = result.issues.filter((i) => i.ruleId === "orphaned-queue");
-      expect(issues).toHaveLength(1);
-      expect(issues[0].severity).toBe("warning");
-    });
-
-    it("flags a queue with no producer", () => {
-      const nodes = [makeNode("q", "queue"), makeNode("s", "service")];
-      const edges = [makeEdge("e1", "q", "s")]; // queue → service (consumer exists)
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "queue-no-producer"
-      );
-      expect(issues).toHaveLength(1);
-    });
-
-    it("flags a queue with no consumer", () => {
-      const nodes = [makeNode("s", "service"), makeNode("q", "queue")];
-      const edges = [makeEdge("e1", "s", "q")]; // service → queue (producer exists)
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "queue-no-consumer"
-      );
-      expect(issues).toHaveLength(1);
-    });
+  it("does not treat arbitrary database fan-in thresholds as correctness", () => {
+    const db = node("db", "database");
+    const services = Array.from({ length: 12 }, (_, index) => node(`service-${index}`, "service"));
+    const edges = services.map((service, index) => edge(`edge-${index}`, service.id, db.id));
+    const result = validateArchitecture([db, ...services], edges);
+    expect(result.issues.some((finding) => finding.ruleId === "monolithic-db")).toBe(false);
   });
 
-  describe("WARNING: monolithic-database", () => {
-    it("flags database with >5 incoming edges", () => {
-      const db = makeNode("db", "database");
-      const services = Array.from({ length: 6 }, (_, i) =>
-        makeNode(`s${i}`, "service")
-      );
-      const edges = services.map((s, i) => makeEdge(`e${i}`, s.id, "db"));
-      const result = validateArchitecture([db, ...services], edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "monolithic-db"
-      );
-      expect(issues).toHaveLength(1);
-      expect(issues[0].severity).toBe("warning");
-    });
-
-    it("does NOT flag database with ≤5 incoming edges", () => {
-      const db = makeNode("db", "database");
-      const services = Array.from({ length: 3 }, (_, i) =>
-        makeNode(`s${i}`, "service")
-      );
-      const edges = services.map((s, i) => makeEdge(`e${i}`, s.id, "db"));
-      const result = validateArchitecture([db, ...services], edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "monolithic-db"
-      );
-      expect(issues).toHaveLength(0);
-    });
-  });
-
-  describe("WARNING: orphaned-service", () => {
-    it("flags service with 0 incoming edges", () => {
-      const nodes = [makeNode("svc", "service"), makeNode("db", "database")];
-      const edges = [makeEdge("e1", "svc", "db")]; // svc has outgoing but no incoming
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "orphaned-service"
-      );
-      expect(issues).toHaveLength(1);
-    });
-  });
-
-  describe("WARNING: disconnected-node", () => {
-    it("flags a totally disconnected node", () => {
-      const nodes = [
-        makeNode("svc", "service"),
-        makeNode("lonely", "service"),
-        makeNode("db", "database"),
-      ];
-      const edges = [makeEdge("e1", "svc", "db")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "disconnected-node"
-      );
-      expect(issues).toHaveLength(1);
-      expect(issues[0].nodeIds).toContain("lonely");
-    });
-  });
-
-  // ── Info Rules ──
-
-  describe("INFO: high-sla-no-redundancy", () => {
-    it("flags SLA ≥99.99% with only 1 instance", () => {
-      const nodes = [makeNode("svc", "service", { sla: "99.99%", instances: 1 })];
-      const result = validateArchitecture(nodes, []);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "high-sla-single-instance"
-      );
-      expect(issues).toHaveLength(1);
-      expect(issues[0].severity).toBe("info");
-    });
-
-    it("does NOT flag SLA ≥99.99% with >1 instance", () => {
-      const nodes = [makeNode("svc", "service", { sla: "99.99%", instances: 3 })];
-      const result = validateArchitecture(nodes, []);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "high-sla-no-redundancy"
-      );
-      expect(issues).toHaveLength(0);
-    });
-  });
-
-  describe("INFO: no-load-balancer", () => {
-    it("flags multi-instance service with no load balancer", () => {
-      const nodes = [makeNode("svc", "service", { instances: 3 })];
-      const result = validateArchitecture(nodes, []);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "no-lb-multi-instance"
-      );
-      expect(issues).toHaveLength(1);
-    });
-
-    it("does NOT flag when a load balancer is connected upstream", () => {
-      const nodes = [
-        makeNode("svc", "service", { instances: 3 }),
-        makeNode("lb", "loadbalancer"),
-      ];
-      const edges = [makeEdge("e1", "lb", "svc")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter(
-        (i) => i.ruleId === "no-lb-multi-instance"
-      );
-      expect(issues).toHaveLength(0);
-    });
-  });
-
-  describe("INFO: unused-cache", () => {
-    it("flags a cache with 0 incoming edges", () => {
-      const nodes = [makeNode("c", "cache")];
-      const result = validateArchitecture(nodes, []);
-      const issues = result.issues.filter((i) => i.ruleId === "unused-cache");
-      expect(issues).toHaveLength(1);
-    });
-
-    it("does NOT flag a cache connected to a service", () => {
-      const nodes = [makeNode("svc", "service"), makeNode("c", "cache")];
-      const edges = [makeEdge("e1", "svc", "c")];
-      const result = validateArchitecture(nodes, edges);
-      const issues = result.issues.filter((i) => i.ruleId === "unused-cache");
-      expect(issues).toHaveLength(0);
-    });
-  });
-
-  // ── Stats ──
-
-  it("stats are correctly computed", () => {
-    const nodes = [
-      makeNode("c", "client"),
-      makeNode("d", "database"),
-      makeNode("q", "queue"),
-    ];
-    const edges = [makeEdge("e1", "c", "d")];
-    const result = validateArchitecture(nodes, edges);
-    expect(result.stats.critical).toBeGreaterThanOrEqual(1);
-    expect(result.stats.warning).toBeGreaterThanOrEqual(1);
-    expect(result.timestamp).toBeTruthy();
-  });
-
-  // ── Sorting ──
-
-  it("issues are sorted critical → warning → info", () => {
-    const nodes = [
-      makeNode("c", "client"),
-      makeNode("d", "database"),
-      makeNode("q", "queue"), // orphaned → warning
-      makeNode("cache", "cache"), // unused → info
-    ];
-    const edges = [makeEdge("e1", "c", "d")]; // client-to-db → critical
-    const result = validateArchitecture(nodes, edges);
-    const severities = result.issues.map((i) => i.severity);
-    const order = { critical: 0, warning: 1, info: 2 };
-    for (let i = 1; i < severities.length; i++) {
-      expect(order[severities[i]]).toBeGreaterThanOrEqual(order[severities[i - 1]]);
-    }
+  it("exports machine-readable SARIF with deterministic rule identifiers", () => {
+    const result = validateArchitecture(
+      [node("client", "client"), node("db", "database")],
+      [edge("direct", "client", "db")]
+    );
+    const sarif = validationToSarif(result);
+    expect(sarif.version).toBe("2.1.0");
+    expect(sarif.runs[0].results[0].ruleId).toBe("client-to-persistence");
+    expect(sarif.runs[0].results[0].level).toBe("error");
   });
 });

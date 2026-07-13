@@ -1,41 +1,52 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analyzeArchitecture } from "../../services/ai.js";
 
-describe("AI Service (Mock Generation)", () => {
+describe("deterministic findings with optional AI explanation", () => {
   beforeEach(() => {
     vi.stubEnv("OPENAI_API_KEY", "");
     vi.stubEnv("LOCAL_LLM_URL", "");
   });
 
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  afterEach(() => vi.unstubAllEnvs());
 
-  it("generates structured actions for a recognizable mock scenario", async () => {
-    // A mock graph with no DB and no cache, but has a service
+  it("returns only rule-engine findings when no LLM is configured", async () => {
     const nodes = [
-      { id: "s1", type: "architectureNode", position: {x:0, y:0}, data: { label: "checkout microservice", nodeType: "service", status: "active", metadata: { notes: "", links: [], codeSnippet: "", attachedFiles: [] } } }
+      {
+        id: "client",
+        type: "architectureNode",
+        position: { x: 0, y: 0 },
+        data: {
+          label: "Browser",
+          nodeType: "client",
+          status: "active",
+          metadata: { notes: "", links: [], codeSnippet: "", attachedFiles: [] },
+        },
+      },
+      {
+        id: "database",
+        type: "architectureNode",
+        position: { x: 100, y: 0 },
+        data: {
+          label: "PostgreSQL",
+          nodeType: "database",
+          status: "active",
+          metadata: { notes: "", links: [], codeSnippet: "", attachedFiles: [] },
+        },
+      },
     ];
-    
-    const analysis = await analyzeArchitecture(nodes as any, []);
-    
-    expect(analysis.missingComponents).toBeInstanceOf(Array);
-    
-    // It should notice cache, queue, gateway, lb are missing
-    expect(analysis.missingComponents.length).toBeGreaterThan(0);
-    
-    // Validate schema of actions
-    const firstMissing = analysis.missingComponents[0];
-    expect(firstMissing).toHaveProperty("actions");
-    expect(firstMissing.actions?.length).toBeGreaterThan(0);
-    expect(firstMissing.actions?.[0]).toHaveProperty("type");
-    expect(firstMissing.actions?.[0]).toHaveProperty("nodeType");
+    const edges = [{ id: "direct", source: "client", target: "database" }];
+
+    const result = await analyzeArchitecture(nodes as any, edges as any);
+
+    expect(result.analysisMode).toBe("deterministic");
+    expect(result.findingsGeneratedBy).toBe("rule-engine");
+    expect(result.missingComponents.map((finding) => finding.ruleId)).toContain("client-to-persistence");
+    expect(result.missingComponents.every((finding) => finding.actions?.length === 0)).toBe(true);
   });
 
-  it("handles empty architecture gracefully", async () => {
-    const analysis = await analyzeArchitecture([], []);
-    
-    expect(analysis.missingComponents).toBeInstanceOf(Array);
-    expect(analysis.missingComponents.length).toBeGreaterThan(0);
+  it("does not invent findings for a graph that passes all applicable rules", async () => {
+    const result = await analyzeArchitecture([], []);
+    expect(result.missingComponents).toEqual([]);
+    expect(result.analysisMode).toBe("deterministic");
   });
 });

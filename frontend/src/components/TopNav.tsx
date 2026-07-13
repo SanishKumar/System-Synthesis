@@ -1,30 +1,31 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useUser } from "@/hooks/useUser";
 import { useBoardStore } from "@/store/boardStore";
-import AuthModal from "@/components/AuthModal";
 import {
-  Search,
-  Bell,
-  Settings,
-  Sparkles,
-  User,
-  Workflow,
-  X,
-  Check,
-  Download,
   ChevronDown,
+  Container,
+  Download,
   FileCode,
   FileText,
+  History,
   Image as ImageIcon,
-  Container,
+  LogIn,
+  LogOut,
+  Moon,
   Pencil,
+  Search,
+  Sparkles,
+  Sun,
+  Workflow,
 } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+const AuthModal = dynamic(() => import("@/components/AuthModal"), { ssr: false });
 
 interface TopNavProps {
   onMessCleanup?: () => void;
@@ -47,63 +48,49 @@ export default function TopNav({
 }: TopNavProps) {
   const pathname = usePathname();
   const router = useRouter();
+  const isCanvas = pathname.startsWith("/canvas");
+  const { userId, userName, authHeaders, isGuest, logout } = useUser();
+
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [showSearch, setShowSearch] = useState(false);
-  const [showNotifications, setShowNotifications] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
   const [showUserMenu, setShowUserMenu] = useState(false);
-  const { userId, userName, setUserName: saveUserName, authHeaders, isGuest, logout } = useUser();
-  const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [notifications, setNotifications] = useState<string[]>([
-    "System Synthesis server connected",
-  ]);
-
-  const searchRef = useRef<HTMLDivElement>(null);
-  const notifRef = useRef<HTMLDivElement>(null);
-  const settingsRef = useRef<HTMLDivElement>(null);
-  const userRef = useRef<HTMLDivElement>(null);
-  const exportRef = useRef<HTMLDivElement>(null);
-
   const [showExportMenu, setShowExportMenu] = useState(false);
-  const [exportLoading, setExportLoading] = useState<string | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [exportLoading, setExportLoading] = useState<string | null>(null);
+  const [theme, setTheme] = useState<"dark" | "light">("light");
+  const [lastBoard, setLastBoard] = useState<string | null>(null);
 
-  // Board name editing
   const [isEditingBoardName, setIsEditingBoardName] = useState(false);
   const [editBoardName, setEditBoardName] = useState("");
   const boardNameInputRef = useRef<HTMLInputElement>(null);
-  const storeBoardName = useBoardStore((s) => s.boardName);
-  const storeBoardId = useBoardStore((s) => s.boardId);
+  const storeBoardName = useBoardStore((state) => state.boardName);
+  const storeBoardId = useBoardStore((state) => state.boardId);
+  const storeBoardRole = useBoardStore((state) => state.boardRole);
 
-  // Load theme from localStorage
+  const searchRef = useRef<HTMLDivElement>(null);
+  const userRef = useRef<HTMLDivElement>(null);
+  const exportRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const storedTheme = localStorage.getItem("ss_theme") as "dark" | "light" | null;
-    if (storedTheme) {
-      setTheme(storedTheme);
-      document.documentElement.setAttribute("data-theme", storedTheme);
-    }
+    const initialTheme = storedTheme || "light";
+    setTheme(initialTheme);
+    document.documentElement.setAttribute("data-theme", initialTheme);
+    setLastBoard(localStorage.getItem("ss_last_board"));
   }, []);
 
-  // Close dropdowns on outside click
   useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (searchRef.current && !searchRef.current.contains(e.target as Node))
-        setShowSearch(false);
-      if (notifRef.current && !notifRef.current.contains(e.target as Node))
-        setShowNotifications(false);
-      if (settingsRef.current && !settingsRef.current.contains(e.target as Node))
-        setShowSettings(false);
-      if (userRef.current && !userRef.current.contains(e.target as Node))
-        setShowUserMenu(false);
-      if (exportRef.current && !exportRef.current.contains(e.target as Node))
-        setShowExportMenu(false);
+    function closeMenus(event: MouseEvent) {
+      const target = event.target as Node;
+      if (searchRef.current && !searchRef.current.contains(target)) setShowSearch(false);
+      if (userRef.current && !userRef.current.contains(target)) setShowUserMenu(false);
+      if (exportRef.current && !exportRef.current.contains(target)) setShowExportMenu(false);
     }
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
+    document.addEventListener("mousedown", closeMenus);
+    return () => document.removeEventListener("mousedown", closeMenus);
   }, []);
 
-  // Live search
   useEffect(() => {
     if (!searchQuery.trim()) {
       setSearchResults([]);
@@ -112,546 +99,359 @@ export default function TopNav({
 
     const timer = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_URL}/api/boards`, {
-          headers: authHeaders,
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const filtered = (data.boards || []).filter((b: any) =>
-            b.name.toLowerCase().includes(searchQuery.toLowerCase())
-          );
-          setSearchResults(
-            filtered.map((b: any) => ({
-              id: b.id,
-              name: b.name,
-              nodeCount: b.nodeCount,
+        const response = await fetch(`${API_URL}/api/boards`, { headers: authHeaders });
+        if (!response.ok) return;
+        const data = await response.json();
+        const query = searchQuery.toLowerCase();
+        setSearchResults(
+          (data.boards || [])
+            .filter((board: SearchResult) => board.name.toLowerCase().includes(query))
+            .map((board: SearchResult) => ({
+              id: board.id,
+              name: board.name,
+              nodeCount: board.nodeCount,
             }))
-          );
-          setShowSearch(true);
-        }
-      } catch {}
-    }, 200);
+        );
+        setShowSearch(true);
+      } catch {
+        setSearchResults([]);
+      }
+    }, 220);
 
     return () => clearTimeout(timer);
   }, [searchQuery, authHeaders]);
 
-
-
-  const toggleTheme = () => {
-    const newTheme = theme === "dark" ? "light" : "dark";
-    setTheme(newTheme);
-    localStorage.setItem("ss_theme", newTheme);
-    document.documentElement.setAttribute("data-theme", newTheme);
-  };
-
-  const [lastBoard, setLastBoard] = useState<string | null>(null);
-
-  // Read last board from localStorage AFTER hydration to avoid mismatch
-  useEffect(() => {
-    const stored = localStorage.getItem("ss_last_board");
-    if (stored) setLastBoard(stored);
-  }, []);
-
   const navLinks = [
-    { href: "/", label: "Files" },
+    { href: "/", label: "Workspaces" },
     { href: lastBoard ? `/canvas/${lastBoard}` : "/canvas", label: "Canvas" },
-    { href: "/history", label: "History" },
+    { href: "/history", label: "Versions" },
   ];
 
-  const handleToggle = () => {
-    const newState = !isMessCleanupActive;
-    onToggleMessCleanup?.(newState);
-    if (newState) {
-      onMessCleanup?.();
+  const toggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    setTheme(nextTheme);
+    localStorage.setItem("ss_theme", nextTheme);
+    document.documentElement.setAttribute("data-theme", nextTheme);
+  };
+
+  const handleAutoLayout = () => {
+    if (isMessCleanupActive) return;
+    onToggleMessCleanup?.(true);
+    onMessCleanup?.();
+  };
+
+  const saveBoardName = async () => {
+    setIsEditingBoardName(false);
+    const nextName = editBoardName.trim();
+    if (!nextName || nextName === storeBoardName) return;
+    try {
+      await fetch(`${API_URL}/api/boards/${storeBoardId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ name: nextName }),
+      });
+      useBoardStore.setState({ boardName: nextName });
+    } catch {
+      setEditBoardName(storeBoardName);
+    }
+  };
+
+  const downloadText = (content: string, type: string, filename: string) => {
+    const url = URL.createObjectURL(new Blob([content], { type }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const exportJson = () => {
+    const store = useBoardStore.getState();
+    downloadText(
+      JSON.stringify(
+        {
+          boardId: store.boardId,
+          boardName: store.boardName,
+          nodes: store.getSerializedNodes(),
+          edges: store.getSerializedEdges(),
+        },
+        null,
+        2
+      ),
+      "application/json",
+      `${store.boardName || "architecture"}.json`
+    );
+    setShowExportMenu(false);
+  };
+
+  const exportFromServer = async (kind: "docker" | "terraform" | "report") => {
+    setExportLoading(kind);
+    const store = useBoardStore.getState();
+    try {
+      const endpoint = kind === "docker" ? "docker-compose" : kind;
+      const response = await fetch(`${API_URL}/api/export/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({
+          boardId: store.boardId,
+          nodes: store.getSerializedNodes(),
+          edges: store.getSerializedEdges(),
+          boardName: store.boardName,
+        }),
+      });
+
+      if (response.ok && kind === "terraform") {
+        const bundle = await response.json();
+        for (const [filename, content] of Object.entries(bundle)) {
+          downloadText(content as string, "text/plain", filename);
+        }
+      } else if (response.ok) {
+        const text = await response.text();
+        downloadText(
+          text,
+          kind === "docker" ? "text/yaml" : "text/markdown",
+          kind === "docker"
+            ? "docker-compose.yml"
+            : `${store.boardName || "architecture"}-report.md`
+        );
+      }
+    } finally {
+      setExportLoading(null);
+      setShowExportMenu(false);
     }
   };
 
   return (
-    <nav
-      id="top-nav"
-      className="fixed top-0 left-0 right-0 h-14 bg-surface border-b border-border z-50 flex items-center px-4 gap-4"
-    >
-      {/* Logo */}
-      <Link
-        href="/"
-        id="nav-logo"
-        className="flex items-center gap-2 mr-2 shrink-0"
+    <>
+      <nav
+        id="top-nav"
+        className="fixed inset-x-0 top-0 z-50 flex h-16 items-center gap-3 border-b border-border bg-surface/95 px-3 backdrop-blur-xl sm:px-5"
       >
-        <Workflow className="w-5 h-5 text-accent-cyan" />
-        <span className="font-display font-bold text-sm tracking-wider text-accent-cyan uppercase">
-          System Synthesis
-        </span>
-      </Link>
+        <Link href="/" id="nav-logo" className="flex shrink-0 items-center gap-2.5">
+          <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent-cyan text-white shadow-[0_7px_18px_rgba(108,79,247,0.22)]">
+            <Workflow className="h-[18px] w-[18px]" strokeWidth={2.2} />
+          </span>
+          <span className="hidden font-display text-[15px] font-bold tracking-[-0.02em] text-text-primary sm:block">
+            System Synthesis
+          </span>
+        </Link>
 
-      {/* Nav Links */}
-      <div className="flex items-center gap-1">
-        {navLinks.map((link) => {
-          const isActive =
-            link.href === "/"
-              ? pathname === "/"
-              : pathname.startsWith(link.href.split("/").slice(0, 2).join("/")) &&
-                link.href !== "/";
-          return (
-            <Link
-              key={link.label}
-              href={link.href}
-              id={`nav-link-${link.label.toLowerCase()}`}
-              className={`px-3 py-1.5 text-sm font-display transition-colors duration-150 rounded-sm ${
-                isActive
-                  ? "text-accent-cyan"
-                  : "text-text-secondary hover:text-text-primary"
-              }`}
-            >
-              {link.label}
-              {isActive && (
-                <div className="h-0.5 bg-accent-cyan mt-1 rounded-full" />
-              )}
-            </Link>
-          );
-        })}
-      </div>
+        <div className="hidden items-center gap-1 rounded-lg bg-canvas-50 p-1 md:flex">
+          {navLinks.map((link) => {
+            const active =
+              link.href === "/"
+                ? pathname === "/"
+                : pathname.startsWith(link.href.split("/").slice(0, 2).join("/"));
+            return (
+              <Link
+                key={link.label}
+                href={link.href}
+                id={`nav-link-${link.label.toLowerCase()}`}
+                className={`rounded-md px-3 py-1.5 text-xs font-semibold transition-all ${
+                  active
+                    ? "bg-surface text-text-primary shadow-[0_1px_3px_rgba(29,33,53,0.08)]"
+                    : "text-text-muted hover:text-text-primary"
+                }`}
+              >
+                {link.label}
+              </Link>
+            );
+          })}
+        </div>
 
-      {/* Board Name (inline editable — only on canvas pages) */}
-      {pathname.startsWith("/canvas") && storeBoardName && (
-        <div className="flex items-center gap-1.5 px-2 shrink-0 max-w-[200px]">
-          <span className="text-text-muted text-xs">/</span>
-          {isEditingBoardName ? (
-            <input
-              ref={boardNameInputRef}
-              value={editBoardName}
-              onChange={(e) => setEditBoardName(e.target.value)}
-              onBlur={async () => {
-                setIsEditingBoardName(false);
-                if (editBoardName.trim() && editBoardName !== storeBoardName) {
-                  try {
-                    await fetch(`${API_URL}/api/boards/${storeBoardId}`, {
-                      method: "PUT",
-                      headers: { "Content-Type": "application/json", ...authHeaders },
-                      body: JSON.stringify({ name: editBoardName.trim() }),
-                    });
-                    useBoardStore.setState({ boardName: editBoardName.trim() });
-                  } catch {}
-                }
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") (e.target as HTMLInputElement).blur();
-                if (e.key === "Escape") {
+        {isCanvas && storeBoardName && (
+          <div className="hidden min-w-0 items-center gap-2 border-l border-border pl-3 lg:flex">
+            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.14em] text-text-muted">
+              Board
+            </span>
+            {isEditingBoardName && storeBoardRole === "owner" ? (
+              <input
+                ref={boardNameInputRef}
+                value={editBoardName}
+                onChange={(event) => setEditBoardName(event.target.value)}
+                onBlur={saveBoardName}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+                  if (event.key === "Escape") {
+                    setEditBoardName(storeBoardName);
+                    setIsEditingBoardName(false);
+                  }
+                }}
+                className="max-w-[210px] border-b border-accent-cyan bg-transparent px-0.5 text-sm font-semibold text-text-primary outline-none"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => {
+                  if (storeBoardRole !== "owner") return;
                   setEditBoardName(storeBoardName);
-                  setIsEditingBoardName(false);
-                }
-              }}
-              className="bg-transparent border-b border-accent-cyan text-sm font-display text-text-primary outline-none px-0.5 min-w-[80px] max-w-[180px]"
-              autoFocus
-            />
-          ) : (
-            <button
-              onClick={() => {
-                setEditBoardName(storeBoardName);
-                setIsEditingBoardName(true);
-                setTimeout(() => boardNameInputRef.current?.focus(), 50);
-              }}
-              className="group flex items-center gap-1 text-sm font-display text-text-secondary hover:text-text-primary transition-colors truncate max-w-[180px]"
-              title="Click to rename board"
-            >
-              <span className="truncate">{storeBoardName}</span>
-              <Pencil className="w-3 h-3 opacity-0 group-hover:opacity-60 transition-opacity shrink-0" />
-            </button>
-          )}
-        </div>
-      )}
-
-      <div className="flex-1" />
-
-      {/* Search */}
-      <div ref={searchRef} className="relative hidden md:flex items-center">
-        <Search className="absolute left-3 w-4 h-4 text-text-muted z-10" />
-        <input
-          id="nav-search"
-          type="text"
-          placeholder="Search projects..."
-          value={searchQuery}
-          onChange={(e) => setSearchQuery(e.target.value)}
-          onFocus={() => searchQuery && setShowSearch(true)}
-          className="input pl-9 w-56 text-xs h-8"
-        />
-        {showSearch && searchResults.length > 0 && (
-          <div className="absolute top-10 left-0 w-72 bg-surface border border-border rounded-md shadow-card z-50 overflow-hidden">
-            {searchResults.map((r) => (
-              <button
-                key={r.id}
-                onClick={() => {
-                  router.push(`/canvas/${r.id}`);
-                  setShowSearch(false);
-                  setSearchQuery("");
+                  setIsEditingBoardName(true);
+                  setTimeout(() => boardNameInputRef.current?.focus(), 40);
                 }}
-                className="w-full flex items-center justify-between px-3 py-2.5 text-left hover:bg-surface-light transition-colors border-b border-border last:border-0"
+                className="group flex max-w-[210px] items-center gap-1.5 truncate text-sm font-semibold text-text-primary"
+                title={storeBoardRole === "owner" ? "Rename board" : "Only the owner can rename this board"}
               >
-                <span className="text-xs font-display text-text-primary truncate">
-                  {r.name}
-                </span>
-                <span className="text-[10px] text-text-muted font-mono shrink-0 ml-2">
-                  {r.nodeCount} nodes
-                </span>
+                <span className="truncate">{storeBoardName}</span>
+                {storeBoardRole === "owner" && (
+                  <Pencil className="h-3 w-3 shrink-0 text-text-muted opacity-0 transition-opacity group-hover:opacity-100" />
+                )}
               </button>
-            ))}
-          </div>
-        )}
-        {showSearch && searchQuery && searchResults.length === 0 && (
-          <div className="absolute top-10 left-0 w-72 bg-surface border border-border rounded-md shadow-card z-50 p-3">
-            <p className="text-xs text-text-muted text-center">No results found</p>
-          </div>
-        )}
-      </div>
-
-      {/* Mess Cleanup Toggle */}
-      {pathname.startsWith("/canvas") && (
-        <button
-          id="mess-cleanup-toggle"
-          onClick={handleToggle}
-          className={`flex items-center gap-2 px-4 py-1.5 rounded-sm text-xs font-display font-semibold transition-all duration-200 border ${
-            isMessCleanupActive
-              ? "bg-accent-cyan/15 border-accent-cyan text-accent-cyan shadow-glow-cyan"
-              : "bg-surface-light border-border text-text-secondary hover:border-border-light hover:text-text-primary"
-          }`}
-        >
-          <Sparkles className="w-3.5 h-3.5" />
-          Mess Cleanup
-          <div
-            className="toggle-track ml-1 w-8 h-4"
-            data-active={isMessCleanupActive.toString()}
-          >
-            <div className="toggle-thumb w-3 h-3" />
-          </div>
-        </button>
-      )}
-
-      {/* Export Dropdown */}
-      {pathname.startsWith("/canvas") && (
-        <div ref={exportRef} className="relative mr-2">
-          <button
-            id="export-dropdown-btn"
-            onClick={() => setShowExportMenu(!showExportMenu)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-sm text-xs font-display font-semibold transition-all duration-200 border bg-surface-light border-border text-text-secondary hover:border-border-light hover:text-text-primary"
-          >
-            <Download className="w-3.5 h-3.5" />
-            Export
-            <ChevronDown className={`w-3 h-3 transition-transform ${showExportMenu ? 'rotate-180' : ''}`} />
-          </button>
-
-          {showExportMenu && (
-            <div className="absolute top-10 right-0 w-56 bg-surface border border-border rounded-md shadow-card z-50 overflow-hidden animate-fade-in">
-              {/* PNG */}
-              <button
-                onClick={() => { onExportPng?.(); setShowExportMenu(false); }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border"
-              >
-                <ImageIcon className="w-4 h-4 text-accent-cyan" />
-                <div>
-                  <p className="font-semibold">Export as PNG</p>
-                  <p className="text-[10px] text-text-muted">Canvas screenshot</p>
-                </div>
-              </button>
-
-              {/* JSON */}
-              <button
-                onClick={() => {
-                  const store = useBoardStore.getState();
-                  const jsonStr = JSON.stringify({
-                    boardName: store.boardName,
-                    nodes: store.getSerializedNodes(),
-                    edges: store.getSerializedEdges(),
-                  }, null, 2);
-                  const blob = new Blob([jsonStr], { type: 'application/json' });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement('a'); a.href = url; a.download = `${store.boardName || 'architecture'}.json`; a.click();
-                  URL.revokeObjectURL(url);
-                  setShowExportMenu(false);
-                }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border"
-              >
-                <FileCode className="w-4 h-4 text-accent-cyan" />
-                <div>
-                  <p className="font-semibold">Export as JSON</p>
-                  <p className="text-[10px] text-text-muted">Raw architecture data</p>
-                </div>
-              </button>
-
-              {/* Docker Compose */}
-              <button
-                disabled={exportLoading === 'docker'}
-                onClick={async () => {
-                  setExportLoading('docker');
-                  try {
-                    const store = useBoardStore.getState();
-                    const res = await fetch(`${API_URL}/api/export/docker-compose`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ nodes: store.getSerializedNodes(), edges: store.getSerializedEdges() }),
-                    });
-                    if (res.ok) {
-                      const text = await res.text();
-                      const blob = new Blob([text], { type: 'text/yaml' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a'); a.href = url; a.download = 'docker-compose.yml'; a.click();
-                      URL.revokeObjectURL(url);
-                    }
-                  } catch {}
-                  setExportLoading(null); setShowExportMenu(false);
-                }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border disabled:opacity-50"
-              >
-                <Container className="w-4 h-4 text-status-active" />
-                <div>
-                  <p className="font-semibold">Docker Compose</p>
-                  <p className="text-[10px] text-text-muted">docker-compose.yml</p>
-                </div>
-              </button>
-
-              {/* Terraform */}
-              <button
-                disabled={exportLoading === 'terraform'}
-                onClick={async () => {
-                  setExportLoading('terraform');
-                  try {
-                    const store = useBoardStore.getState();
-                    const res = await fetch(`${API_URL}/api/export/terraform`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ nodes: store.getSerializedNodes(), edges: store.getSerializedEdges() }),
-                    });
-                    if (res.ok) {
-                      const bundle = await res.json();
-                      // Download each file
-                      for (const [filename, content] of Object.entries(bundle)) {
-                        const blob = new Blob([content as string], { type: 'text/plain' });
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
-                        URL.revokeObjectURL(url);
-                      }
-                    }
-                  } catch {}
-                  setExportLoading(null); setShowExportMenu(false);
-                }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors border-b border-border disabled:opacity-50"
-              >
-                <FileCode className="w-4 h-4 text-accent-purple" />
-                <div>
-                  <p className="font-semibold">Terraform</p>
-                  <p className="text-[10px] text-text-muted">main.tf, variables.tf, outputs.tf</p>
-                </div>
-              </button>
-
-              {/* Design Doc */}
-              <button
-                disabled={exportLoading === 'report'}
-                onClick={async () => {
-                  setExportLoading('report');
-                  try {
-                    const store = useBoardStore.getState();
-                    const res = await fetch(`${API_URL}/api/export/report`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        nodes: store.getSerializedNodes(),
-                        edges: store.getSerializedEdges(),
-                        boardName: store.boardName,
-                      }),
-                    });
-                    if (res.ok) {
-                      const text = await res.text();
-                      const blob = new Blob([text], { type: 'text/markdown' });
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement('a'); a.href = url; a.download = `${store.boardName || 'architecture'}-report.md`; a.click();
-                      URL.revokeObjectURL(url);
-                    }
-                  } catch {}
-                  setExportLoading(null); setShowExportMenu(false);
-                }}
-                className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left text-xs font-display text-text-secondary hover:bg-surface-light hover:text-text-primary transition-colors disabled:opacity-50"
-              >
-                <FileText className="w-4 h-4 text-status-warning" />
-                <div>
-                  <p className="font-semibold">Design Document</p>
-                  <p className="text-[10px] text-text-muted">Markdown architecture report</p>
-                </div>
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Right Icons */}
-      <div className="flex items-center gap-2">
-        {/* Notifications */}
-        <div ref={notifRef} className="relative">
-          <button
-            id="nav-notifications"
-            onClick={() => {
-              setShowNotifications(!showNotifications);
-              setShowSettings(false);
-              setShowUserMenu(false);
-            }}
-            className="btn-ghost p-2 rounded-sm relative"
-          >
-            <Bell className="w-4 h-4" />
-            {notifications.length > 0 && (
-              <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 bg-accent-cyan rounded-full" />
             )}
-          </button>
-          {showNotifications && (
-            <div className="absolute top-10 right-0 w-72 bg-surface border border-border rounded-md shadow-card z-50">
-              <div className="px-3 py-2 border-b border-border flex items-center justify-between">
-                <span className="text-xs font-display font-semibold text-text-primary">
-                  Notifications
-                </span>
-                {notifications.length > 0 && (
-                  <button
-                    onClick={() => setNotifications([])}
-                    className="text-[10px] text-text-muted hover:text-accent-cyan transition-colors"
-                  >
-                    Clear all
-                  </button>
+          </div>
+        )}
+
+        <div className="flex-1" />
+
+        {!isCanvas && (
+          <div ref={searchRef} className="relative hidden lg:block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
+            <input
+              id="nav-search"
+              type="search"
+              placeholder="Search workspaces"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onFocus={() => searchQuery && setShowSearch(true)}
+              className="input h-9 w-60 bg-canvas-50 pl-9 text-xs"
+            />
+            {showSearch && (
+              <div className="absolute right-0 top-11 w-72 overflow-hidden rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-float)]">
+                {searchResults.length ? (
+                  searchResults.map((result) => (
+                    <button
+                      key={result.id}
+                      onClick={() => {
+                        router.push(`/canvas/${result.id}`);
+                        setShowSearch(false);
+                        setSearchQuery("");
+                      }}
+                      className="flex w-full items-center justify-between rounded-lg px-3 py-2.5 text-left hover:bg-surface-light"
+                    >
+                      <span className="truncate text-xs font-semibold text-text-primary">{result.name}</span>
+                      <span className="ml-3 shrink-0 text-[10px] font-mono text-text-muted">{result.nodeCount} nodes</span>
+                    </button>
+                  ))
+                ) : (
+                  <p className="px-3 py-4 text-center text-xs text-text-muted">No matching workspaces</p>
                 )}
               </div>
-              {notifications.length === 0 ? (
-                <div className="p-4 text-center">
-                  <p className="text-xs text-text-muted">No notifications</p>
+            )}
+          </div>
+        )}
+
+        {isCanvas && (
+          <>
+            <button
+              id="mess-cleanup-toggle"
+              onClick={handleAutoLayout}
+              className={`flex h-9 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-all ${
+                isMessCleanupActive
+                  ? "border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan"
+                  : "border-border bg-surface text-text-secondary hover:border-border-light hover:text-text-primary"
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span className="hidden xl:inline">Auto layout</span>
+            </button>
+
+            <div ref={exportRef} className="relative">
+              <button
+                id="export-dropdown-btn"
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                className="flex h-9 items-center gap-2 rounded-lg border border-border bg-surface px-3 text-xs font-semibold text-text-secondary transition-all hover:border-border-light hover:text-text-primary"
+              >
+                <Download className="h-3.5 w-3.5" />
+                <span className="hidden sm:inline">Export</span>
+                <ChevronDown className={`hidden h-3 w-3 transition-transform sm:block ${showExportMenu ? "rotate-180" : ""}`} />
+              </button>
+
+              {showExportMenu && (
+                <div className="absolute right-0 top-11 w-64 overflow-hidden rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-float)] animate-fade-in">
+                  <p className="px-3 pb-1 pt-2 text-[10px] font-mono font-semibold uppercase tracking-[0.14em] text-text-muted">
+                    Deterministic exports
+                  </p>
+                  <ExportItem icon={<ImageIcon className="h-4 w-4" />} label="Canvas image" detail="PNG snapshot" onClick={() => { onExportPng?.(); setShowExportMenu(false); }} />
+                  <ExportItem icon={<FileCode className="h-4 w-4" />} label="Graph data" detail="Canonical JSON" onClick={exportJson} />
+                  <ExportItem icon={<Container className="h-4 w-4" />} label="Docker Compose" detail="Supported resource subset" loading={exportLoading === "docker"} onClick={() => exportFromServer("docker")} />
+                  <ExportItem icon={<FileCode className="h-4 w-4" />} label="Terraform" detail="Pinned provider files" loading={exportLoading === "terraform"} onClick={() => exportFromServer("terraform")} />
+                  <ExportItem icon={<FileText className="h-4 w-4" />} label="Design document" detail="Markdown report" loading={exportLoading === "report"} onClick={() => exportFromServer("report")} />
                 </div>
-              ) : (
-                notifications.map((n, i) => (
-                  <div
-                    key={i}
-                    className="px-3 py-2.5 text-xs text-text-secondary border-b border-border last:border-0 flex items-start gap-2"
-                  >
-                    <span className="w-1.5 h-1.5 rounded-full bg-accent-cyan mt-1 shrink-0" />
-                    {n}
-                  </div>
-                ))
               )}
             </div>
-          )}
-        </div>
+          </>
+        )}
 
-        {/* Settings */}
-        <div ref={settingsRef} className="relative">
-          <button
-            id="nav-settings"
-            onClick={() => {
-              setShowSettings(!showSettings);
-              setShowNotifications(false);
-              setShowUserMenu(false);
-            }}
-            className="btn-ghost p-2 rounded-sm"
-          >
-            <Settings className="w-4 h-4" />
-          </button>
-          {showSettings && (
-            <div className="absolute top-10 right-0 w-64 bg-surface border border-border rounded-md shadow-card z-50 p-4 space-y-3">
-              <h4 className="text-xs font-display font-semibold text-text-primary uppercase tracking-wider">
-                Settings
-              </h4>
-              <div>
-                <label className="text-[11px] text-text-muted font-display block mb-1">
-                  Display Name
-                </label>
-                <input
-                  type="text"
-                  value={userName}
-                  onChange={(e) => saveUserName(e.target.value)}
-                  className="input w-full text-xs h-8"
-                  placeholder="Your name"
-                />
-              </div>
-              <div>
-                <label className="text-[11px] text-text-muted font-display block mb-1">
-                  Theme
-                </label>
-                <button
-                  onClick={toggleTheme}
-                  className="w-full flex items-center gap-2 px-3 py-2 bg-canvas rounded-sm border border-border text-xs text-text-muted hover:border-accent-cyan transition-all"
-                >
-                  <span className={`w-3 h-3 rounded-full border border-border ${theme === "dark" ? "bg-canvas" : "bg-white"}`} />
-                  {theme === "dark" ? "Dark Mode" : "Light Mode"}
-                  <span className="ml-auto text-[10px] text-accent-cyan">Switch</span>
-                </button>
-              </div>
+        <button
+          onClick={toggleTheme}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-surface-light hover:text-text-primary"
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        >
+          {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+        </button>
 
-            </div>
-          )}
-        </div>
-
-        {/* User Avatar */}
         <div ref={userRef} className="relative">
           <button
             id="nav-avatar"
-            onClick={() => {
-              setShowUserMenu(!showUserMenu);
-              setShowNotifications(false);
-              setShowSettings(false);
-            }}
-            className="w-8 h-8 rounded-sm bg-accent-purple/20 border border-accent-purple/30 flex items-center justify-center"
+            onClick={() => setShowUserMenu(!showUserMenu)}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-accent-cyan/20 bg-accent-cyan/10 text-[11px] font-bold text-accent-cyan"
+            aria-label="Open account menu"
           >
-            <span className="text-[10px] font-display font-bold text-accent-purple">
-              {userName.slice(0, 2).toUpperCase()}
-            </span>
+            {userName.slice(0, 2).toUpperCase()}
           </button>
           {showUserMenu && (
-            <div className="absolute top-10 right-0 w-48 bg-surface border border-border rounded-md shadow-card z-50 overflow-hidden">
-              <div className="px-3 py-3 border-b border-border">
-                <p className="text-sm font-display font-semibold text-text-primary">
-                  {userName}
-                </p>
-                <p className="text-[10px] text-text-muted font-mono mt-0.5">
-                  {isGuest ? "Guest" : `ID: ${userId.slice(0, 8)}…`}
+            <div className="absolute right-0 top-11 w-56 rounded-xl border border-border bg-surface p-1.5 shadow-[var(--shadow-float)] animate-fade-in">
+              <div className="border-b border-border px-3 py-2.5">
+                <p className="text-sm font-semibold text-text-primary">{userName}</p>
+                <p className="mt-0.5 text-[10px] font-mono text-text-muted">
+                  {isGuest ? "Guest workspace" : `Account ${userId.slice(0, 8)}`}
                 </p>
               </div>
+              <Link href="/history" onClick={() => setShowUserMenu(false)} className="mt-1 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-light hover:text-text-primary">
+                <History className="h-3.5 w-3.5" /> Version history
+              </Link>
               {isGuest ? (
-                <button
-                  onClick={() => {
-                    setShowAuthModal(true);
-                    setShowUserMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-xs text-accent-cyan text-left hover:bg-surface-light transition-colors font-display font-semibold"
-                >
-                  Sign In / Register
+                <button onClick={() => { setShowAuthModal(true); setShowUserMenu(false); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-accent-cyan hover:bg-accent-cyan/10">
+                  <LogIn className="h-3.5 w-3.5" /> Sign in or register
                 </button>
               ) : (
-                <button
-                  onClick={() => {
-                    logout();
-                    setShowUserMenu(false);
-                  }}
-                  className="w-full px-3 py-2 text-xs text-status-error text-left hover:bg-surface-light transition-colors"
-                >
-                  Log Out
+                <button onClick={() => { logout(); setShowUserMenu(false); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-medium text-status-error hover:bg-status-error/10">
+                  <LogOut className="h-3.5 w-3.5" /> Log out
                 </button>
               )}
-              <button
-                onClick={() => {
-                  const name = prompt("Enter new display name:", userName);
-                  if (name) saveUserName(name);
-                  setShowUserMenu(false);
-                }}
-                className="w-full px-3 py-2 text-xs text-text-secondary text-left hover:bg-surface-light transition-colors"
-              >
-                Change Name
-              </button>
-              <Link
-                href="/history"
-                onClick={() => setShowUserMenu(false)}
-                className="block px-3 py-2 text-xs text-text-secondary hover:bg-surface-light transition-colors"
-              >
-                View All Boards
-              </Link>
             </div>
           )}
         </div>
-      </div>
+      </nav>
 
-      {/* Auth Modal */}
-      {showAuthModal && (
-        <AuthModal onClose={() => setShowAuthModal(false)} />
-      )}
-    </nav>
+      {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+    </>
+  );
+}
+
+function ExportItem({
+  icon,
+  label,
+  detail,
+  loading = false,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  detail: string;
+  loading?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={loading}
+      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-text-secondary transition-colors hover:bg-surface-light hover:text-text-primary disabled:opacity-50"
+    >
+      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-canvas-50 text-accent-cyan">{icon}</span>
+      <span className="min-w-0">
+        <span className="block text-xs font-semibold">{loading ? "Preparing…" : label}</span>
+        <span className="block truncate text-[10px] text-text-muted">{detail}</span>
+      </span>
+    </button>
   );
 }

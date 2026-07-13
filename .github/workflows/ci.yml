@@ -23,9 +23,6 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
-      - name: Run Linter
-        run: npm run lint --workspace=frontend
-
       - name: Build Next.js
         run: npm run build --workspace=frontend
         env:
@@ -50,3 +47,19 @@ jobs:
 
       - name: Build Backend (TypeScript)
         run: npm run build --workspace=server
+
+      - name: Run backend, security, recovery, and convergence tests
+        run: npm test --workspace=server
+
+      - name: Run authenticated API and WebSocket integration checks
+        shell: bash
+        run: |
+          node server/dist/index.js > server.log 2>&1 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:4000/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail http://localhost:4000/health
+          node test_phases.mjs

@@ -26,10 +26,8 @@ import * as Y from "yjs";
  *    to handle React Strict Mode double-mounting.
  * 3. Cleanup only leaves the room — doesn't disconnect.
  * 
- * Operation-based sync:
- * - Local mutations record ops to `pendingOps` in the store.
- * - This hook flushes them at a regular interval and emits to the server.
- * - Incoming `operation_applied` events are applied via `applyRemoteOperation`.
+ * Granular nested Yjs maps merge independent node-field changes. Only Yjs
+ * binary updates cross the socket boundary.
  */
 export function useMultiplayer(
   boardId: string,
@@ -55,6 +53,19 @@ export function useMultiplayer(
     mountedRef.current = true;
     const socket = getSocket();
 
+    const subscribeToLocalUpdates = (doc: Y.Doc) => {
+      handleYjsUpdateRef.current = (update: Uint8Array, origin: any) => {
+        if (!mountedRef.current || isRemoteUpdateRef.current || origin === "remote") return;
+        if (socket.connected && currentBoardRef.current) {
+          socket.emit("yjs_update", {
+            boardId: currentBoardRef.current,
+            update: Array.from(update),
+          });
+        }
+      };
+      doc.on("update", handleYjsUpdateRef.current);
+    };
+
     // ——— Event handlers ———
     const onConnect = () => {
       if (!mountedRef.current) return;
@@ -63,7 +74,7 @@ export function useMultiplayer(
 
       // Join the current board room
       if (currentBoardRef.current) {
-        socket.emit("join_board", currentBoardRef.current, userName, identityId);
+        socket.emit("join_board", { boardId: currentBoardRef.current });
       }
     };
 
@@ -78,7 +89,11 @@ export function useMultiplayer(
       console.log(`[Multiplayer] Received board metadata: ${state.name}`);
       
       if (state.name && state.id) {
-        useBoardStore.setState({ boardName: state.name, boardId: state.id });
+        useBoardStore.setState({
+          boardName: state.name,
+          boardId: state.id,
+          boardRole: state.role ?? null,
+        });
       }
     };
 
@@ -101,6 +116,22 @@ export function useMultiplayer(
       isRemoteUpdateRef.current = true;
       Y.applyUpdate(doc, new Uint8Array(payload.update), "remote");
       useBoardStore.getState().applyYjsToLocal();
+      setTimeout(() => { isRemoteUpdateRef.current = false; }, 100);
+    };
+
+    const onYjsStateReplaced = (payload: { state: Uint8Array; restoredVersion: number }) => {
+      if (!mountedRef.current) return;
+      const previous = useBoardStore.getState().yDoc;
+      if (previous && handleYjsUpdateRef.current) {
+        previous.off("update", handleYjsUpdateRef.current);
+      }
+      useBoardStore.getState().initYjs();
+      const next = useBoardStore.getState().yDoc;
+      if (!next) return;
+      isRemoteUpdateRef.current = true;
+      Y.applyUpdate(next, new Uint8Array(payload.state), "remote");
+      useBoardStore.getState().applyYjsToLocal();
+      subscribeToLocalUpdates(next);
       setTimeout(() => { isRemoteUpdateRef.current = false; }, 100);
     };
 
@@ -161,6 +192,7 @@ export function useMultiplayer(
       socket.on("board_state", onBoardState);
       socket.on("yjs_full_state", onYjsFullState);
       socket.on("yjs_update", onYjsUpdate);
+      socket.on("yjs_state_replaced", onYjsStateReplaced);
       socket.on("cursor_moved", onCursorMoved);
       socket.on("user_joined", onUserJoined);
       socket.on("user_left", onUserLeft);
@@ -181,7 +213,7 @@ export function useMultiplayer(
         socket.emit("leave_board", currentBoardRef.current);
       }
       currentBoardRef.current = boardId;
-      socket.emit("join_board", boardId, userName, identityId);
+      socket.emit("join_board", { boardId });
     }
 
     // Always re-initialize Y.js doc to prevent state bleed between boards
@@ -193,18 +225,7 @@ export function useMultiplayer(
       if (handleYjsUpdateRef.current) {
         doc.off("update", handleYjsUpdateRef.current);
       }
-      handleYjsUpdateRef.current = (update: Uint8Array, origin: any) => {
-        if (!mountedRef.current || isRemoteUpdateRef.current) return;
-        if (origin === "remote") return; // redundant check
-
-        if (socket.connected && currentBoardRef.current) {
-          socket.emit("yjs_update", {
-            boardId: currentBoardRef.current,
-            update: Array.from(update), // socket.io prefers plain arrays/buffers over Uint8Array sometimes
-          });
-        }
-      };
-      doc.on("update", handleYjsUpdateRef.current);
+      subscribeToLocalUpdates(doc);
     }
 
     // ——— Cleanup: leave room, but DON'T disconnect socket ———
@@ -230,6 +251,7 @@ export function useMultiplayer(
       socket.off("board_state", onBoardState);
       socket.off("yjs_full_state", onYjsFullState);
       socket.off("yjs_update", onYjsUpdate);
+      socket.off("yjs_state_replaced", onYjsStateReplaced);
       socket.off("cursor_moved", onCursorMoved);
       socket.off("user_joined", onUserJoined);
       socket.off("user_left", onUserLeft);
@@ -255,13 +277,10 @@ export function useMultiplayer(
         cursor: {
           x,
           y,
-          userId: socket.id || "",
-          userName,
-          color: "#ebb2ff",
         },
       });
     },
-    [boardId, userName]
+    [boardId]
   );
 
   return { emitCursor };

@@ -6,13 +6,14 @@ import { useRouter } from "next/navigation";
 import TopNav from "@/components/TopNav";
 import { useUser } from "@/hooks/useUser";
 import {
-  Clock,
-  Trash2,
-  Boxes,
+  ArrowLeft,
   ArrowUpDown,
+  Boxes,
+  Clock3,
+  GitBranch,
   Loader2,
   Plus,
-  ArrowLeft,
+  Trash2,
 } from "lucide-react";
 
 const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
@@ -28,9 +29,7 @@ interface BoardSummary {
 }
 
 function timeAgo(dateStr: string): string {
-  const now = Date.now();
-  const then = new Date(dateStr).getTime();
-  const diff = Math.floor((now - then) / 1000);
+  const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (diff < 60) return "Just now";
   if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
   if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
@@ -49,13 +48,14 @@ export default function HistoryPage() {
     if (!isReady) return;
     async function fetchBoards() {
       try {
-        const res = await fetch(`${API_URL}/api/boards`, { headers: authHeaders });
-        if (res.ok) {
-          const data = await res.json();
+        const response = await fetch(`${API_URL}/api/boards`, { headers: authHeaders });
+        if (response.ok) {
+          const data = await response.json();
           setBoards(data.boards || []);
         }
-      } catch {}
-      setLoading(false);
+      } finally {
+        setLoading(false);
+      }
     }
     fetchBoards();
   }, [isReady, userId, authHeaders]);
@@ -63,140 +63,96 @@ export default function HistoryPage() {
   const handleDelete = async (boardId: string) => {
     if (!confirm("Delete this architecture? This cannot be undone.")) return;
     try {
-      await fetch(`${API_URL}/api/boards/${boardId}`, {
-        method: "DELETE",
-        headers: authHeaders,
-      });
-      setBoards((prev) => prev.filter((b) => b.id !== boardId));
+      await fetch(`${API_URL}/api/boards/${boardId}`, { method: "DELETE", headers: authHeaders });
+      setBoards((current) => current.filter((board) => board.id !== boardId));
     } catch {}
   };
 
   const handleCreateBoard = async () => {
     try {
-      const res = await fetch(`${API_URL}/api/boards`, {
+      const response = await fetch(`${API_URL}/api/boards`, {
         method: "POST",
         headers: { ...authHeaders, "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Untitled Board" }),
+        body: JSON.stringify({ name: "Untitled architecture" }),
       });
-      if (res.ok) {
-        const board = await res.json();
+      if (response.ok) {
+        const board = await response.json();
         router.push(`/canvas/${board.id}`);
+        return;
       }
     } catch {}
+    router.push("/canvas/demo-ecommerce");
   };
 
   const sorted = [...boards].sort((a, b) => {
-    const diff =
-      new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
-    return sortAsc ? -diff : diff;
+    const difference = new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+    return sortAsc ? -difference : difference;
   });
 
   return (
     <div className="min-h-screen bg-canvas">
       <TopNav />
-      <main className="pt-14">
-        <div className="max-w-4xl mx-auto px-6 py-8">
-          {/* Header */}
-          <div className="flex items-center justify-between mb-6">
-            <div className="flex items-center gap-3">
-              <Link
-                href="/"
-                className="btn-ghost p-2 rounded-sm hover:bg-surface-light"
-              >
-                <ArrowLeft className="w-4 h-4" />
+      <main className="pt-16">
+        <div className="mx-auto max-w-5xl px-4 py-9 sm:px-6 lg:px-8 lg:py-12">
+          <header className="mb-8 flex flex-col gap-5 border-b border-border pb-8 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <Link href="/" className="mb-5 inline-flex items-center gap-1.5 text-xs font-semibold text-text-muted hover:text-text-primary">
+                <ArrowLeft className="h-3.5 w-3.5" /> Back to workspaces
               </Link>
-              <div>
-                <h1 className="font-display text-xl font-bold text-text-primary">
-                  All Architectures
-                </h1>
-                <p className="text-xs text-text-muted font-mono mt-0.5">
-                  {boards.length} board{boards.length !== 1 ? "s" : ""}
-                </p>
-              </div>
+              <p className="mb-2 text-[10px] font-mono font-semibold uppercase tracking-[0.16em] text-accent-cyan">Graph archive</p>
+              <h1 className="font-display text-3xl font-bold tracking-[-0.035em] text-text-primary">Architecture history</h1>
+              <p className="mt-2 text-sm text-text-secondary">Open, sort, or remove saved architecture workspaces.</p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setSortAsc(!sortAsc)}
-                className="btn-ghost flex items-center gap-1.5 px-3 py-1.5 rounded-sm text-xs font-display"
-              >
-                <ArrowUpDown className="w-3.5 h-3.5" />
-                {sortAsc ? "Oldest first" : "Newest first"}
+              <button onClick={() => setSortAsc(!sortAsc)} className="btn-secondary gap-2 text-xs">
+                <ArrowUpDown className="h-3.5 w-3.5" /> {sortAsc ? "Oldest first" : "Newest first"}
               </button>
-              <button
-                onClick={handleCreateBoard}
-                className="btn-primary flex items-center gap-1.5 text-xs px-3 py-1.5"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                New Board
+              <button onClick={handleCreateBoard} className="btn-primary gap-2 text-xs">
+                <Plus className="h-3.5 w-3.5" /> New architecture
               </button>
             </div>
+          </header>
+
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-bold text-text-primary">All workspaces</h2>
+            <span className="rounded-full border border-border bg-surface px-2.5 py-1 text-[10px] font-mono text-text-muted">
+              {boards.length} total
+            </span>
           </div>
 
-          {/* Board List */}
           {loading ? (
-            <div className="flex items-center justify-center py-20">
-              <Loader2 className="w-6 h-6 text-accent-cyan animate-spin" />
+            <div className="flex items-center justify-center rounded-2xl border border-border bg-surface py-24">
+              <Loader2 className="h-5 w-5 animate-spin text-accent-cyan" />
             </div>
           ) : sorted.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20">
-              <Boxes className="w-10 h-10 text-text-muted/30 mb-3" />
-              <p className="text-sm text-text-muted font-display mb-4">
-                No architectures yet
-              </p>
-              <button
-                onClick={handleCreateBoard}
-                className="btn-primary flex items-center gap-2 text-sm"
-              >
-                <Plus className="w-4 h-4" />
-                Create your first
-              </button>
+            <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border-light bg-surface px-6 py-20 text-center">
+              <div className="mb-4 flex h-11 w-11 items-center justify-center rounded-xl bg-canvas-50 text-text-muted"><Boxes className="h-5 w-5" /></div>
+              <h3 className="text-sm font-bold text-text-primary">No saved architecture yet</h3>
+              <p className="mt-1 text-xs text-text-muted">Create a workspace to begin building its graph history.</p>
+              <button onClick={handleCreateBoard} className="btn-primary mt-5 gap-2 text-xs"><Plus className="h-3.5 w-3.5" /> Create workspace</button>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="overflow-hidden rounded-2xl border border-border bg-surface">
               {sorted.map((board) => (
-                <Link
-                  key={board.id}
-                  href={`/canvas/${board.id}`}
-                  className="flex items-center gap-4 px-4 py-3 bg-surface border border-border rounded-sm hover:border-accent-cyan/30 transition-all group"
-                >
-                  {/* Icon */}
-                  <div className="w-9 h-9 rounded-sm bg-accent-cyan/10 border border-accent-cyan/20 flex items-center justify-center shrink-0">
-                    <Boxes className="w-4 h-4 text-accent-cyan" />
-                  </div>
-
-                  {/* Name + description */}
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-display font-semibold text-text-primary group-hover:text-accent-cyan transition-colors truncate">
-                      {board.name}
-                    </h3>
-                    <p className="text-[11px] text-text-muted font-mono truncate">
-                      {board.description || "No description"}
-                    </p>
-                  </div>
-
-                  {/* Stats */}
-                  <div className="hidden sm:flex items-center gap-4 text-[11px] text-text-muted font-mono shrink-0">
-                    <span>{board.nodeCount} nodes</span>
-                    <span>{board.edgeCount} edges</span>
-                  </div>
-
-                  {/* Time */}
-                  <span className="flex items-center gap-1 text-[11px] text-text-muted shrink-0">
-                    <Clock className="w-3 h-3" />
-                    {timeAgo(board.updatedAt)}
+                <Link key={board.id} href={`/canvas/${board.id}`} className="group flex items-center gap-4 border-b border-border px-4 py-4 transition-colors last:border-b-0 hover:bg-surface-light sm:px-5">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-accent-cyan/15 bg-accent-cyan/[0.07] text-accent-cyan">
+                    <GitBranch className="h-4 w-4" />
                   </span>
-
-                  {/* Delete */}
+                  <div className="min-w-0 flex-1">
+                    <h3 className="truncate text-sm font-bold text-text-primary transition-colors group-hover:text-accent-cyan">{board.name}</h3>
+                    <p className="mt-0.5 truncate text-[11px] text-text-muted">{board.description || "No description"}</p>
+                  </div>
+                  <div className="hidden items-center gap-5 text-[10px] font-mono text-text-muted sm:flex">
+                    <span>{board.nodeCount} components</span>
+                    <span>{board.edgeCount} connections</span>
+                  </div>
+                  <span className="hidden items-center gap-1.5 text-[10px] text-text-muted md:flex"><Clock3 className="h-3 w-3" /> {timeAgo(board.updatedAt)}</span>
                   <button
-                    onClick={(e) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleDelete(board.id);
-                    }}
-                    className="opacity-0 group-hover:opacity-100 p-1.5 rounded-sm hover:bg-status-error/20 transition-all shrink-0"
-                    title="Delete"
+                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); handleDelete(board.id); }}
+                    className="rounded-lg p-2 text-text-muted opacity-0 transition-all hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
+                    aria-label={`Delete ${board.name}`}
                   >
-                    <Trash2 className="w-3.5 h-3.5 text-status-error" />
+                    <Trash2 className="h-3.5 w-3.5" />
                   </button>
                 </Link>
               ))}

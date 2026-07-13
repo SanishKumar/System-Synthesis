@@ -59,30 +59,30 @@ const nodeIcons: Record<ArchNodeType, React.ReactNode> = {
 };
 
 const nodeColors: Record<ArchNodeType, string> = {
-  database: "#f59e0b",
-  service: "#00dbe9",
-  gateway: "#22c55e",
-  queue: "#a78bfa",
-  cache: "#ef4444",
-  client: "#60a5fa",
-  loadbalancer: "#f472b6",
-  storage: "#fb923c",
-  cdn: "#38bdf8",
-  firewall: "#f43f5e",
-  dns: "#2dd4bf",
-  proxy: "#818cf8",
-  container: "#34d399",
-  function: "#fbbf24",
-  search: "#c084fc",
-  warehouse: "#fb7185",
-  stream: "#22d3ee",
-  broker: "#e879f9",
-  auth: "#4ade80",
-  vault: "#f97316",
-  monitor: "#a3e635",
-  registry: "#67e8f9",
-  scheduler: "#fcd34d",
-  group: "#94a3b8",
+  database: "#b7791f",
+  service: "#6c4ff7",
+  gateway: "#218a69",
+  queue: "#4f6eb6",
+  cache: "#b7791f",
+  client: "#6c4ff7",
+  loadbalancer: "#218a69",
+  storage: "#b7791f",
+  cdn: "#218a69",
+  firewall: "#c84f64",
+  dns: "#218a69",
+  proxy: "#218a69",
+  container: "#6c4ff7",
+  function: "#6c4ff7",
+  search: "#b7791f",
+  warehouse: "#b7791f",
+  stream: "#4f6eb6",
+  broker: "#4f6eb6",
+  auth: "#c84f64",
+  vault: "#c84f64",
+  monitor: "#52606d",
+  registry: "#52606d",
+  scheduler: "#52606d",
+  group: "#8b8fa2",
 };
 
 function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeData }) {
@@ -155,17 +155,17 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
 
   return (
     <div
-      className={`group relative min-w-[200px] max-w-[280px] rounded-md transition-all duration-200 bg-surface ${
+      className={`group relative min-w-[196px] max-w-[280px] rounded-xl bg-surface shadow-[0_3px_12px_rgba(29,33,53,0.06)] transition-all duration-200 ${
         selected
-          ? "border border-accent-cyan shadow-glow-cyan-md"
-          : "border border-border hover:border-border-light"
+          ? "border border-accent-cyan shadow-[0_0_0_3px_rgba(108,79,247,0.10),0_8px_24px_rgba(29,33,53,0.10)]"
+          : "border border-border hover:border-border-light hover:shadow-[0_8px_24px_rgba(29,33,53,0.09)]"
       }`}
     >
       {/* Header */}
-      <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border">
+      <div className="flex items-center gap-2.5 border-b border-border px-3 py-2.5">
         <span
-          className="flex items-center justify-center w-5 h-5"
-          style={{ color: nodeColors[data.nodeType] }}
+          className="flex h-7 w-7 items-center justify-center rounded-lg"
+          style={{ color: nodeColors[data.nodeType], backgroundColor: `${nodeColors[data.nodeType]}12` }}
         >
           {icon}
         </span>
@@ -176,12 +176,12 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
             onChange={(e) => setRenameText(e.target.value)}
             onBlur={saveRename}
             onKeyDown={handleRenameKeyDown}
-            className="font-display font-semibold text-sm text-text-primary flex-1 bg-transparent border-b border-accent-cyan/50 outline-none nodrag nopan nowheel"
+            className="nodrag nopan nowheel flex-1 border-b border-accent-cyan/50 bg-transparent text-sm font-semibold text-text-primary outline-none"
             spellCheck={false}
           />
         ) : (
           <span
-            className="font-display font-semibold text-sm text-text-primary flex-1 truncate cursor-text"
+            className="flex-1 cursor-text truncate text-sm font-semibold text-text-primary"
             onDoubleClick={handleLabelDoubleClick}
             title="Double-click to rename"
           >
@@ -193,8 +193,8 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
 
       {/* Body */}
       {data.subtitle && (
-        <div className="px-3 py-2">
-          <p className="text-xs font-mono text-text-muted whitespace-pre-line leading-relaxed">
+        <div className="px-3 py-2.5">
+          <p className="whitespace-pre-line text-[11px] leading-relaxed text-text-muted">
             {data.subtitle}
           </p>
         </div>
@@ -204,7 +204,7 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
       {(data.metadata?.notes || data.metadata?.codeSnippet || (data.metadata?.links?.length ?? 0) > 0 || data.tech) && (
         <div className="flex items-center gap-1 px-3 py-1.5 border-t border-border">
           {data.tech && (
-            <span className="text-[9px] font-mono text-text-muted bg-canvas-50 px-1.5 py-0.5 rounded-sm border border-border">
+            <span className="rounded-full border border-border bg-canvas-50 px-2 py-0.5 text-[9px] font-mono text-text-muted">
               {data.tech}
             </span>
           )}
@@ -241,10 +241,10 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
 
       {/* Selection glow overlay */}
       {selected && (
-        <div className="absolute -inset-px rounded-md border border-accent-cyan/30 pointer-events-none" />
+        <div className="pointer-events-none absolute -inset-px rounded-xl border border-accent-cyan/30" />
       )}
 
-      {/* Validation badge */}
+      {/* Architecture lint badge */}
       {worstSeverity && (
         <div
           className={`absolute -top-2 -right-2 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-display font-bold shadow-sm border pointer-events-none z-10 ${
@@ -254,7 +254,7 @@ function ArchitectureNode({ id, data, selected }: NodeProps & { data: ArchNodeDa
               ? "bg-status-warning text-canvas border-status-warning"
               : "bg-accent-cyan text-canvas border-accent-cyan"
           }`}
-          title={`${nodeIssues.length} validation issue(s)`}
+          title={`${nodeIssues.length} architecture lint finding(s)`}
         >
           <AlertTriangle className="w-2.5 h-2.5" />
           {nodeIssues.length}

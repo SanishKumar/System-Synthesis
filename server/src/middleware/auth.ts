@@ -13,8 +13,13 @@ import jwt from "jsonwebtoken";
 
 // ── Config ─────────────────────────────────────────────────────────
 
-const JWT_SECRET = process.env.JWT_SECRET || "ss-dev-secret-change-in-production";
+const DEVELOPMENT_SECRET = "ss-development-only-secret";
+const JWT_SECRET = process.env.JWT_SECRET || DEVELOPMENT_SECRET;
 const JWT_EXPIRES_IN_SECONDS = parseInt(process.env.JWT_EXPIRES_IN_SECONDS || "604800", 10); // 7 days
+
+if (process.env.NODE_ENV === "production" && JWT_SECRET === DEVELOPMENT_SECRET) {
+  throw new Error("JWT_SECRET must be configured in production");
+}
 
 export interface JwtPayload {
   userId: string;
@@ -34,13 +39,22 @@ declare global {
 
 /** Sign a JWT token for a user */
 export function signToken(payload: JwtPayload): string {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN_SECONDS });
+  return jwt.sign(payload, JWT_SECRET, {
+    algorithm: "HS256",
+    audience: "system-synthesis-client",
+    issuer: "system-synthesis",
+    expiresIn: JWT_EXPIRES_IN_SECONDS,
+  });
 }
 
 /** Verify and decode a JWT token. Returns null on failure. */
 export function verifyToken(token: string): JwtPayload | null {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, JWT_SECRET, {
+      algorithms: ["HS256"],
+      audience: "system-synthesis-client",
+      issuer: "system-synthesis",
+    }) as JwtPayload;
     return decoded;
   } catch {
     return null;
@@ -53,7 +67,8 @@ export function verifyToken(token: string): JwtPayload | null {
  * Extract token from:
  *   1. Authorization: Bearer <token>
  *   2. x-auth-token header
- *   3. ?token= query param (for WebSocket upgrade)
+ * Tokens are deliberately not accepted from query strings because URLs are
+ * commonly captured in logs and browser history.
  */
 function extractToken(req: Request): string | null {
   const authHeader = req.headers.authorization;
@@ -63,15 +78,11 @@ function extractToken(req: Request): string | null {
   if (req.headers["x-auth-token"]) {
     return req.headers["x-auth-token"] as string;
   }
-  if (req.query.token) {
-    return req.query.token as string;
-  }
   return null;
 }
 
 /**
  * Require valid JWT. Rejects with 401 if missing/invalid.
- * Falls back to legacy x-user-id header during migration.
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractToken(req);
@@ -86,22 +97,11 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
-  // --- Legacy fallback: accept x-user-id header during migration ---
-  const legacyUserId = req.headers["x-user-id"] as string;
-  if (legacyUserId) {
-    req.user = {
-      userId: legacyUserId,
-      userName: (req.headers["x-user-name"] as string) || "Anonymous",
-    };
-    return next();
-  }
-
   res.status(401).json({ error: "Authentication required" });
 }
 
 /**
  * Optional auth. Attaches user if token present but doesn't reject.
- * Falls back to legacy x-user-id header during migration.
  */
 export function optionalAuth(req: Request, res: Response, next: NextFunction): void {
   const token = extractToken(req);
@@ -110,17 +110,6 @@ export function optionalAuth(req: Request, res: Response, next: NextFunction): v
     const payload = verifyToken(token);
     if (payload) {
       req.user = payload;
-    }
-  }
-
-  // --- Legacy fallback ---
-  if (!req.user) {
-    const legacyUserId = req.headers["x-user-id"] as string;
-    if (legacyUserId) {
-      req.user = {
-        userId: legacyUserId,
-        userName: (req.headers["x-user-name"] as string) || "Anonymous",
-      };
     }
   }
 

@@ -14,9 +14,21 @@ import bcrypt from "bcryptjs";
 import { signToken, requireAuth } from "../middleware/auth.js";
 import { getPool } from "../services/db.js";
 import { v4 as uuid } from "uuid";
+import { z } from "zod";
 
 const router = Router();
 const SALT_ROUNDS = 10;
+const userNameSchema = z.string().trim().min(2).max(80);
+const passwordSchema = z.string().min(8).max(128);
+const emailSchema = z.string().trim().email().max(254).transform((value) => value.toLowerCase());
+const registerSchema = z.object({
+  userName: userNameSchema,
+  email: emailSchema,
+  password: passwordSchema,
+});
+const loginSchema = z.object({ email: emailSchema, password: passwordSchema });
+const guestSchema = z.object({ userName: userNameSchema.optional() });
+const profileSchema = z.object({ userName: userNameSchema });
 
 // --- In-Memory Fallback for when Postgres is disabled ---
 const IN_MEMORY_USERS: any[] = [];
@@ -56,14 +68,9 @@ export async function ensureUsersTable(): Promise<void> {
  */
 router.post("/register", async (req, res) => {
   try {
-    const { userName, password, email } = req.body;
-
-    if (!userName || typeof userName !== "string" || userName.length < 2) {
-      return res.status(400).json({ error: "userName is required (min 2 characters)" });
-    }
-    if (!password || typeof password !== "string" || password.length < 6) {
-      return res.status(400).json({ error: "password is required (min 6 characters)" });
-    }
+    const parsed = registerSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid registration details" });
+    const { userName, password, email } = parsed.data;
 
     const pool = getDbOrNull();
     
@@ -87,19 +94,19 @@ router.post("/register", async (req, res) => {
       await pool.query(
         `INSERT INTO users (id, user_name, email, password_hash, is_guest)
          VALUES ($1, $2, $3, $4, false)`,
-        [userId, userName.trim(), email?.toLowerCase() || null, passwordHash]
+        [userId, userName, email, passwordHash]
       );
     } else {
       IN_MEMORY_USERS.push({
-        id: userId, user_name: userName.trim(), email: email?.toLowerCase() || null, password_hash: passwordHash, is_guest: false, created_at: new Date()
+        id: userId, user_name: userName, email, password_hash: passwordHash, is_guest: false, created_at: new Date()
       });
     }
 
-    const token = signToken({ userId, userName: userName.trim() });
+    const token = signToken({ userId, userName });
 
     res.status(201).json({
       token,
-      user: { userId, userName: userName.trim(), email: email?.toLowerCase() || null },
+      user: { userId, userName, email },
     });
   } catch (err: any) {
     console.error("Register error:", err);
@@ -113,11 +120,9 @@ router.post("/register", async (req, res) => {
  */
 router.post("/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
-
-    if (!email || !password) {
-      return res.status(400).json({ error: "email and password required" });
-    }
+    const parsed = loginSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid email or password format" });
+    const { email, password } = parsed.data;
 
     const pool = getDbOrNull();
     let user;
@@ -200,11 +205,9 @@ router.get("/me", requireAuth, async (req, res) => {
 router.put("/me", requireAuth, async (req, res) => {
   try {
     const { userId } = req.user!;
-    const { userName } = req.body;
-
-    if (!userName || typeof userName !== "string" || userName.length < 2) {
-      return res.status(400).json({ error: "userName is required (min 2 characters)" });
-    }
+    const parsed = profileSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid user name" });
+    const { userName } = parsed.data;
 
     const pool = getDbOrNull();
     if (pool) {
@@ -235,7 +238,9 @@ router.put("/me", requireAuth, async (req, res) => {
  */
 router.post("/guest", async (req, res) => {
   try {
-    const { userName } = req.body;
+    const parsed = guestSchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: "Invalid guest profile" });
+    const { userName } = parsed.data;
     const guestName = userName || generateGuestName();
     const guestId = `guest-${uuid().slice(0, 8)}`;
 
@@ -271,15 +276,9 @@ router.post("/guest", async (req, res) => {
 router.post("/upgrade", requireAuth, async (req, res) => {
   try {
     const { userId } = req.user!;
-    const { userName, email, password } = req.body;
-
-    if (!userName || typeof userName !== "string" || userName.length < 2) {
-      return res.status(400).json({ error: "userName is required (min 2 characters)" });
-    }
-    if (!email) return res.status(400).json({ error: "email is required" });
-    if (!password || typeof password !== "string" || password.length < 6) {
-      return res.status(400).json({ error: "password is required (min 6 characters)" });
-    }
+    const parsed = registerSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: "Invalid account details" });
+    const { userName, email, password } = parsed.data;
 
     const pool = getDbOrNull();
     const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);

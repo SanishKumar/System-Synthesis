@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { v4 as uuidv4 } from "uuid";
 import { reconnectSocket } from "@/lib/socket";
 
@@ -9,6 +9,33 @@ const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
 const USER_ID_KEY = "ss_user_id";
 const USER_NAME_KEY = "ss_username";
 const AUTH_TOKEN_KEY = "ss_auth_token";
+const AUTH_GUEST_KEY = "ss_auth_is_guest";
+
+interface AuthSnapshot {
+  userId: string;
+  userName: string;
+  token: string | null;
+  isGuest: boolean;
+  isReady: boolean;
+}
+
+interface TokenClaims {
+  userId: string;
+  userName: string;
+  exp?: number;
+}
+
+const INITIAL_AUTH_SNAPSHOT: AuthSnapshot = {
+  userId: "",
+  userName: "User",
+  token: null,
+  isGuest: true,
+  isReady: false,
+};
+
+let authSnapshot = INITIAL_AUTH_SNAPSHOT;
+let initializationPromise: Promise<void> | null = null;
+const authListeners = new Set<() => void>();
 
 function generateDefaultName(): string {
   const adjectives = ["Swift", "Clever", "Bold", "Bright", "Sharp", "Keen"];
@@ -18,134 +45,171 @@ function generateDefaultName(): string {
   return `${adj} ${noun}`;
 }
 
-/**
- * User identity hook with JWT authentication support.
- *
- * - On first load: checks for stored JWT token
- * - If no token: auto-provisions a guest JWT from the server
- * - Falls back to device-based UUID if server is unreachable
- * - Provides `authHeaders` for API calls (Bearer token or legacy x-user-id)
- * - Provides `token` for Socket.io auth handshake
- */
-export function useUser() {
-  const [userId, setUserId] = useState<string>("");
-  const [userName, setUserNameState] = useState<string>("User");
-  const [token, setTokenState] = useState<string | null>(null);
-  const [isGuest, setIsGuest] = useState(true);
-  const [isReady, setIsReady] = useState(false);
+function subscribe(listener: () => void): () => void {
+  authListeners.add(listener);
+  return () => authListeners.delete(listener);
+}
 
-  useEffect(() => {
-    initAuth();
-  }, []);
+function publishAuth(next: AuthSnapshot): void {
+  authSnapshot = next;
+  authListeners.forEach((listener) => listener());
+}
 
-  async function initAuth() {
-    // 1. Check for existing JWT
-    const storedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+function updateAuth(patch: Partial<AuthSnapshot>): void {
+  publishAuth({ ...authSnapshot, ...patch });
+}
 
-    if (storedToken) {
-      // Verify token is still valid by calling /me
-      try {
-        const res = await fetch(`${API_URL}/api/auth/me`, {
-          headers: { Authorization: `Bearer ${storedToken}` },
-        });
-        if (res.ok) {
-          const data = await res.json();
-          setUserId(data.userId);
-          setUserNameState(data.userName);
-          setTokenState(storedToken);
-          setIsGuest(data.isGuest ?? true);
-          setIsReady(true);
-          return;
-        }
-        // Token expired/invalid — fall through to guest
-        localStorage.removeItem(AUTH_TOKEN_KEY);
-      } catch {
-        // Server unreachable — use local fallback
-      }
+function decodeTokenClaims(token: string): TokenClaims | null {
+  try {
+    const segment = token.split(".")[1];
+    if (!segment) return null;
+    const normalized = segment.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const claims = JSON.parse(atob(padded)) as Partial<TokenClaims>;
+    if (typeof claims.userId !== "string" || typeof claims.userName !== "string") return null;
+    if (typeof claims.exp === "number" && claims.exp * 1000 <= Date.now()) return null;
+    return claims as TokenClaims;
+  } catch {
+    return null;
+  }
+}
+
+function persistSession(
+  token: string,
+  user: { userId: string; userName: string },
+  isGuest: boolean
+): void {
+  localStorage.setItem(AUTH_TOKEN_KEY, token);
+  localStorage.setItem(USER_ID_KEY, user.userId);
+  localStorage.setItem(USER_NAME_KEY, user.userName);
+  localStorage.setItem(AUTH_GUEST_KEY, String(isGuest));
+  publishAuth({
+    userId: user.userId,
+    userName: user.userName,
+    token,
+    isGuest,
+    isReady: true,
+  });
+}
+
+async function initializeAuth(): Promise<void> {
+  if (typeof window === "undefined") return;
+
+  // A valid-looking stored JWT is enough for the client to become interactive.
+  // Every API and socket request still verifies its signature on the server.
+  const storedToken = localStorage.getItem(AUTH_TOKEN_KEY);
+  if (storedToken) {
+    const claims = decodeTokenClaims(storedToken);
+    if (claims) {
+      const storedGuest = localStorage.getItem(AUTH_GUEST_KEY);
+      persistSession(
+        storedToken,
+        { userId: claims.userId, userName: claims.userName },
+        storedGuest === null ? claims.userId.startsWith("guest-") : storedGuest === "true"
+      );
+      return;
     }
-
-    // 2. Try to get a guest token from the server
-    const localId = localStorage.getItem(USER_ID_KEY) || uuidv4();
-    const localName = localStorage.getItem(USER_NAME_KEY) || generateDefaultName();
-
-    try {
-      const res = await fetch(`${API_URL}/api/auth/guest`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userName: localName }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setUserId(data.user.userId);
-        setUserNameState(data.user.userName);
-        setTokenState(data.token);
-        setIsGuest(true);
-        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
-        localStorage.setItem(USER_ID_KEY, data.user.userId);
-        localStorage.setItem(USER_NAME_KEY, data.user.userName);
-        setIsReady(true);
-        return;
-      }
-    } catch {
-      // Server unreachable — pure local fallback
-    }
-
-    // 3. Pure local fallback (no JWT)
-    localStorage.setItem(USER_ID_KEY, localId);
-    localStorage.setItem(USER_NAME_KEY, localName);
-    setUserId(localId);
-    setUserNameState(localName);
-    setIsGuest(true);
-    setIsReady(true);
+    localStorage.removeItem(AUTH_TOKEN_KEY);
   }
 
-  const setUserName = useCallback(async (name: string) => {
-    setUserNameState(name);
-    localStorage.setItem(USER_NAME_KEY, name);
+  const localId = localStorage.getItem(USER_ID_KEY) || uuidv4();
+  const localName = localStorage.getItem(USER_NAME_KEY) || generateDefaultName();
 
-    // Persist to server
+  try {
+    const response = await fetch(`${API_URL}/api/auth/guest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userName: localName }),
+    });
+    if (response.ok) {
+      const data = await response.json();
+      persistSession(data.token, data.user, true);
+      return;
+    }
+  } catch {
+    // The canvas demo remains available without a running API.
+  }
+
+  localStorage.setItem(USER_ID_KEY, localId);
+  localStorage.setItem(USER_NAME_KEY, localName);
+  publishAuth({
+    userId: localId,
+    userName: localName,
+    token: null,
+    isGuest: true,
+    isReady: true,
+  });
+}
+
+function ensureAuthInitialized(): Promise<void> {
+  if (!initializationPromise) initializationPromise = initializeAuth();
+  return initializationPromise;
+}
+
+/**
+ * Shared JWT identity for the whole client application. All hook consumers
+ * subscribe to one snapshot, so mounting navigation and pages cannot repeat
+ * guest provisioning or profile verification work.
+ */
+export function useUser() {
+  const snapshot = useSyncExternalStore(
+    subscribe,
+    () => authSnapshot,
+    () => INITIAL_AUTH_SNAPSHOT
+  );
+
+  useEffect(() => {
+    void ensureAuthInitialized();
+  }, []);
+
+  const setUserName = useCallback(async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+
+    updateAuth({ userName: trimmedName });
+    localStorage.setItem(USER_NAME_KEY, trimmedName);
+    const currentToken = authSnapshot.token;
+    if (!currentToken) return;
+
     try {
-      const res = await fetch(`${API_URL}/api/auth/me`, {
+      const response = await fetch(`${API_URL}/api/auth/me`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": token ? `Bearer ${token}` : ""
+          Authorization: `Bearer ${currentToken}`,
         },
-        body: JSON.stringify({ userName: name }),
+        body: JSON.stringify({ userName: trimmedName }),
       });
-      if (res.ok) {
-        const data = await res.json();
+      if (response.ok) {
+        const data = await response.json();
         if (data.token) {
-          setTokenState(data.token);
-          localStorage.setItem(AUTH_TOKEN_KEY, data.token);
+          persistSession(
+            data.token,
+            { userId: authSnapshot.userId, userName: data.userName || trimmedName },
+            authSnapshot.isGuest
+          );
           reconnectSocket();
         }
       }
     } catch {
-      // Best effort update
+      // Best-effort display-name update while offline.
     }
-  }, [token]);
+  }, []);
 
-  /**
-   * Register a new account. Returns true on success.
-   */
-  const register = useCallback(async (userName: string, email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const register = useCallback(async (
+    userName: string,
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/register`, {
+      const response = await fetch(`${API_URL}/api/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userName, email, password }),
       });
-      const data = await res.json();
-      if (res.ok) {
-        setUserId(data.user.userId);
-        setUserNameState(data.user.userName);
-        setTokenState(data.token);
-        setIsGuest(false);
-        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
-        localStorage.setItem(USER_ID_KEY, data.user.userId);
-        localStorage.setItem(USER_NAME_KEY, data.user.userName);
-        // Re-establish socket with new JWT
+      const data = await response.json();
+      if (response.ok) {
+        persistSession(data.token, data.user, false);
         reconnectSocket();
         return { success: true };
       }
@@ -155,28 +219,24 @@ export function useUser() {
     }
   }, []);
 
-  /**
-   * Convert a guest account to a permanent account. Returns true on success.
-   */
-  const upgradeGuest = useCallback(async (userName: string, email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const upgradeGuest = useCallback(async (
+    userName: string,
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/upgrade`, {
+      const currentToken = authSnapshot.token;
+      const response = await fetch(`${API_URL}/api/auth/upgrade`, {
         method: "POST",
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
-          "Authorization": token ? `Bearer ${token}` : ""
+          ...(currentToken ? { Authorization: `Bearer ${currentToken}` } : {}),
         },
         body: JSON.stringify({ userName, email, password }),
       });
-      const data = await res.json();
-      if (res.ok) {
-        setUserId(data.user.userId);
-        setUserNameState(data.user.userName);
-        setTokenState(data.token);
-        setIsGuest(false);
-        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
-        localStorage.setItem(USER_ID_KEY, data.user.userId);
-        localStorage.setItem(USER_NAME_KEY, data.user.userName);
+      const data = await response.json();
+      if (response.ok) {
+        persistSession(data.token, data.user, false);
         reconnectSocket();
         return { success: true };
       }
@@ -184,28 +244,21 @@ export function useUser() {
     } catch {
       return { success: false, error: "Server not reachable" };
     }
-  }, [token]);
+  }, []);
 
-  /**
-   * Login with email + password. Returns true on success.
-   */
-  const login = useCallback(async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
+  const login = useCallback(async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
     try {
-      const res = await fetch(`${API_URL}/api/auth/login`, {
+      const response = await fetch(`${API_URL}/api/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, password }),
       });
-      const data = await res.json();
-      if (res.ok) {
-        setUserId(data.user.userId);
-        setUserNameState(data.user.userName);
-        setTokenState(data.token);
-        setIsGuest(false);
-        localStorage.setItem(AUTH_TOKEN_KEY, data.token);
-        localStorage.setItem(USER_ID_KEY, data.user.userId);
-        localStorage.setItem(USER_NAME_KEY, data.user.userName);
-        // Re-establish socket with new JWT
+      const data = await response.json();
+      if (response.ok) {
+        persistSession(data.token, data.user, false);
         reconnectSocket();
         return { success: true };
       }
@@ -215,42 +268,23 @@ export function useUser() {
     }
   }, []);
 
-  /**
-   * Logout — clears JWT and reverts to guest.
-   */
   const logout = useCallback(() => {
     localStorage.removeItem(AUTH_TOKEN_KEY);
-    setTokenState(null);
-    setIsGuest(true);
-    // Re-establish socket as guest
+    localStorage.removeItem(AUTH_GUEST_KEY);
+    initializationPromise = null;
+    publishAuth(INITIAL_AUTH_SNAPSHOT);
     reconnectSocket();
-    // Re-init as guest
-    initAuth();
+    void ensureAuthInitialized();
   }, []);
 
-  /**
-   * Standard headers to attach to all API calls.
-   * Uses Bearer token if available, falls back to legacy headers.
-   */
   const authHeaders = useMemo((): Record<string, string> => {
-    const headers: Record<string, string> = {
-      "x-user-id": userId,
-      "x-user-name": userName,
-    };
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
-    return headers;
-  }, [token, userId, userName]);
+    return snapshot.token ? { Authorization: `Bearer ${snapshot.token}` } : {};
+  }, [snapshot.token]);
 
   return {
-    userId,
-    userName,
+    ...snapshot,
     setUserName,
-    token,
-    isGuest,
     authHeaders,
-    isReady,
     register,
     upgradeGuest,
     login,

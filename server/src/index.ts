@@ -3,12 +3,17 @@ import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 import { Server } from "socket.io";
-import { registerSocketHandlers } from "./socket/handlers.js";
+import {
+  applyRemoteCollaborationUpdate,
+  getLoadedCollaborationState,
+  reconcileLoadedCollaborationDocuments,
+  registerSocketHandlers,
+} from "./socket/handlers.js";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { initRedis, redis } from "./services/redis.js";
 import { initDatabase, isDbAvailable } from "./services/db.js";
-import { optionalAuth } from "./middleware/auth.js";
-import { apiLimiter, boardCreateLimiter, aiLimiter, exportLimiter } from "./middleware/rateLimit.js";
+import { optionalAuth, requireAuth } from "./middleware/auth.js";
+import { apiLimiter, aiLimiter, exportLimiter } from "./middleware/rateLimit.js";
 import { logger, requestLogger } from "./middleware/logger.js";
 import { metricsHandler, metrics } from "./middleware/metrics.js";
 import boardsRouter from "./routes/boards.js";
@@ -16,9 +21,20 @@ import aiRouter from "./routes/ai.js";
 import templatesRouter from "./routes/templates.js";
 import exportRouter from "./routes/export.js";
 import authRouter, { ensureUsersTable } from "./routes/auth.js";
+import { initializeCollaborationSubscription } from "./services/collaborationUpdates.js";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:3000";
+const ALLOWED_ORIGINS = new Set(
+  [
+    FRONTEND_URL,
+    "http://localhost:3000",
+    "http://localhost:3001",
+    ...(process.env.ADDITIONAL_FRONTEND_ORIGINS || "").split(","),
+  ]
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+);
 
 async function main() {
   logger.info("🚀 System Synthesis — Backend Server");
@@ -42,14 +58,13 @@ async function main() {
   app.use(
     cors({
       origin: (origin, callback) => {
-        // Echo back the requesting origin to allow flexible Vercel deployments
-        // while still supporting credentials: true
-        callback(null, origin || true);
+        if (!origin || ALLOWED_ORIGINS.has(origin)) return callback(null, true);
+        callback(new Error("Origin is not allowed by CORS policy"));
       },
       credentials: true,
     })
   );
-  app.use(express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "1mb", strict: true }));
 
   // Request logging
   app.use(requestLogger);
@@ -62,10 +77,10 @@ async function main() {
 
   // REST routes with targeted rate limits
   app.use("/api/auth", authRouter);
-  app.use("/api/boards", boardsRouter);
-  app.use("/api/ai", aiLimiter, aiRouter);
+  app.use("/api/boards", requireAuth, boardsRouter);
+  app.use("/api/ai", requireAuth, aiLimiter, aiRouter);
   app.use("/api/templates", templatesRouter);
-  app.use("/api/export", exportLimiter, exportRouter);
+  app.use("/api/export", requireAuth, exportLimiter, exportRouter);
 
   // Health check
   app.get("/health", (_req, res) => {
@@ -84,13 +99,14 @@ async function main() {
   const httpServer = createServer(app);
   const io = new Server(httpServer, {
     cors: {
-      origin: [FRONTEND_URL, "http://localhost:3000", "http://localhost:3001"],
+      origin: [...ALLOWED_ORIGINS],
       methods: ["GET", "POST"],
       credentials: true,
     },
     transports: ["websocket", "polling"],
     pingTimeout: 60000,
     pingInterval: 25000,
+    maxHttpBufferSize: 256 * 1024,
   });
 
   // Configure Redis Adapter if Redis is available
@@ -102,9 +118,19 @@ async function main() {
 
   // Expose Socket.io to Express routes (for active ejection)
   app.set("io", io);
+  app.set("applyCollaborationUpdate", applyRemoteCollaborationUpdate);
+  app.set("getCollaborationState", getLoadedCollaborationState);
 
   // Register socket handlers
   registerSocketHandlers(io);
+  await initializeCollaborationSubscription(
+    ({ boardId, update, actorId }) => {
+      applyRemoteCollaborationUpdate(boardId, update, actorId);
+    },
+    async () => {
+      await reconcileLoadedCollaborationDocuments();
+    }
+  );
 
   // Start server
   httpServer.listen(PORT, () => {

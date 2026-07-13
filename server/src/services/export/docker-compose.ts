@@ -7,6 +7,7 @@
  */
 
 import type { SerializedNode, SerializedEdge } from "@system-synthesis/shared";
+import { buildInfrastructureIR, provenanceHeader } from "./ir.js";
 
 // ── Image & Port Mappings ──────────────────────────────────────────
 
@@ -24,25 +25,23 @@ function resolveDockerMapping(node: SerializedNode): DockerMapping {
   const nodeType = node.data.nodeType;
 
   // --- Tech-specific overrides ---
-  if (tech.includes("postgres"))     return { image: "postgres:16-alpine", ports: ["5432:5432"], environment: { POSTGRES_USER: "app", POSTGRES_PASSWORD: "changeme", POSTGRES_DB: "appdb" }, volumes: ["pgdata:/var/lib/postgresql/data"] };
-  if (tech.includes("mysql"))        return { image: "mysql:8", ports: ["3306:3306"], environment: { MYSQL_ROOT_PASSWORD: "changeme", MYSQL_DATABASE: "appdb" }, volumes: ["mysqldata:/var/lib/mysql"] };
+  if (tech.includes("postgres"))     return { image: "postgres:16.3-alpine", ports: ["5432:5432"], environment: { POSTGRES_USER: "${POSTGRES_USER:-app}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}", POSTGRES_DB: "${POSTGRES_DB:-appdb}" }, volumes: ["pgdata:/var/lib/postgresql/data"] };
+  if (tech.includes("mysql"))        return { image: "mysql:8.4", ports: ["3306:3306"], environment: { MYSQL_ROOT_PASSWORD: "${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}", MYSQL_DATABASE: "${MYSQL_DATABASE:-appdb}" }, volumes: ["mysqldata:/var/lib/mysql"] };
   if (tech.includes("mongo"))        return { image: "mongo:7", ports: ["27017:27017"], volumes: ["mongodata:/data/db"] };
   if (tech.includes("redis"))        return { image: "redis:7-alpine", ports: ["6379:6379"], command: "redis-server --appendonly yes", volumes: ["redisdata:/data"] };
   if (tech.includes("kafka"))        return { image: "confluentinc/cp-kafka:7.6.0", ports: ["9092:9092"], environment: { KAFKA_BROKER_ID: "1", KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181", KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092", KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1" } };
   if (tech.includes("rabbit"))       return { image: "rabbitmq:3-management-alpine", ports: ["5672:5672", "15672:15672"] };
   if (tech.includes("elastic"))      return { image: "elasticsearch:8.13.0", ports: ["9200:9200"], environment: { "discovery.type": "single-node", "xpack.security.enabled": "false" }, volumes: ["esdata:/usr/share/elasticsearch/data"] };
   if (tech.includes("clickhouse"))   return { image: "clickhouse/clickhouse-server:24", ports: ["8123:8123", "9000:9000"], volumes: ["chdata:/var/lib/clickhouse"] };
-  if (tech.includes("timescale"))    return { image: "timescale/timescaledb:latest-pg16", ports: ["5432:5432"], environment: { POSTGRES_USER: "app", POSTGRES_PASSWORD: "changeme" }, volumes: ["tsdata:/var/lib/postgresql/data"] };
+  if (tech.includes("timescale"))    return { image: "timescale/timescaledb:2.15.3-pg16", ports: ["5432:5432"], environment: { POSTGRES_USER: "${POSTGRES_USER:-app}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}" }, volumes: ["tsdata:/var/lib/postgresql/data"] };
   if (tech.includes("nginx"))        return { image: "nginx:alpine", ports: ["80:80", "443:443"] };
   if (tech.includes("kong"))         return { image: "kong:3.6", ports: ["8000:8000", "8443:8443", "8001:8001"], environment: { KONG_DATABASE: "off", KONG_PROXY_ACCESS_LOG: "/dev/stdout", KONG_ADMIN_ACCESS_LOG: "/dev/stdout", KONG_PROXY_ERROR_LOG: "/dev/stderr", KONG_ADMIN_ERROR_LOG: "/dev/stderr" } };
   if (tech.includes("haproxy"))      return { image: "haproxy:2.9-alpine", ports: ["80:80", "443:443"] };
-  if (tech.includes("minio") || tech.includes("s3")) return { image: "minio/minio:latest", ports: ["9000:9000", "9001:9001"], command: "server /data --console-address ':9001'", volumes: ["miniodata:/data"], environment: { MINIO_ROOT_USER: "minioadmin", MINIO_ROOT_PASSWORD: "minioadmin" } };
-  if (tech.includes("grafana"))      return { image: "grafana/grafana:latest", ports: ["3000:3000"], volumes: ["grafanadata:/var/lib/grafana"] };
-  if (tech.includes("prometheus"))   return { image: "prom/prometheus:latest", ports: ["9090:9090"] };
+  if (tech.includes("minio") || tech.includes("s3")) return { image: "minio/minio:RELEASE.2024-06-29T01-20-47Z", ports: ["9000:9000", "9001:9001"], command: "server /data --console-address ':9001'", volumes: ["miniodata:/data"], environment: { MINIO_ROOT_USER: "${MINIO_ROOT_USER:?set MINIO_ROOT_USER}", MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:?set MINIO_ROOT_PASSWORD}" } };
 
   // --- Node type fallbacks ---
   switch (nodeType) {
-    case "database":      return { image: "postgres:16-alpine", ports: ["5432:5432"], environment: { POSTGRES_USER: "app", POSTGRES_PASSWORD: "changeme", POSTGRES_DB: "appdb" }, volumes: ["pgdata:/var/lib/postgresql/data"] };
+    case "database":      return { image: "postgres:16.3-alpine", ports: ["5432:5432"], environment: { POSTGRES_USER: "${POSTGRES_USER:-app}", POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}", POSTGRES_DB: "${POSTGRES_DB:-appdb}" }, volumes: ["pgdata:/var/lib/postgresql/data"] };
     case "cache":         return { image: "redis:7-alpine", ports: ["6379:6379"] };
     case "queue":         return { image: "rabbitmq:3-management-alpine", ports: ["5672:5672", "15672:15672"] };
     case "gateway":       return { image: "nginx:alpine", ports: ["80:80"] };
@@ -60,35 +59,18 @@ export function generateDockerCompose(
   nodes: SerializedNode[],
   edges: SerializedEdge[]
 ): string {
-  // Build adjacency for depends_on
-  const dependsOn = new Map<string, string[]>();
-  for (const edge of edges) {
-    const deps = dependsOn.get(edge.source) || [];
-    deps.push(edge.target);
-    dependsOn.set(edge.source, deps);
-  }
-
-  // Build service name from label
-  const nameMap = new Map<string, string>();
-  const usedNames = new Set<string>();
-  for (const node of nodes) {
-    let name = node.data.label
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "");
-    if (usedNames.has(name)) name = `${name}-${node.id.slice(-4)}`;
-    usedNames.add(name);
-    nameMap.set(node.id, name);
-  }
+  const ir = buildInfrastructureIR(nodes, edges, "docker-compose");
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
   const volumes = new Set<string>();
   const services: string[] = [];
 
-  for (const node of nodes) {
+  for (const resource of ir.resources) {
+    const node = nodeById.get(resource.sourceNodeId)!;
     // Skip client nodes (browsers) — they don't run as Docker services
     if (node.data.nodeType === "client") continue;
 
-    const svcName = nameMap.get(node.id)!;
+    const svcName = resource.name;
     const mapping = resolveDockerMapping(node);
     const lines: string[] = [];
 
@@ -110,7 +92,7 @@ export function generateDockerCompose(
 
     if (mapping.environment && Object.keys(mapping.environment).length > 0) {
       lines.push(`    environment:`);
-      for (const [k, v] of Object.entries(mapping.environment)) {
+      for (const [k, v] of Object.entries(mapping.environment).sort(([left], [right]) => left.localeCompare(right))) {
         lines.push(`      ${k}: "${v}"`);
       }
     }
@@ -118,8 +100,9 @@ export function generateDockerCompose(
     if (mapping.volumes && mapping.volumes.length > 0) {
       lines.push(`    volumes:`);
       for (const v of mapping.volumes) {
-        lines.push(`      - ${v}`);
-        const volName = v.split(":")[0];
+        const [baseName, mountPath] = v.split(":");
+        const volName = `${svcName}-${baseName}`;
+        lines.push(`      - ${volName}:${mountPath}`);
         volumes.add(volName);
       }
     }
@@ -129,10 +112,7 @@ export function generateDockerCompose(
     }
 
     // depends_on from edges
-    const deps = dependsOn.get(node.id) || [];
-    const resolvedDeps = deps
-      .map((id) => nameMap.get(id))
-      .filter((n): n is string => !!n && n !== svcName);
+    const resolvedDeps = resource.dependsOn.filter((name) => name !== svcName);
     if (resolvedDeps.length > 0) {
       lines.push(`    depends_on:`);
       for (const dep of resolvedDeps) lines.push(`      - ${dep}`);
@@ -149,10 +129,7 @@ export function generateDockerCompose(
   }
 
   // Assemble
-  let output = `# ============================================================\n`;
-  output += `# Docker Compose — Generated by System Synthesis\n`;
-  output += `# Generated: ${new Date().toISOString()}\n`;
-  output += `# ============================================================\n\n`;
+  let output = `${provenanceHeader(ir)}\n\n`;
   output += `version: "3.9"\n\n`;
   output += `services:\n`;
   output += services.join("\n\n");
@@ -161,18 +138,18 @@ export function generateDockerCompose(
   // Volumes
   if (volumes.size > 0) {
     output += `\nvolumes:\n`;
-    for (const vol of volumes) {
+    for (const vol of [...volumes].sort()) {
       output += `  ${vol}:\n    driver: local\n`;
     }
   }
 
   // Networks from zones
   const zones = new Set(
-    nodes.map((n) => n.data.zone).filter(Boolean) as string[]
+    ir.resources.map((resource) => resource.zone).filter(Boolean) as string[]
   );
   if (zones.size > 0) {
     output += `\nnetworks:\n`;
-    for (const zone of zones) {
+    for (const zone of [...zones].sort()) {
       output += `  ${zone}:\n    driver: bridge\n`;
     }
   }

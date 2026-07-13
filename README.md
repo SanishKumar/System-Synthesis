@@ -1,132 +1,179 @@
 # System Synthesis
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-system--synthesis--frontend.vercel.app-00dbe9?style=for-the-badge)](https://system-synthesis-frontend.vercel.app/)
+System Synthesis is a collaborative architecture-modeling engine. It represents a system diagram as a versioned graph that authorized teams can edit together, lint deterministically, inspect semantically, and export into a documented infrastructure subset.
 
-![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=next.js)
-![React Flow](https://img.shields.io/badge/React_Flow-12-blue?logo=react)
-![Socket.io](https://img.shields.io/badge/Socket.io-Real--time-black?logo=socket.io)
-![Redis](https://img.shields.io/badge/Redis-In--memory-red?logo=redis)
+The technical core is not the optional LLM integration. It is the combination of board-scoped authorization, granular Yjs state, durable ordered updates, deterministic graph analysis, reproducible export, and semantic history.
 
-## Screenshots
+## What the project guarantees
 
-![Dashboard](./docs/dashboard.png)
-*The System Overview and project dashboard.*
+These claims are intentionally limited to behavior covered by the repository's automated checks.
 
-![Canvas Architecture](./docs/canvas.png)
-*Real-time collaborative editing of the Global E-Commerce architecture.*
+| Guarantee | Scope and evidence |
+| --- | --- |
+| Protected boards can only be mutated by an owner or editor | Identity comes from a verified JWT; every socket mutation rechecks board role and joined room. Adversarial socket tests and the API/WebSocket integration script cover viewer, cross-board, malformed, and oversized mutations. |
+| Independent fields on the same node can merge | Nodes and edges use nested Yjs maps rather than whole-object replacement. Unit tests cover concurrent rename plus movement and user-local undo that preserves remote edits. |
+| Accepted collaboration updates are durable before broadcast | PostgreSQL mode appends a hash-deduplicated update under a per-board advisory lock before applying it to the room document. Redis Streams and pub/sub distribute accepted updates. |
+| Duplicate and reordered Yjs updates are safe in the tested model | The seeded convergence harness delivers duplicates, delays, reordered updates, local undo, two logical server documents, and a simulated server restart, then compares canonical hashes. |
+| Architecture findings are deterministic | The rule engine implements graph algorithms and configurable rules. An LLM can explain the resulting finding set but cannot add, remove, or change findings. |
+| Supported exports are reproducible | A validated infrastructure IR, stable ordering, pinned provider/image versions, provenance hashes, explicit unsupported-resource errors, and golden tests cover Docker Compose and Terraform generation. |
+| Checkpoint numbering is race-safe | Version allocation, parent selection, semantic diff calculation, and insertion share one PostgreSQL transaction and per-board advisory lock. A concurrent-writer test verifies distinct versions. |
 
-A real-time, collaborative architecture whiteboard built for designing and discussing system infrastructure. Think of it as Excalidraw specifically tailored for microservices, databases, and cloud components.
+The [benchmark report](./docs/BENCHMARKS.md) separates CRDT simulation from live Socket.IO latency. It does not claim unmeasured production capacity.
 
-## Features
+## Non-goals
 
-- **Multiplayer Collaboration:** Real-time updates and live cursors powered by Socket.io and Redis.
-- **Architecture Nodes:** Purpose-built nodes for databases, gateways, queues, caches, and services.
-- **Node Inspector:** Add rich metadata to components including notes, related code snippets, and external links.
-- **Dynamic Auto-Layout:** A built-in "Mess Cleanup" engine powered by Dagre that intelligently detects your diagram's aspect ratio (horizontal vs vertical) and auto-routes edges cleanly without breaking complex microservice topologies.
-- **Context-Aware Properties:** The Node Inspector dynamically adapts its UI to the selected component (e.g. presenting a "Schema" tab for Databases, "Rules" for Firewalls, or "Alerts" for Monitors).
-- **Zero-Friction Identity:** Device-bound stateless identity so you can share a link and start collaborating immediately without forcing users through a login wall.
-- **Access Control:** Board owners can toggle visibility between public and private. Private boards actively eject unauthorized guests.
-- **AI Architecture Assist:** A pluggable LLM adapter that analyzes the graph's JSON state and returns structured feedback (e.g., catching missing caching layers or single points of failure).
+- It is not a formal proof that an architecture is correct.
+- It is not a complete replacement for Terraform, Docker Compose, or Kubernetes.
+- It is not offline-first. Editing pauses when the socket is disconnected.
+- It does not promise conflict-free intent when two users edit the same scalar field; Yjs resolves that field deterministically.
+- LLM output is not validation and is never allowed to define the deterministic finding set.
+- The in-memory development mode is not restart-durable or horizontally scalable.
 
-## Tech Stack
-
-**Frontend**
-- Next.js 15 (App Router)
-- React Flow (for the canvas engine)
-- Tailwind CSS (styling)
-- Zustand (state management)
-- Socket.io Client
-
-**Backend**
-- Node.js & Express
-- Socket.io (WebSockets)
-- Redis (State persistence and pub/sub for scaling)
-
-## System Architecture
+## Architecture
 
 ```mermaid
-graph TD
-    subgraph Client Application
-        UI[Next.js UI & Tailwind]
-        RF[React Flow Engine]
-        Z[Zustand Local State]
-        UI --> RF
-        RF <--> Z
+flowchart LR
+    subgraph Browser["Next.js client"]
+        Flow["React Flow canvas"]
+        Store["Zustand + granular Yjs document"]
+        Flow <--> Store
     end
 
-    subgraph Server Services
-        API[Express REST API]
-        WS[Socket.io WebSocket]
-        AI[Pluggable AI Adapter]
+    subgraph Server["Express and Socket.IO instance"]
+        Auth["JWT and board-role authorization"]
+        Room["Active per-board Y.Doc"]
+        Rules["Deterministic graph rule engine"]
+        Export["Validated infrastructure IR"]
     end
 
-    subgraph Data Layer
-        R[(Redis)]
+    subgraph Durable["Durable data"]
+        PG[("PostgreSQL boards, update log, snapshots, audit")]
     end
 
-    Z -->|WebSockets Sync| WS
-    WS -->|Broadcast State| Z
-    Z -->|HTTP Actions| API
-    WS -->|Pub/Sub Events| R
-    R -->|Pub/Sub Events| WS
-    API -->|Read & Write| R
-    API -->|Graph JSON Analysis| AI
+    subgraph Transport["Cross-instance transport"]
+        Redis[("Redis Streams, pub/sub, Socket.IO adapter")]
+    end
+
+    LLM["Optional LLM explanation"]
+
+    Store -->|"authenticated Yjs update"| Auth
+    Auth -->|"append before apply"| PG
+    Auth --> Room
+    Room <--> Redis
+    Redis --> Room
+    Room --> Store
+    Room --> Rules
+    Room --> Export
+    Rules -->|"authoritative findings"| LLM
 ```
 
-## Technical Decisions & Trade-offs
+### Consistency model
 
-- **Zustand over Redux:** Chosen for its boilerplate-free, hook-based API which is crucial for managing the complex, high-frequency state updates required by a 60fps React Flow canvas.
-- **Device-Bound Identity:** To maximize adoption and demonstrate a "zero-friction" UX, I opted for a UUID-in-localStorage approach rather than forcing an OAuth wall. This mimics the successful growth loops of tools like Excalidraw.
-- **Pluggable AI Adapter:** The LLM integration uses an adapter pattern, allowing the backend to gracefully degrade to mock data if an API key is missing, ensuring the application remains functional in any local environment.
+- The active state is a Yjs document with `nodes` and `edges` roots. Each graph entity is a nested `Y.Map`, so movement, label, configuration, and metadata are separate conflict units.
+- Different fields merge independently. Concurrent writes to the same scalar field use Yjs conflict resolution; the product does not claim semantic intent merging for that case.
+- In PostgreSQL mode, accepted updates enter an append-only, hash-deduplicated log before room application and broadcast. Snapshots compact the log under the same per-board transaction lock.
+- A joining or restarted server restores the latest document snapshot and then replays its ordered tail. Redis transport recovery triggers durable replay into loaded rooms.
+- `Y.UndoManager` tracks local origins only, so one user's undo does not reverse another user's operation.
+- Version restore appends a durable reset update and sends a full-state replacement to connected clients. The restored state itself becomes a new, attributable checkpoint.
 
-## Getting Started
+See [ADR-001](./docs/adrs/001-yjs-and-conflict-granularity.md), [ADR-002](./docs/adrs/002-durable-update-log.md), [ADR-003](./docs/adrs/003-authoritative-document-state.md), and [ADR-004](./docs/adrs/004-user-local-undo.md).
 
-You'll need Node.js and a running Redis instance to run the application locally.
+### Security model
 
-### 1. Backend Setup
+- REST and socket identities come from signed HS256 JWTs with fixed issuer and audience. Query-string and client-supplied identity values are not trusted.
+- Roles are `owner`, `editor`, and `viewer`. Every mutation verifies the current role again, the joined room, and the payload board ID.
+- Board event schemas use Zod. Yjs updates are limited to 128 KiB, the Socket.IO buffer to 256 KiB, and JSON requests to 1 MiB.
+- REST and socket event rate limits are identity/socket scoped.
+- Invitations use random, hashed, time-limited, single-use tokens. They do not expose owner identifiers.
+- Joins, denied mutations, permission changes, exports, AI explanations, version actions, and other sensitive operations create audit records.
+
+The complete assumptions and residual risks are in [the threat model](./docs/THREAT_MODEL.md).
+
+## Deterministic architecture intelligence
+
+The graph engine implements reachability, reverse reachability, Tarjan strongly connected components, cycle detection, articulation points, bridges, dependency layers and depth, blast radius, trust-boundary crossings, orphan detection, and redundant-path checks.
+
+Rules have stable IDs, severity, applicability, rationale, optional references, and independent tests. Callers can enable or disable rules, override severity, and suppress a finding only with a justification. Results can be exported as JSON or SARIF.
+
+The processing order is:
+
+```text
+graph -> deterministic algorithms and rules -> authoritative findings -> optional LLM explanation
+```
+
+## Infrastructure export and history
+
+Docker Compose and Terraform exporters consume a schema-validated intermediate representation. Generation uses stable names and ordering, secret placeholders, explicit unsupported-feature errors, source hashes, provider/version pinning, and golden-file tests. The UI can preview semantic IR differences before export.
+
+Version checkpoints record a name, actor ID and display name, parent, optional source version, graph data, and a machine-readable semantic diff. The UI surfaces changes such as added components, removed connections, renamed nodes, moved nodes, and replica-count changes. Authorized users can duplicate from any visible version; only owners can restore.
+
+See [ADR-005](./docs/adrs/005-deterministic-lint-before-llm.md) and [ADR-006](./docs/adrs/006-reproducible-infrastructure-export.md).
+
+## Run locally
+
+Requirements: Node.js 20 or newer, npm, and optionally Docker. PostgreSQL is required for durable history and restart recovery. Redis is required for live cross-instance distribution.
+
+### Full development stack
 
 ```bash
-cd server
+docker compose -f docker-compose.dev.yml up --build
+```
+
+The development compose file starts PostgreSQL 16, Redis 7, the server on port 4000, and the frontend on port 3000. Its default credentials are for local development only.
+
+### Run the workspaces directly
+
+```bash
 npm install
+docker compose -f docker-compose.dev.yml up -d postgres redis
 ```
 
-Create a `.env` file in the `server` directory (you can copy `.env.example` if available):
-```env
-PORT=4000
-FRONTEND_URL=http://localhost:3000
-REDIS_URL=redis://localhost:6379
-# OPENAI_API_KEY=your_key_here  # Optional: for AI assist features
-```
-
-Start the backend development server:
-```bash
-npm run dev
-```
-
-### 2. Frontend Setup
+Copy `server/.env.example` to `server/.env`, configure `DATABASE_URL`, `REDIS_URL`, and `JWT_SECRET`, then run these in separate terminals:
 
 ```bash
-cd frontend
-npm install
+npm run dev --workspace server
+npm run dev --workspace frontend
 ```
 
-Create a `.env.local` file in the `frontend` directory:
-```env
-NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
-```
+The frontend uses `NEXT_PUBLIC_SOCKET_URL=http://localhost:4000`. Light mode is the default; an explicit light/dark choice is stored in `localStorage` and applied before paint.
 
-Start the Next.js development server:
+### Development-only memory mode
+
+The server can start without PostgreSQL or Redis. That mode is useful for UI work and CI integration checks, but board data and collaboration updates disappear on process exit, semantic history is unavailable, and there is no cross-instance coordination.
+
+## Verification
+
 ```bash
-npm run dev
+# Type-check and create both production builds, then run the backend suite
+npm run verify
+
+# Authenticated REST + Socket.IO integration; requires a running built server
+npm run test:integration
+
+# Seeded randomized CRDT/property harness
+npm run test:convergence
+
+# Live propagation benchmark; requires a running built server
+npm run benchmark:socket
 ```
 
-The application should now be running at [http://localhost:3000](http://localhost:3000).
+The current backend suite contains 64 tests across security, collaboration durability and failure policy, graph convergence, granular Yjs behavior, validation algorithms, deterministic export, AI provenance, and transactional history. CI also builds both applications and runs the authenticated integration script with a non-zero failure exit.
 
-## Project Structure
+## Failure behavior
 
-- `/frontend` - The Next.js application containing the React Flow canvas, UI components, and Zustand stores.
-- `/server` - The Express backend handling REST routes, Socket.io event broadcasting, and Redis data persistence.
-- `/shared` - Shared TypeScript interfaces (Node types, Edge types, Board states) used by both the client and server.
+The short version is: reject a mutation when durability cannot be established, preserve idempotence on duplicate delivery, replay durable state after restart or transport recovery, and never silently treat an LLM response as validation. See [the failure model](./docs/FAILURE_MODEL.md) and [known limitations](./docs/KNOWN_LIMITATIONS.md) for exact cases.
+
+## Deployment shape
+
+The frontend is a normal Next.js application. The collaboration backend requires a long-running Node.js/Socket.IO process plus PostgreSQL, and Redis for multi-instance live distribution. This repository is not currently packaged as a Cloudflare Workers/Sites application and contains no `.openai/hosting.json`; migrating it to that runtime is a separate hosting project, not a failed publish attempt.
+
+## Repository map
+
+- `frontend/` — Next.js UI, React Flow editor, Yjs/Zustand state, persisted theme.
+- `server/` — REST/socket authorization, durable collaboration, graph analysis, export, history, tests and benchmarks.
+- `shared/` — shared graph, role, operation, and socket event types.
+- `docs/` — threat/failure models, benchmark evidence, ADRs, and limitations.
+- `test_phases.mjs` — authenticated end-to-end API and WebSocket checks.
 
 ## License
 

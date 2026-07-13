@@ -2,18 +2,15 @@
 
 import React, { useState, useCallback, useEffect } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
+import dynamic from "next/dynamic";
 import { useParams, useRouter } from "next/navigation";
 import TopNav from "@/components/TopNav";
 import BottomToolbar from "@/components/BottomToolbar";
 import CanvasBoard from "@/components/canvas/CanvasBoard";
-import NodeInspector from "@/components/sidebar/NodeInspector";
-import ArchitectureAssist from "@/components/sidebar/ArchitectureAssist";
-import VersionHistory from "@/components/sidebar/VersionHistory";
 import { useBoardStore } from "@/store/boardStore";
 import { useMultiplayer } from "@/hooks/useMultiplayer";
 import { useUser } from "@/hooks/useUser";
 import { toast } from "sonner";
-import { autoLayoutNodes } from "@/lib/layout";
 import {
   Share2,
   Globe,
@@ -23,11 +20,23 @@ import {
   AlertTriangle,
   Loader2,
   History,
+  ScanSearch,
+  UserMinus,
 } from "lucide-react";
-import type { ArchNodeData } from "@system-synthesis/shared";
+import type { ArchNodeData, BoardRole, SerializedNode } from "@system-synthesis/shared";
 import type { Node } from "@xyflow/react";
 
 const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
+
+const NodeInspector = dynamic(() => import("@/components/sidebar/NodeInspector"), { ssr: false });
+const ArchitectureAssist = dynamic(() => import("@/components/sidebar/ArchitectureAssist"), { ssr: false });
+const VersionHistory = dynamic(() => import("@/components/sidebar/VersionHistory"), { ssr: false });
+
+type BoardMember = {
+  userId: string;
+  userName: string;
+  role: BoardRole;
+};
 
 export default function CanvasBoardPage() {
   const params = useParams();
@@ -40,17 +49,23 @@ export default function CanvasBoardPage() {
   >("select");
   const [pendingNodeType, setPendingNodeType] = useState<string | null>(null);
   const [isMessCleanupActive, setIsMessCleanupActive] = useState(false);
+  const [fitViewRequest, setFitViewRequest] = useState(0);
 
   // Board access state
   const [boardOwnerId, setBoardOwnerId] = useState<string>("");
   const [boardOwnerName, setBoardOwnerName] = useState<string>("");
   const [isPublic, setIsPublic] = useState(false);
+  const [boardRole, setBoardRole] = useState<BoardRole | null>(null);
   const [accessDenied, setAccessDenied] = useState(false);
   const [showShareMenu, setShowShareMenu] = useState(false);
   const [copied, setCopied] = useState(false);
   const [togglingVisibility, setTogglingVisibility] = useState(false);
+  const [members, setMembers] = useState<BoardMember[]>([]);
+  const [inviteRole, setInviteRole] = useState<"editor" | "viewer">("viewer");
+  const [inviteUrl, setInviteUrl] = useState("");
+  const [inviteLoading, setInviteLoading] = useState(false);
 
-  const isOwner = userId === boardOwnerId || boardOwnerId === "system";
+  const isOwner = boardRole === "owner";
 
   // Remember last visited board
   useEffect(() => {
@@ -77,8 +92,9 @@ export default function CanvasBoardPage() {
           setBoardOwnerId(board.ownerId);
           setBoardOwnerName(board.ownerName);
           setIsPublic(board.isPublic);
+          setBoardRole(board.role);
           // Hydrate Zustand store so TopNav breadcrumb + VersionHistory can read boardId/boardName
-          useBoardStore.setState({ boardId, boardName: board.name });
+          useBoardStore.setState({ boardId, boardName: board.name, boardRole: board.role });
         }
       } catch {
         // Server might be down — let socket handle it
@@ -94,6 +110,9 @@ export default function CanvasBoardPage() {
     getSerializedEdges,
     isConnected,
   } = useBoardStore();
+  // This editor is deliberately not offline-first. Prevent mutations while
+  // disconnected so unsent local changes cannot diverge from durable state.
+  const readOnly = boardRole === "viewer" || !isConnected;
 
   // Active ejection callback
   const handleAccessRevoked = useCallback(() => {
@@ -140,11 +159,91 @@ export default function CanvasBoardPage() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const loadMembers = useCallback(async () => {
+    if (!isOwner) return;
+    const response = await fetch(`${API_URL}/api/boards/${boardId}/members`, {
+      headers: authHeaders,
+    });
+    if (response.ok) {
+      const data = await response.json();
+      setMembers(data.members || []);
+    }
+  }, [authHeaders, boardId, isOwner]);
+
+  useEffect(() => {
+    if (showShareMenu && isOwner) void loadMembers();
+  }, [showShareMenu, isOwner, loadMembers]);
+
+  const handleCreateInvitation = async () => {
+    setInviteLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/api/boards/${boardId}/invitations`, {
+        method: "POST",
+        headers: { ...authHeaders, "Content-Type": "application/json" },
+        body: JSON.stringify({ role: inviteRole, expiresInHours: 24 }),
+      });
+      if (!response.ok) throw new Error();
+      const invitation = await response.json();
+      const url = `${window.location.origin}/invite/${invitation.token}`;
+      setInviteUrl(url);
+      await navigator.clipboard.writeText(url);
+      toast.success("24-hour invitation copied");
+    } catch {
+      toast.error("Could not create invitation");
+    } finally {
+      setInviteLoading(false);
+    }
+  };
+
+  const handleMemberRole = async (memberId: string, role: "editor" | "viewer") => {
+    const response = await fetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
+      method: "PATCH",
+      headers: { ...authHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ role }),
+    });
+    if (response.ok) {
+      setMembers((current) => current.map((member) => member.userId === memberId ? { ...member, role } : member));
+      toast.success("Member role updated");
+    } else {
+      toast.error("Could not update member role");
+    }
+  };
+
+  const handleRemoveMember = async (memberId: string) => {
+    const response = await fetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
+      method: "DELETE",
+      headers: authHeaders,
+    });
+    if (response.ok) {
+      setMembers((current) => current.filter((member) => member.userId !== memberId));
+      toast.success("Member removed");
+    } else {
+      toast.error("Could not remove member");
+    }
+  };
+
   // Animated Mess Cleanup
-  const handleMessCleanup = useCallback(() => {
+  const handleMessCleanup = useCallback(async () => {
+    if (readOnly) {
+      setIsMessCleanupActive(false);
+      return;
+    }
     const serializedNodes = getSerializedNodes();
     const serializedEdges = getSerializedEdges();
-    const layoutedNodes = autoLayoutNodes(serializedNodes, serializedEdges);
+    if (serializedNodes.length === 0) {
+      setIsMessCleanupActive(false);
+      toast.info("Add a component before running auto layout");
+      return;
+    }
+    let layoutedNodes: SerializedNode[];
+    try {
+      const { autoLayoutNodes } = await import("@/lib/layout");
+      layoutedNodes = autoLayoutNodes(serializedNodes, serializedEdges);
+    } catch {
+      setIsMessCleanupActive(false);
+      toast.error("Auto layout could not be loaded");
+      return;
+    }
     const currentNodes = useBoardStore.getState().nodes;
 
     // Build a lookup of layout results
@@ -206,11 +305,13 @@ export default function CanvasBoardPage() {
           nodes: store.getSerializedNodes(),
           edges: store.getSerializedEdges()
         });
+        setFitViewRequest((request) => request + 1);
+        setIsMessCleanupActive(false);
       }
     }
 
     requestAnimationFrame(animate);
-  }, [getSerializedNodes, getSerializedEdges]);
+  }, [getSerializedNodes, getSerializedEdges, readOnly]);
 
   const handleToggleMessCleanup = (active: boolean) => {
     setIsMessCleanupActive(active);
@@ -251,16 +352,16 @@ export default function CanvasBoardPage() {
   // --- Access Denied Screen ---
   if (accessDenied) {
     return (
-      <div className="h-screen w-screen bg-canvas flex items-center justify-center">
-        <div className="text-center max-w-md">
-          <div className="w-16 h-16 rounded-md bg-status-error/10 border border-status-error/30 flex items-center justify-center mx-auto mb-4">
+      <div className="flex h-screen w-screen items-center justify-center bg-canvas px-6">
+        <div className="max-w-md rounded-2xl border border-border bg-surface p-8 text-center shadow-[var(--shadow-soft)]">
+          <div className="mx-auto mb-5 flex h-12 w-12 items-center justify-center rounded-xl border border-status-error/20 bg-status-error/10">
             <AlertTriangle className="w-8 h-8 text-status-error" />
           </div>
-          <h1 className="font-display text-xl font-bold text-text-primary mb-2">
+          <h1 className="mb-2 font-display text-xl font-bold tracking-[-0.02em] text-text-primary">
             Access Denied
           </h1>
-          <p className="text-sm text-text-muted mb-6">
-            This board is private. Only the owner can access it.
+          <p className="mb-6 text-sm leading-6 text-text-secondary">
+            This workspace is private and your current identity is not authorized to open it.
           </p>
           <button
             onClick={() => router.push("/")}
@@ -275,7 +376,7 @@ export default function CanvasBoardPage() {
 
   return (
     <ReactFlowProvider>
-      <div className="h-screen w-screen overflow-hidden bg-canvas flex flex-col">
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-canvas">
         <TopNav
           onMessCleanup={handleMessCleanup}
           isMessCleanupActive={isMessCleanupActive}
@@ -284,8 +385,8 @@ export default function CanvasBoardPage() {
         />
 
         <main
-          className={`flex-1 mt-14 relative transition-all duration-300 ${
-            sidebarMode !== "none" ? "mr-80" : ""
+          className={`relative mt-16 flex-1 transition-[margin] duration-200 ${
+            sidebarMode !== "none" ? "md:mr-[23.5rem]" : ""
           }`}
         >
           <CanvasBoard
@@ -294,25 +395,29 @@ export default function CanvasBoardPage() {
             pendingNodeType={pendingNodeType}
             onNodePlaced={handleNodePlaced}
             onToolReset={handleToolReset}
+            readOnly={readOnly}
+            fitViewRequest={fitViewRequest}
           />
         </main>
 
-        <BottomToolbar
-          activeTool={activeTool}
-          onToolChange={setActiveTool}
-          onShapeSelected={handleShapeSelected}
-          onUndo={handleUndo}
-          onRedo={handleRedo}
-        />
+        {!readOnly && (
+          <BottomToolbar
+            activeTool={activeTool}
+            onToolChange={setActiveTool}
+            onShapeSelected={handleShapeSelected}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+          />
+        )}
 
-        {sidebarMode === "inspector" && <NodeInspector />}
+        {!readOnly && sidebarMode === "inspector" && <NodeInspector />}
         {sidebarMode === "ai-assist" && <ArchitectureAssist />}
         {sidebarMode === "version-history" && <VersionHistory />}
 
-        {/* Top-right controls: AI Assist + Share */}
+        {/* Board actions */}
         <div 
-          className={`fixed top-16 z-40 flex items-center gap-2 transition-all duration-300 ${
-            sidebarMode !== "none" ? "right-[336px]" : "right-4"
+          className={`fixed top-[76px] z-40 flex items-center gap-2 transition-all duration-200 ${
+            sidebarMode !== "none" ? "right-3 md:right-[380px]" : "right-3"
           }`}
         >
           {/* Share button (owners only, or show shared indicator) */}
@@ -321,9 +426,7 @@ export default function CanvasBoardPage() {
               <button
                 id="share-board-btn"
                 onClick={() => setShowShareMenu(!showShareMenu)}
-                className={`flex items-center gap-2 px-3 py-2
-                  bg-surface border rounded-md text-xs font-display
-                  hover:border-accent-cyan hover:shadow-glow-cyan transition-all ${
+                className={`flex h-9 items-center gap-2 rounded-lg border bg-surface/95 px-3 text-xs font-semibold shadow-[0_2px_8px_rgba(29,33,53,0.06)] backdrop-blur transition-all hover:border-accent-cyan/35 ${
                     isPublic
                       ? "border-status-active/40 text-status-active"
                       : "border-border text-text-secondary"
@@ -334,22 +437,87 @@ export default function CanvasBoardPage() {
                 ) : (
                   <Lock className="w-3.5 h-3.5" />
                 )}
-                {isPublic ? "Public" : "Private"}
+                <span className="hidden sm:inline">{isPublic ? "Shared" : "Private"}</span>
                 <Share2 className="w-3.5 h-3.5 ml-1" />
               </button>
 
               {/* Share Dropdown */}
               {showShareMenu && (
-                <div className="absolute top-11 right-0 w-72 bg-surface border border-border rounded-md shadow-card-hover z-50 p-4 space-y-3 animate-fade-in">
-                  <h4 className="text-xs font-display font-semibold text-text-primary uppercase tracking-wider">
-                    Share Settings
+                <div className="absolute right-0 top-11 z-50 w-72 space-y-3 rounded-xl border border-border bg-surface p-4 shadow-[var(--shadow-float)] animate-fade-in">
+                  <h4 className="text-[10px] font-mono font-semibold uppercase tracking-[0.14em] text-text-muted">
+                    Workspace access
                   </h4>
+
+                  <div className="space-y-2 rounded-lg border border-border p-3">
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={inviteRole}
+                        onChange={(event) => setInviteRole(event.target.value as "editor" | "viewer")}
+                        className="input h-8 flex-1 text-xs"
+                      >
+                        <option value="viewer">Viewer · read only</option>
+                        <option value="editor">Editor · can mutate</option>
+                      </select>
+                      <button
+                        onClick={handleCreateInvitation}
+                        disabled={inviteLoading}
+                        className="btn-primary h-8 px-3 text-[11px]"
+                      >
+                        {inviteLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Invite"}
+                      </button>
+                    </div>
+                    <p className="text-[10px] leading-4 text-text-muted">
+                      Creates a single-use link that expires in 24 hours.
+                    </p>
+                    {inviteUrl && (
+                      <button
+                        onClick={() => navigator.clipboard.writeText(inviteUrl).then(() => toast.success("Invitation copied"))}
+                        className="w-full truncate rounded-md bg-surface-lighter px-2 py-1.5 text-left text-[10px] text-accent-purple"
+                      >
+                        {inviteUrl}
+                      </button>
+                    )}
+                  </div>
+
+                  {members.length > 0 && (
+                    <div className="max-h-36 space-y-1 overflow-y-auto">
+                      {members.map((member) => (
+                        <div key={member.userId} className="flex items-center gap-2 rounded-md px-1 py-1.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-[11px] font-semibold text-text-primary">{member.userName}</p>
+                            <p className="truncate text-[9px] text-text-muted">{member.userId}</p>
+                          </div>
+                          {member.role === "owner" ? (
+                            <span className="text-[9px] font-semibold uppercase text-accent-purple">Owner</span>
+                          ) : (
+                            <>
+                              <select
+                                value={member.role}
+                                onChange={(event) => handleMemberRole(member.userId, event.target.value as "editor" | "viewer")}
+                                className="h-7 rounded-md border border-border bg-surface px-1 text-[10px] text-text-secondary"
+                              >
+                                <option value="viewer">Viewer</option>
+                                <option value="editor">Editor</option>
+                              </select>
+                              <button
+                                onClick={() => handleRemoveMember(member.userId)}
+                                className="rounded-md p-1.5 text-text-muted hover:bg-status-error/10 hover:text-status-error"
+                                title="Remove member"
+                              >
+                                <UserMinus className="h-3.5 w-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   {/* Visibility Toggle */}
                   <button
                     onClick={handleToggleVisibility}
                     disabled={togglingVisibility}
-                    className="w-full flex items-center gap-3 p-3 rounded-sm border border-border hover:border-accent-cyan transition-all"
+                    className="flex w-full items-center gap-3 rounded-lg border border-border p-3 transition-all hover:border-accent-cyan/35"
                   >
                     <div className={`w-8 h-8 rounded-sm flex items-center justify-center ${
                       isPublic
@@ -370,8 +538,8 @@ export default function CanvasBoardPage() {
                       </p>
                       <p className="text-[10px] text-text-muted">
                         {isPublic
-                          ? "Anyone with the link can view & edit"
-                          : "Only you can access this board"}
+                        ? "Link access is enabled"
+                          : "Access is limited to the owner"}
                       </p>
                     </div>
                   </button>
@@ -379,8 +547,8 @@ export default function CanvasBoardPage() {
                   {/* Copy Link (only when public) */}
                   {isPublic && (
                     <div className="space-y-2">
-                      <label className="text-[10px] text-text-muted font-display uppercase tracking-wider">
-                        Share Link
+                      <label className="text-[10px] font-mono uppercase tracking-wider text-text-muted">
+                        Workspace link
                       </label>
                       <div className="flex items-center gap-2">
                         <input
@@ -406,9 +574,9 @@ export default function CanvasBoardPage() {
               )}
             </div>
           ) : boardOwnerId && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-surface border border-border rounded-md text-[10px] font-mono text-text-muted">
+            <div className="flex h-9 items-center gap-2 rounded-lg border border-border bg-surface/95 px-3 text-[10px] font-mono text-text-muted shadow-[0_2px_8px_rgba(29,33,53,0.06)]">
               <Globe className="w-3 h-3 text-status-active" />
-              Shared by {boardOwnerName}
+              {boardRole === "viewer" ? "Read only" : "Editor"} · Shared by {boardOwnerName}
             </div>
           )}
 
@@ -417,22 +585,18 @@ export default function CanvasBoardPage() {
               <button
                 id="version-history-toggle"
                 onClick={() => setSidebarMode("version-history")}
-                className="flex items-center gap-2 px-3 py-2
-                           bg-surface border border-border rounded-md text-xs font-display
-                           hover:border-accent-purple hover:shadow-sm transition-all"
+                className="flex h-9 items-center gap-2 rounded-lg border border-border bg-surface/95 px-3 text-xs font-semibold text-text-secondary shadow-[0_2px_8px_rgba(29,33,53,0.06)] transition-all hover:border-accent-purple/35 hover:text-text-primary"
               >
                 <History className="w-3.5 h-3.5 text-accent-purple" />
-                History
+                <span className="hidden sm:inline">Versions</span>
               </button>
               <button
                 id="ai-assist-toggle"
                 onClick={handleToggleAiAssist}
-                className="flex items-center gap-2 px-3 py-2
-                           bg-surface border border-border rounded-md text-xs font-display
-                           hover:border-accent-cyan hover:shadow-glow-cyan transition-all"
+                className="flex h-9 items-center gap-2 rounded-lg border border-border bg-surface/95 px-3 text-xs font-semibold text-text-secondary shadow-[0_2px_8px_rgba(29,33,53,0.06)] transition-all hover:border-accent-cyan/35 hover:text-text-primary"
               >
-                <span className="w-2 h-2 rounded-full bg-accent-cyan animate-pulse-slow" />
-                AI Assist
+                <ScanSearch className="h-3.5 w-3.5 text-accent-cyan" />
+                <span className="hidden sm:inline">Analysis</span>
               </button>
             </>
           )}
@@ -440,11 +604,11 @@ export default function CanvasBoardPage() {
 
         {/* Connection Status */}
         <div
-          className={`fixed bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-1.5
-                      rounded-sm text-[10px] font-mono border transition-all duration-300 ${
+          className={`fixed bottom-4 left-3 z-40 flex items-center gap-2 rounded-full border px-3 py-1.5
+                      text-[10px] font-mono shadow-[0_2px_8px_rgba(29,33,53,0.06)] transition-all duration-300 ${
                         isConnected
-                          ? "bg-status-active/10 border-status-active/30 text-status-active"
-                          : "bg-surface border-border text-text-muted"
+                          ? "border-status-active/20 bg-surface text-status-active"
+                          : "border-border bg-surface text-text-muted"
                       }`}
         >
           <span
@@ -452,7 +616,7 @@ export default function CanvasBoardPage() {
               isConnected ? "bg-status-active animate-pulse" : "bg-text-muted"
             }`}
           />
-          {isConnected ? `Live · ${userName}` : "Offline"}
+          {isConnected ? `Synced · ${userName}` : "Disconnected · editing paused"}
         </div>
       </div>
     </ReactFlowProvider>

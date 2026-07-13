@@ -425,7 +425,10 @@ export async function deleteBoard(boardId: string, requesterId?: string): Promis
  * List boards visible to a specific user.
  * Returns boards where: ownerId matches OR isPublic === true.
  */
-export async function listBoards(requesterId?: string): Promise<BoardState[]> {
+export async function listBoards(
+  requesterId?: string,
+  memberBoardIds: string[] = []
+): Promise<BoardState[]> {
   let allBoards: BoardState[] = [];
 
   if (redis) {
@@ -460,7 +463,7 @@ export async function listBoards(requesterId?: string): Promise<BoardState[]> {
   // Filter by access: show user's own boards + public boards
   if (requesterId) {
     return allBoards.filter(
-      (b) => b.ownerId === requesterId || b.isPublic
+      (b) => b.ownerId === requesterId || b.isPublic || memberBoardIds.includes(b.id)
     );
   }
 
@@ -470,13 +473,13 @@ export async function listBoards(requesterId?: string): Promise<BoardState[]> {
 /**
  * Get real computed metrics across all boards visible to a user.
  */
-export async function getMetrics(requesterId?: string): Promise<{
+export async function getMetrics(requesterId?: string, memberBoardIds: string[] = []): Promise<{
   totalBoards: number;
   totalNodes: number;
   totalEdges: number;
   uptimeSeconds: number;
 }> {
-  const boards = await listBoards(requesterId);
+  const boards = await listBoards(requesterId, memberBoardIds);
   let totalNodes = 0;
   let totalEdges = 0;
 

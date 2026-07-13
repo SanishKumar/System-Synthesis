@@ -15,7 +15,6 @@ import {
   ConnectionMode,
   getNodesBounds,
 } from "@xyflow/react";
-import { toPng } from "html-to-image";
 import "@xyflow/react/dist/style.css";
 
 import { useBoardStore } from "@/store/boardStore";
@@ -67,6 +66,8 @@ interface CanvasBoardProps {
   pendingNodeType?: string | null;
   onNodePlaced?: () => void;
   onToolReset?: () => void;
+  readOnly?: boolean;
+  fitViewRequest?: number;
 }
 
 export default function CanvasBoard({
@@ -75,10 +76,14 @@ export default function CanvasBoard({
   pendingNodeType,
   onNodePlaced,
   onToolReset,
+  readOnly = false,
+  fitViewRequest = 0,
 }: CanvasBoardProps) {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
+  const initiallyFittedBoardRef = useRef<string | null>(null);
   const reactFlowInstance = useReactFlow();
   const {
+    boardId,
     nodes,
     edges,
     onNodesChange,
@@ -93,6 +98,43 @@ export default function CanvasBoard({
     setNodes,
     setEdges,
   } = useBoardStore();
+
+  // React Flow's `fitView` prop only runs when the canvas mounts. Collaborative
+  // state arrives afterwards, so fit once when a board's nodes are hydrated.
+  useEffect(() => {
+    if (!boardId || nodes.length === 0 || initiallyFittedBoardRef.current === boardId) {
+      return;
+    }
+
+    initiallyFittedBoardRef.current = boardId;
+    const frame = requestAnimationFrame(() => {
+      void reactFlowInstance.fitView({
+        padding: 0.22,
+        duration: 280,
+        minZoom: 0.12,
+        maxZoom: 1.1,
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [boardId, nodes.length, reactFlowInstance]);
+
+  // Auto layout increments this request only after its position animation has
+  // completed, ensuring the camera centers the newly arranged graph bounds.
+  useEffect(() => {
+    if (fitViewRequest === 0 || nodes.length === 0) return;
+
+    const frame = requestAnimationFrame(() => {
+      void reactFlowInstance.fitView({
+        padding: 0.22,
+        duration: 420,
+        minZoom: 0.12,
+        maxZoom: 1.1,
+      });
+    });
+
+    return () => cancelAnimationFrame(frame);
+  }, [fitViewRequest, nodes.length, reactFlowInstance]);
 
   // Filter out corrupted edges that might be stuck in the store from previous bugs
   // React Flow strictly expects sourceHandle to end in '-source' and targetHandle to end in '-target'
@@ -129,6 +171,8 @@ export default function CanvasBoard({
     function handleKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
       const isTyping = tag === "INPUT" || tag === "TEXTAREA";
+
+      if (readOnly && e.key !== "Escape") return;
 
       // ESC: cancel current tool, return to select mode
       if (e.key === "Escape" && !isTyping) {
@@ -212,11 +256,11 @@ export default function CanvasBoard({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onToolReset]);
+  }, [onToolReset, readOnly]);
 
   // ——— Export PNG handler ———
   useEffect(() => {
-    function handleExport() {
+    async function handleExport() {
       if (nodes.length === 0) {
         alert("Board is empty!");
         return;
@@ -231,24 +275,26 @@ export default function CanvasBoard({
       const viewportEl = document.querySelector(".react-flow__viewport") as HTMLElement;
       if (!viewportEl) return;
 
-      toPng(viewportEl, {
-        backgroundColor: "#0A0A0A",
-        width,
-        height,
-        style: {
-          width: `${width}px`,
-          height: `${height}px`,
-          transform: `translate(${-nodesBounds.x + padding}px, ${-nodesBounds.y + padding}px) scale(1)`,
-        },
-      }).then((dataUrl) => {
+      try {
+        const { toPng } = await import("html-to-image");
+        const dataUrl = await toPng(viewportEl, {
+          backgroundColor: "#0A0A0A",
+          width,
+          height,
+          style: {
+            width: `${width}px`,
+            height: `${height}px`,
+            transform: `translate(${-nodesBounds.x + padding}px, ${-nodesBounds.y + padding}px) scale(1)`,
+          },
+        });
         const a = document.createElement("a");
         a.setAttribute("download", "system-architecture.png");
         a.setAttribute("href", dataUrl);
         a.click();
-      }).catch((err) => {
+      } catch (err) {
         console.error("Export failed", err);
         alert("Failed to export PNG");
-      });
+      }
     }
 
     window.addEventListener("export-png", handleExport);
@@ -277,14 +323,20 @@ export default function CanvasBoard({
 
   const handleNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
+      if (readOnly) return;
       setSelectedNodeId(node.id);
       setSidebarMode("inspector");
     },
-    [setSelectedNodeId, setSidebarMode]
+    [setSelectedNodeId, setSidebarMode, readOnly]
   );
 
   const handlePaneClick = useCallback(
     (event: React.MouseEvent) => {
+      if (readOnly) {
+        setSelectedNodeId(null);
+        if (sidebarMode === "inspector") setSidebarMode("none");
+        return;
+      }
       // If we have a pending node type (shapes tool), place it at click location
       if (activeTool === "shapes" && pendingNodeType) {
         const position = reactFlowInstance.screenToFlowPosition({
@@ -369,6 +421,7 @@ export default function CanvasBoard({
       addNode,
       onNodePlaced,
       reactFlowInstance,
+      readOnly,
     ]
   );
 
@@ -382,12 +435,14 @@ export default function CanvasBoard({
   );
 
   const handleDragOver = useCallback((event: React.DragEvent) => {
+    if (readOnly) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-  }, []);
+  }, [readOnly]);
 
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
+      if (readOnly) return;
       event.preventDefault();
 
       const type = event.dataTransfer.getData("application/reactflow");
@@ -418,7 +473,7 @@ export default function CanvasBoard({
 
       addNode(newNode);
     },
-    [addNode, reactFlowInstance]
+    [addNode, reactFlowInstance, readOnly]
   );
 
   // Cursor style based on active tool
@@ -438,6 +493,7 @@ export default function CanvasBoard({
   // --- Drag-into-group detection ---
   const handleNodeDragStop = useCallback(
     (_event: React.MouseEvent, draggedNode: Node) => {
+      if (readOnly) return;
       // Don't reparent groups themselves
       if (draggedNode.type === "groupNode") return;
 
@@ -518,7 +574,7 @@ export default function CanvasBoard({
       }
       }, 0);
     },
-    []
+    [readOnly]
   );
 
   return (
@@ -534,17 +590,20 @@ export default function CanvasBoard({
         edges={validEdges}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
-        onConnect={onConnect}
+        onConnect={readOnly ? undefined : onConnect}
         onNodeClick={handleNodeClick}
-        onNodeDragStop={handleNodeDragStop}
+        onNodeDragStop={readOnly ? undefined : handleNodeDragStop}
         onPaneClick={handlePaneClick}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         isValidConnection={isValidConnection}
         fitView
         fitViewOptions={{ padding: 0.2 }}
-        connectOnClick={isConnectMode}
-        nodesDraggable
+        connectOnClick={!readOnly && isConnectMode}
+        nodesDraggable={!readOnly}
+        nodesConnectable={!readOnly}
+        edgesReconnectable={!readOnly}
+        deleteKeyCode={readOnly ? null : ["Backspace", "Delete"]}
         connectionMode={ConnectionMode.Loose}
         defaultEdgeOptions={{
           type: "architectureEdge",

@@ -29,9 +29,22 @@ const MIGRATION_SQL = `
     version       INT NOT NULL,
     data          JSONB NOT NULL,
     created_by    TEXT,
+    created_by_name TEXT,
+    name          TEXT,
+    parent_version INT,
+    source_board_id TEXT,
+    source_version INT,
+    change_summary JSONB NOT NULL DEFAULT '{"changes": [], "stats": {"added": 0, "removed": 0, "changed": 0, "total": 0}}'::jsonb,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE(board_id, version)
   );
+
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS created_by_name TEXT;
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS name TEXT;
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS parent_version INT;
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS source_board_id TEXT;
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS source_version INT;
+  ALTER TABLE board_snapshots ADD COLUMN IF NOT EXISTS change_summary JSONB NOT NULL DEFAULT '{"changes": [], "stats": {"added": 0, "removed": 0, "changed": 0, "total": 0}}'::jsonb;
 
   -- Backfill current_data from the latest snapshot for existing boards
   UPDATE boards b
@@ -46,6 +59,59 @@ const MIGRATION_SQL = `
   CREATE INDEX IF NOT EXISTS idx_snapshots_board_id ON board_snapshots(board_id);
   CREATE INDEX IF NOT EXISTS idx_snapshots_board_version ON board_snapshots(board_id, version DESC);
   CREATE INDEX IF NOT EXISTS idx_boards_owner_id ON boards(owner_id);
+
+  CREATE TABLE IF NOT EXISTS board_members (
+    board_id      TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    user_id       TEXT NOT NULL,
+    role          TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    invited_by    TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (board_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS board_invitations (
+    id            TEXT PRIMARY KEY,
+    board_id      TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    token_hash    TEXT NOT NULL UNIQUE,
+    role          TEXT NOT NULL CHECK (role IN ('editor', 'viewer')),
+    created_by    TEXT NOT NULL,
+    expires_at    TIMESTAMPTZ NOT NULL,
+    used_by       TEXT,
+    used_at       TIMESTAMPTZ,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id            TEXT PRIMARY KEY,
+    board_id      TEXT,
+    actor_id      TEXT NOT NULL,
+    action        TEXT NOT NULL,
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS board_updates (
+    sequence      BIGSERIAL PRIMARY KEY,
+    board_id      TEXT NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+    update_hash   TEXT NOT NULL,
+    update_data   BYTEA NOT NULL,
+    actor_id      TEXT NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (board_id, update_hash)
+  );
+
+  CREATE TABLE IF NOT EXISTS board_document_snapshots (
+    board_id      TEXT PRIMARY KEY REFERENCES boards(id) ON DELETE CASCADE,
+    state_data    BYTEA NOT NULL,
+    last_sequence BIGINT NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_board_members_user ON board_members(user_id);
+  CREATE INDEX IF NOT EXISTS idx_board_invites_board ON board_invitations(board_id);
+  CREATE INDEX IF NOT EXISTS idx_audit_board_created ON audit_logs(board_id, created_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_board_updates_replay ON board_updates(board_id, sequence);
 `;
 
 /**

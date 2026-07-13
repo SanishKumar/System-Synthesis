@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { useBoardStore } from "@/store/boardStore";
+import { useUser } from "@/hooks/useUser";
 import { getSocket } from "@/lib/socket";
 import { useReactFlow } from "@xyflow/react";
 import {
@@ -27,6 +28,7 @@ import {
   GripVertical,
   Copy,
   Wand2,
+  ScanSearch,
 } from "lucide-react";
 import type { AIAnalysisResult, AiAction, AIGenerateResult, ValidationResult, ValidationIssue, ArchTemplate } from "@system-synthesis/shared";
 
@@ -35,34 +37,18 @@ const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
 type TabId = "ai-assist" | "validation" | "layers" | "templates" | "terminal";
 
 const sidebarTabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: "ai-assist", label: "AI Assist", icon: <Sparkles className="w-4 h-4" /> },
-  { id: "validation", label: "Validate", icon: <Shield className="w-4 h-4" /> },
+  { id: "validation", label: "Lint", icon: <Shield className="w-4 h-4" /> },
   { id: "layers", label: "Layers", icon: <Layers className="w-4 h-4" /> },
   { id: "templates", label: "Templates", icon: <BookOpen className="w-4 h-4" /> },
+  { id: "ai-assist", label: "Explain", icon: <Sparkles className="w-4 h-4" /> },
   { id: "terminal", label: "Terminal", icon: <TerminalIcon className="w-4 h-4" /> },
 ];
 
-const mockAnalysis: AIAnalysisResult = {
-  missingComponents: [
-    { title: "Missing Dependency", description: "Auth Service lacks direct connection to an Identity Provider node.", severity: "critical" },
-    { title: "No Monitoring", description: "Architecture is missing observability stack (Prometheus, Grafana, or Datadog).", severity: "warning" },
-  ],
-  suggestedStorage: [
-    { name: "PostgreSQL", type: "primary" },
-    { name: "Redis Cache", type: "cache" },
-    { name: "ElasticSearch", type: "search" },
-  ],
-  apiRecommendations: [
-    { name: "RESTful API", description: "Best for broad client compatibility and standard CRUD operations.", badge: "Standard" },
-    { name: "gRPC", description: "Recommended for internal microservice-to-microservice communication.", badge: "High-Perf" },
-  ],
-  scalabilityChecklist: [
-    { label: "Horizontal Pod Autoscaling", checked: true },
-    { label: "Rate Limiting Middleware", checked: false },
-    { label: "Database Connection Pooling", checked: false },
-    { label: "CDN for Static Assets", checked: false },
-    { label: "Circuit Breaker Pattern", checked: true },
-  ],
+const emptyAnalysis: AIAnalysisResult = {
+  missingComponents: [],
+  suggestedStorage: [],
+  apiRecommendations: [],
+  scalabilityChecklist: [],
 };
 
 const COMPONENT_TYPES = [
@@ -83,7 +69,8 @@ interface TerminalLine {
 }
 
 export default function ArchitectureAssist() {
-  const [activeTab, setActiveTab] = useState<TabId>("ai-assist");
+  const { authHeaders } = useUser();
+  const [activeTab, setActiveTab] = useState<TabId>("validation");
   const {
     aiAnalysis,
     isAnalyzing,
@@ -96,14 +83,16 @@ export default function ArchitectureAssist() {
     getSerializedNodes,
     getSerializedEdges,
     boardId,
+    boardRole,
     addNode,
     validationResult,
     isValidating,
     setValidationResult,
     setIsValidating,
   } = useBoardStore();
+  const canEdit = boardRole === "owner" || boardRole === "editor";
 
-  const analysis = aiAnalysis || mockAnalysis;
+  const analysis = aiAnalysis || emptyAnalysis;
 
   const reactFlowInstance = useReactFlow();
 
@@ -126,7 +115,7 @@ export default function ArchitectureAssist() {
       try {
         const res = await fetch(`${API_URL}/api/boards/validate`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify({ nodes: serializedNodes, edges: serializedEdges }),
         });
         if (res.ok) {
@@ -141,9 +130,10 @@ export default function ArchitectureAssist() {
     return () => {
       if (validationTimerRef.current) clearTimeout(validationTimerRef.current);
     };
-  }, [nodes.length, edges.length, getSerializedNodes, getSerializedEdges, setValidationResult]);
+  }, [nodes.length, edges.length, getSerializedNodes, getSerializedEdges, setValidationResult, authHeaders]);
 
   const applyAiAction = (action: AiAction) => {
+    if (!canEdit) return;
     if (action.type === 'add_node') {
       const newNodeId = `ai-node-${Date.now()}`;
       
@@ -203,16 +193,10 @@ export default function ArchitectureAssist() {
 
   const handleAnalyze = useCallback(async () => {
     setIsAnalyzing(true);
-    const serializedNodes = getSerializedNodes();
-    const serializedEdges = getSerializedEdges();
 
     const socket = getSocket();
     if (socket.connected) {
-      socket.emit("request_ai_analysis", {
-        boardId,
-        nodes: serializedNodes,
-        edges: serializedEdges,
-      });
+      socket.emit("request_ai_analysis", { boardId });
       return;
     }
 
@@ -220,8 +204,8 @@ export default function ArchitectureAssist() {
       const apiUrl = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
       const response = await fetch(`${apiUrl}/api/ai/analyze`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nodes: serializedNodes, edges: serializedEdges }),
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ boardId }),
       });
       if (response.ok) {
         const result = await response.json();
@@ -231,12 +215,14 @@ export default function ArchitectureAssist() {
       }
     } catch {}
 
-    await new Promise((r) => setTimeout(r, 1500));
-    setAiAnalysis(mockAnalysis);
     setIsAnalyzing(false);
-  }, [boardId, getSerializedNodes, getSerializedEdges, setAiAnalysis, setIsAnalyzing]);
+  }, [boardId, setAiAnalysis, setIsAnalyzing, authHeaders]);
 
   const [checklist, setChecklist] = useState(analysis.scalabilityChecklist);
+
+  useEffect(() => {
+    setChecklist(analysis.scalabilityChecklist);
+  }, [analysis.scalabilityChecklist]);
 
   const toggleCheckItem = (index: number) => {
     setChecklist((prev) =>
@@ -264,6 +250,10 @@ export default function ArchitectureAssist() {
 
   // --- Components: drag to add ---
   const handleDragStart = (event: React.DragEvent, nodeType: string) => {
+    if (!canEdit) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer.setData("application/reactflow", nodeType);
     event.dataTransfer.effectAllowed = "move";
   };
@@ -370,8 +360,8 @@ export default function ArchitectureAssist() {
           (async () => {
             try {
               const res = await fetch(`${API_URL}/api/export/docker-compose`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
+                method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
+                body: JSON.stringify({ boardId: storeState.boardId, nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
               });
               if (res.ok) {
                 const text = await res.text();
@@ -394,8 +384,8 @@ export default function ArchitectureAssist() {
           (async () => {
             try {
               const res = await fetch(`${API_URL}/api/export/terraform`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
+                method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
+                body: JSON.stringify({ boardId: storeState.boardId, nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges() }),
               });
               if (res.ok) {
                 const bundle = await res.json();
@@ -420,8 +410,8 @@ export default function ArchitectureAssist() {
           (async () => {
             try {
               const res = await fetch(`${API_URL}/api/export/report`, {
-                method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges(), boardName: storeState.boardName }),
+                method: "POST", headers: { "Content-Type": "application/json", ...authHeaders },
+                body: JSON.stringify({ boardId: storeState.boardId, nodes: storeState.getSerializedNodes(), edges: storeState.getSerializedEdges(), boardName: storeState.boardName }),
               });
               if (res.ok) {
                 const text = await res.text();
@@ -445,6 +435,10 @@ export default function ArchitectureAssist() {
         default:
           // Check for "design" command prefix
           if (trimmed.startsWith("design ")) {
+            if (!canEdit) {
+              newLines.push({ type: "error", text: "Editor role required for design generation." });
+              break;
+            }
             const scenario = cmd.trim().slice(7).trim();
             if (!scenario) {
               newLines.push({ type: "error", text: 'Usage: design <description>' });
@@ -460,7 +454,7 @@ export default function ArchitectureAssist() {
                 try {
                   const res = await fetch(`${API_URL}/api/ai/generate`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: { "Content-Type": "application/json", ...authHeaders },
                     body: JSON.stringify({ scenario }),
                   });
                   if (res.ok) {
@@ -523,7 +517,7 @@ export default function ArchitectureAssist() {
       setCmdHistory((prev) => [...prev, cmd]);
       setHistoryIdx(-1);
     },
-    [terminalLines, handleAnalyze]
+    [terminalLines, handleAnalyze, authHeaders, canEdit]
   );
 
   const handleTerminalKeyDown = (e: React.KeyboardEvent) => {
@@ -554,14 +548,14 @@ export default function ArchitectureAssist() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-border">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-sm bg-accent-cyan/15 border border-accent-cyan/30 flex items-center justify-center">
-            <Bot className="w-5 h-5 text-accent-cyan" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl border border-accent-cyan/20 bg-accent-cyan/10">
+            <ScanSearch className="h-[18px] w-[18px] text-accent-cyan" />
           </div>
           <div>
-            <h3 className="font-display font-bold text-sm text-accent-cyan">
-              Architecture Assist
+            <h3 className="text-sm font-bold text-text-primary">
+              System analysis
             </h3>
-            <p className="text-xs text-text-muted">AI-Powered Design</p>
+            <p className="text-[11px] text-text-muted">Rules first · AI optional</p>
           </div>
         </div>
         <button
@@ -597,10 +591,21 @@ export default function ArchitectureAssist() {
         {/* =========== AI ASSIST TAB =========== */}
         {activeTab === "ai-assist" && (
           <div className="animate-fade-in space-y-5">
+            {!aiAnalysis && (
+              <div className="rounded-xl border border-accent-cyan/15 bg-accent-cyan/[0.045] p-4">
+                <div className="mb-1.5 flex items-center gap-2 text-accent-cyan">
+                  <Bot className="h-4 w-4" />
+                  <p className="text-xs font-bold">No explanation generated</p>
+                </div>
+                <p className="text-[11px] leading-5 text-text-secondary">
+                  Run the graph linter first. The assistant can explain rule-based findings, but its output is not architecture validation.
+                </p>
+              </div>
+            )}
             <section>
               <h4 className="text-xs font-display text-text-muted uppercase tracking-wider mb-3 flex items-center gap-1.5">
                 <AlertTriangle className="w-3.5 h-3.5" />
-                Missing Components
+                Suggested follow-ups
               </h4>
               <div className="space-y-2">
                 {analysis.missingComponents.map((comp, i) => (
@@ -627,6 +632,7 @@ export default function ArchitectureAssist() {
                               <button
                                 key={aIdx}
                                 onClick={() => applyAiAction(action)}
+                                disabled={!canEdit}
                                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-sm text-[10px] font-display font-bold uppercase tracking-wider bg-canvas-50 border border-border text-text-secondary hover:text-accent-cyan hover:border-accent-cyan/50 transition-colors"
                               >
                                 <Sparkles className="w-3 h-3" />
@@ -645,6 +651,7 @@ export default function ArchitectureAssist() {
               {analysis.missingComponents.some(c => c.actions && c.actions.length > 0) && (
                 <button
                   onClick={applyAllSuggestions}
+                  disabled={!canEdit}
                   className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-sm text-xs font-display font-bold uppercase tracking-wider bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20 transition-all mt-3"
                 >
                   <Wand2 className="w-3.5 h-3.5" />
@@ -702,7 +709,7 @@ export default function ArchitectureAssist() {
             <section>
               <h4 className="text-xs font-display text-text-muted uppercase tracking-wider mb-3 flex items-center gap-1.5">
                 <Zap className="w-3.5 h-3.5" />
-                Scalability Checklist
+                Review checklist
               </h4>
               <ul className="space-y-2">
                 {checklist.map((item, i) => (
@@ -736,7 +743,7 @@ export default function ArchitectureAssist() {
                 try {
                   const res = await fetch(`${API_URL}/api/boards/validate`, {
                     method: "POST",
-                    headers: { "Content-Type": "application/json" },
+                    headers: { "Content-Type": "application/json", ...authHeaders },
                     body: JSON.stringify({
                       nodes: getSerializedNodes(),
                       edges: getSerializedEdges(),
@@ -750,28 +757,28 @@ export default function ArchitectureAssist() {
                 setIsValidating(false);
               }}
               disabled={isValidating}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-sm text-xs font-display bg-accent-cyan/10 border border-accent-cyan/30 text-accent-cyan hover:bg-accent-cyan/20 transition-all disabled:opacity-50"
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-accent-cyan/25 bg-accent-cyan/10 px-3 py-2.5 text-xs font-semibold text-accent-cyan transition-all hover:bg-accent-cyan/15 disabled:opacity-50"
             >
               {isValidating ? (
-                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Validating...</>
+                <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking graph...</>
               ) : (
-                <><Shield className="w-3.5 h-3.5" /> Run Validation</>
+                <><Shield className="w-3.5 h-3.5" /> Run architecture lint</>
               )}
             </button>
 
             {!validationResult ? (
               <div className="text-center py-8">
                 <Shield className="w-8 h-8 text-text-muted/30 mx-auto mb-2" />
-                <p className="text-xs text-text-muted">Click &quot;Run Validation&quot; or make changes to auto-validate.</p>
+                <p className="text-xs leading-5 text-text-muted">Run the architecture linter or edit the graph to check its configured rules.</p>
               </div>
             ) : validationResult.issues.length === 0 ? (
               <div className="text-center py-8">
                 <div className="w-12 h-12 rounded-sm bg-status-active/10 border border-status-active/30 flex items-center justify-center mx-auto mb-3">
                   <CheckSquare className="w-6 h-6 text-status-active" />
                 </div>
-                <p className="text-sm font-display font-bold text-status-active">All checks passed</p>
+                <p className="text-sm font-bold text-status-active">No lint findings</p>
                 <p className="text-xs text-text-muted mt-1 max-w-[220px] mx-auto leading-relaxed">
-                  No architecture issues detected. The validator checks for anti-patterns like direct client→database connections, orphaned services, and misconfigured queues.
+                  The current rule set did not report a finding. This is not a proof that the architecture is correct.
                 </p>
               </div>
             ) : (
@@ -907,7 +914,11 @@ export default function ArchitectureAssist() {
 
         {/* =========== TEMPLATES TAB =========== */}
         {activeTab === "templates" && (
-          <TemplatesPanel setNodes={useBoardStore.getState().setNodes} setEdges={useBoardStore.getState().setEdges} />
+          <TemplatesPanel
+            setNodes={useBoardStore.getState().setNodes}
+            setEdges={useBoardStore.getState().setEdges}
+            canEdit={canEdit}
+          />
         )}
 
         {/* =========== TERMINAL TAB =========== */}
@@ -953,25 +964,25 @@ export default function ArchitectureAssist() {
       </div>
 
       {/* Footer */}
-      <div className="p-4 border-t border-border">
-        <button
-          id="optimize-flow-btn"
-          onClick={handleAnalyze}
-          disabled={isAnalyzing}
-          className="btn-primary w-full flex items-center justify-center gap-2 py-2.5 text-sm"
-        >
-          {isAnalyzing ? (
-            <>
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Analyzing...
-            </>
-          ) : (
-            <>
-              <Sparkles className="w-4 h-4" />
-              Optimize Flow
-            </>
-          )}
-        </button>
+      <div className="border-t border-border p-4">
+        {activeTab === "ai-assist" ? (
+          <button
+            id="optimize-flow-btn"
+            onClick={handleAnalyze}
+            disabled={isAnalyzing}
+            className="btn-primary flex w-full items-center justify-center gap-2 py-2.5 text-sm"
+          >
+            {isAnalyzing ? (
+              <><Loader2 className="h-4 w-4 animate-spin" /> Generating explanation...</>
+            ) : (
+              <><Sparkles className="h-4 w-4" /> Explain with AI</>
+            )}
+          </button>
+        ) : (
+          <p className="text-center text-[10px] leading-4 text-text-muted">
+            Lint findings are generated by configured graph rules, independent of the assistant.
+          </p>
+        )}
       </div>
     </div>
   );
@@ -993,9 +1004,11 @@ interface TemplateSummary {
 function TemplatesPanel({
   setNodes,
   setEdges,
+  canEdit,
 }: {
   setNodes: (nodes: any[]) => void;
   setEdges: (edges: any[]) => void;
+  canEdit: boolean;
 }) {
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1015,6 +1028,7 @@ function TemplatesPanel({
   }, []);
 
   const applyTemplate = async (id: string) => {
+    if (!canEdit) return;
     if (!confirm("Apply this template? It will replace the current canvas.")) return;
 
     setApplying(id);
@@ -1081,7 +1095,7 @@ function TemplatesPanel({
         <button
           key={t.id}
           onClick={() => applyTemplate(t.id)}
-          disabled={applying === t.id}
+          disabled={!canEdit || applying === t.id}
           className="w-full text-left p-3 rounded-sm border border-border bg-canvas-50 hover:border-accent-cyan/40 hover:shadow-glow-cyan transition-all group disabled:opacity-50"
         >
           <div className="flex items-center gap-2 mb-1.5">

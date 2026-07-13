@@ -17,6 +17,37 @@ import type {
   SerializedEdge,
 } from "@system-synthesis/shared";
 import { getPool, isDbAvailable } from "./db.js";
+import {
+  diffArchitectureGraphs,
+  type SemanticGraphDiff,
+} from "./graphDiff.js";
+
+export interface SnapshotSaveOptions {
+  createdBy?: string;
+  createdByName?: string;
+  name?: string;
+  sourceBoardId?: string;
+  sourceVersion?: number;
+}
+
+export interface SnapshotSummary {
+  version: number;
+  name: string | null;
+  createdAt: string;
+  createdBy: string | null;
+  createdByName: string | null;
+  parentVersion: number | null;
+  sourceBoardId: string | null;
+  sourceVersion: number | null;
+  nodeCount: number;
+  edgeCount: number;
+  changeSummary: SemanticGraphDiff;
+}
+
+export interface BoardVersion extends SnapshotSummary {
+  nodes: SerializedNode[];
+  edges: SerializedEdge[];
+}
 
 // ============================================================
 // Redis + Memory layer (imported from existing service)
@@ -76,47 +107,76 @@ async function pgUpsertBoard(board: BoardState): Promise<void> {
  * Save a new snapshot version to Postgres.
  * Returns the new version number.
  */
-async function pgSaveSnapshot(
+export async function pgSaveSnapshot(
   boardId: string,
   nodes: SerializedNode[],
   edges: SerializedEdge[],
-  createdBy?: string
-): Promise<number | null> {
+  options: SnapshotSaveOptions = {}
+): Promise<SnapshotSummary | null> {
   const pool = getPool();
   if (!pool) return null;
+  const client = await pool.connect();
 
   try {
-    // Get next version number
-    const versionResult = await pool.query(
-      `SELECT COALESCE(MAX(version), 0) + 1 as next_version 
-       FROM board_snapshots WHERE board_id = $1`,
+    await client.query("BEGIN");
+    // Allocate the version and calculate its diff while holding the same
+    // per-board transaction lock. Concurrent writers cannot race MAX + 1.
+    await client.query(`SELECT pg_advisory_xact_lock(hashtext($1))`, [boardId]);
+    const latestResult = await client.query(
+      `SELECT version, data FROM board_snapshots
+       WHERE board_id = $1 ORDER BY version DESC LIMIT 1`,
       [boardId]
     );
-    const nextVersion = versionResult.rows[0].next_version;
-
-    // Insert snapshot
-    await pool.query(
-      `INSERT INTO board_snapshots (board_id, version, data, created_by)
-       VALUES ($1, $2, $3, $4)`,
-      [boardId, nextVersion, JSON.stringify({ nodes, edges }), createdBy]
+    const latest = latestResult.rows[0];
+    const nextVersion = Number(latest?.version || 0) + 1;
+    const previousData = latest?.data || { nodes: [], edges: [] };
+    const changeSummary = diffArchitectureGraphs(
+      previousData.nodes || [],
+      previousData.edges || [],
+      nodes,
+      edges
     );
-
-    // Enforce retention policy (max 10 snapshots)
-    await pool.query(
-      `DELETE FROM board_snapshots
-       WHERE board_id = $1 AND version NOT IN (
-         SELECT version FROM board_snapshots
-         WHERE board_id = $1
-         ORDER BY version DESC
-         LIMIT 10
-       )`,
-      [boardId]
+    const inserted = await client.query(
+      `INSERT INTO board_snapshots (
+         board_id, version, data, created_by, created_by_name, name,
+         parent_version, source_board_id, source_version, change_summary
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING created_at`,
+      [
+        boardId,
+        nextVersion,
+        JSON.stringify({ nodes, edges }),
+        options.createdBy || null,
+        options.createdByName || null,
+        options.name?.trim() || null,
+        latest?.version || null,
+        options.sourceBoardId || null,
+        options.sourceVersion || null,
+        JSON.stringify(changeSummary),
+      ]
     );
-
-    return nextVersion;
-  } catch (err: any) {
-    console.error("  ⚠ pgSaveSnapshot error:", err.message);
-    return null;
+    await client.query("COMMIT");
+    const createdAt = inserted.rows[0]?.created_at;
+    return {
+      version: nextVersion,
+      name: options.name?.trim() || null,
+      createdAt: createdAt instanceof Date
+        ? createdAt.toISOString()
+        : String(createdAt || new Date().toISOString()),
+      createdBy: options.createdBy || null,
+      createdByName: options.createdByName || null,
+      parentVersion: latest?.version || null,
+      sourceBoardId: options.sourceBoardId || null,
+      sourceVersion: options.sourceVersion || null,
+      nodeCount: nodes.length,
+      edgeCount: edges.length,
+      changeSummary,
+    };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
   }
 }
 
@@ -189,7 +249,10 @@ async function pgGetBoard(boardId: string): Promise<BoardState | null> {
 /**
  * List all boards from Postgres (non-deleted).
  */
-async function pgListBoards(requesterId?: string): Promise<BoardState[]> {
+async function pgListBoards(
+  requesterId?: string,
+  memberBoardIds: string[] = []
+): Promise<BoardState[]> {
   const pool = getPool();
   if (!pool) return [];
 
@@ -199,9 +262,9 @@ async function pgListBoards(requesterId?: string): Promise<BoardState[]> {
       result = await pool.query(
         `SELECT id, name, description, owner_id, owner_name, is_public, created_at, updated_at, current_data
          FROM boards 
-         WHERE deleted_at IS NULL AND (owner_id = $1 OR is_public = true)
+         WHERE deleted_at IS NULL AND (owner_id = $1 OR is_public = true OR id = ANY($2::text[]))
          ORDER BY updated_at DESC`,
-        [requesterId]
+        [requesterId, memberBoardIds]
       );
     } else {
       result = await pool.query(
@@ -292,14 +355,16 @@ export async function saveBoardSnapshot(
   boardId: string,
   nodes: SerializedNode[],
   edges: SerializedEdge[],
-  savedBy?: string
-): Promise<void> {
+  options: SnapshotSaveOptions = {}
+): Promise<SnapshotSummary | null> {
   if (isDbAvailable()) {
-    const version = await pgSaveSnapshot(boardId, nodes, edges, savedBy);
-    if (version !== null) {
-      console.log(`  📸 Snapshot v${version} saved for "${boardId}"`);
+    const snapshot = await pgSaveSnapshot(boardId, nodes, edges, options);
+    if (snapshot !== null) {
+      console.log(`  Snapshot v${snapshot.version} saved for "${boardId}"`);
     }
+    return snapshot;
   }
+  return null;
 }
 
 /**
@@ -309,15 +374,30 @@ export async function createBoard(
   name: string,
   description: string | undefined,
   ownerId: string,
-  ownerName: string
+  ownerName: string,
+  initialState?: { nodes: SerializedNode[]; edges: SerializedEdge[] },
+  initialVersionName = "Initial version",
+  initialVersionSource?: { boardId: string; version: number }
 ): Promise<BoardState> {
   // Create in Redis/memory first (gets an ID)
   const board = await redisCreateBoard(name, description, ownerId, ownerName);
+  if (initialState) {
+    board.nodes = initialState.nodes;
+    board.edges = initialState.edges;
+    board.updatedAt = new Date().toISOString();
+    await redisSaveBoard(board.id, board.nodes, board.edges);
+  }
 
   // Persist to Postgres
   if (isDbAvailable()) {
     await pgUpsertBoard(board);
-    await pgSaveSnapshot(board.id, board.nodes, board.edges, ownerId);
+    await pgSaveSnapshot(board.id, board.nodes, board.edges, {
+      createdBy: ownerId,
+      createdByName: ownerName,
+      name: initialVersionName,
+      sourceBoardId: initialVersionSource?.boardId,
+      sourceVersion: initialVersionSource?.version,
+    });
   }
 
   return board;
@@ -391,16 +471,19 @@ export async function deleteBoard(
  * List boards visible to a user.
  * Uses Postgres if available (canonical source), otherwise Redis.
  */
-export async function listBoards(requesterId?: string): Promise<BoardState[]> {
+export async function listBoards(
+  requesterId?: string,
+  memberBoardIds: string[] = []
+): Promise<BoardState[]> {
   // 1. Try Redis/memory (fast path)
-  const cachedBoards = await redisListBoards(requesterId);
+  const cachedBoards = await redisListBoards(requesterId, memberBoardIds);
   if (cachedBoards && cachedBoards.length > 0) {
     return cachedBoards;
   }
 
   // 2. Try Postgres (durable path) if cache is empty
   if (isDbAvailable()) {
-    return await pgListBoards(requesterId);
+    return await pgListBoards(requesterId, memberBoardIds);
   }
 
   return [];
@@ -409,9 +492,9 @@ export async function listBoards(requesterId?: string): Promise<BoardState[]> {
 /**
  * Get metrics.
  */
-export async function getMetrics(requesterId?: string) {
+export async function getMetrics(requesterId?: string, memberBoardIds: string[] = []) {
   // Always compute from the listing (which uses Postgres if available)
-  const boards = await listBoards(requesterId);
+  const boards = await listBoards(requesterId, memberBoardIds);
   let totalNodes = 0;
   let totalEdges = 0;
 
@@ -432,14 +515,6 @@ export async function getMetrics(requesterId?: string) {
 // Version History API
 // ============================================================
 
-export interface SnapshotSummary {
-  version: number;
-  createdAt: string;
-  createdBy: string | null;
-  nodeCount: number;
-  edgeCount: number;
-}
-
 /**
  * List all snapshots (versions) for a board.
  */
@@ -449,7 +524,8 @@ export async function listBoardVersions(boardId: string): Promise<SnapshotSummar
 
   try {
     const result = await pool.query(
-      `SELECT version, created_at, created_by, data
+      `SELECT version, name, created_at, created_by, created_by_name,
+              parent_version, source_board_id, source_version, data, change_summary
        FROM board_snapshots
        WHERE board_id = $1
        ORDER BY version DESC
@@ -459,10 +535,16 @@ export async function listBoardVersions(boardId: string): Promise<SnapshotSummar
 
     return result.rows.map((row) => ({
       version: row.version,
-      createdAt: row.created_at.toISOString(),
+      name: row.name,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
       createdBy: row.created_by,
+      createdByName: row.created_by_name,
+      parentVersion: row.parent_version,
+      sourceBoardId: row.source_board_id,
+      sourceVersion: row.source_version,
       nodeCount: row.data?.nodes?.length || 0,
       edgeCount: row.data?.edges?.length || 0,
+      changeSummary: row.change_summary || { changes: [], stats: { added: 0, removed: 0, changed: 0, total: 0 } },
     }));
   } catch (err: any) {
     console.error("  ⚠ listBoardVersions error:", err.message);
@@ -476,13 +558,14 @@ export async function listBoardVersions(boardId: string): Promise<SnapshotSummar
 export async function getBoardVersion(
   boardId: string,
   version: number
-): Promise<{ nodes: SerializedNode[]; edges: SerializedEdge[]; version: number; createdAt: string } | null> {
+): Promise<BoardVersion | null> {
   const pool = getPool();
   if (!pool) return null;
 
   try {
     const result = await pool.query(
-      `SELECT version, data, created_at
+      `SELECT version, name, data, created_at, created_by, created_by_name,
+              parent_version, source_board_id, source_version, change_summary
        FROM board_snapshots
        WHERE board_id = $1 AND version = $2`,
       [boardId, version]
@@ -494,7 +577,16 @@ export async function getBoardVersion(
       nodes: row.data?.nodes || [],
       edges: row.data?.edges || [],
       version: row.version,
-      createdAt: row.created_at.toISOString(),
+      name: row.name,
+      createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
+      createdBy: row.created_by,
+      createdByName: row.created_by_name,
+      parentVersion: row.parent_version,
+      sourceBoardId: row.source_board_id,
+      sourceVersion: row.source_version,
+      nodeCount: row.data?.nodes?.length || 0,
+      edgeCount: row.data?.edges?.length || 0,
+      changeSummary: row.change_summary || { changes: [], stats: { added: 0, removed: 0, changed: 0, total: 0 } },
     };
   } catch (err: any) {
     console.error("  ⚠ getBoardVersion error:", err.message);
@@ -509,15 +601,55 @@ export async function getBoardVersion(
 export async function restoreBoardVersion(
   boardId: string,
   version: number,
-  restoredBy?: string
+  restoredBy?: { userId: string; userName: string }
 ): Promise<BoardState | null> {
   const snapshot = await getBoardVersion(boardId, version);
   if (!snapshot) return null;
 
   // Save as a new version (creates a new snapshot)
-  await saveBoardState(boardId, snapshot.nodes, snapshot.edges, restoredBy);
-  await saveBoardSnapshot(boardId, snapshot.nodes, snapshot.edges, restoredBy);
+  await saveBoardState(boardId, snapshot.nodes, snapshot.edges, restoredBy?.userId);
+  await saveBoardSnapshot(boardId, snapshot.nodes, snapshot.edges, {
+    createdBy: restoredBy?.userId,
+    createdByName: restoredBy?.userName,
+    name: `Restored v${version}`,
+    sourceBoardId: boardId,
+    sourceVersion: version,
+  });
 
   // Return the updated board
   return getBoardState(boardId);
+}
+
+export async function renameBoardVersion(
+  boardId: string,
+  version: number,
+  name: string
+): Promise<boolean> {
+  const pool = getPool();
+  if (!pool) return false;
+  const result = await pool.query(
+    `UPDATE board_snapshots SET name = $3
+     WHERE board_id = $1 AND version = $2`,
+    [boardId, version, name.trim()]
+  );
+  return (result.rowCount || 0) > 0;
+}
+
+export async function duplicateBoardVersion(
+  sourceBoard: BoardState,
+  version: number,
+  owner: { userId: string; userName: string },
+  requestedName?: string
+): Promise<BoardState | null> {
+  const snapshot = await getBoardVersion(sourceBoard.id, version);
+  if (!snapshot) return null;
+  return createBoard(
+    requestedName?.trim() || `${sourceBoard.name} — v${version} copy`,
+    `Duplicated from ${sourceBoard.name}, version ${version}.`,
+    owner.userId,
+    owner.userName,
+    { nodes: snapshot.nodes, edges: snapshot.edges },
+    `Duplicated from ${sourceBoard.name} v${version}`,
+    { boardId: sourceBoard.id, version }
+  );
 }

@@ -1,6 +1,14 @@
 {
   "name": "system-synthesis",
   "private": true,
+  "scripts": {
+    "build": "npm run build --workspace frontend && npm run build --workspace server",
+    "test": "npm test --workspace server",
+    "verify": "npm run build && npm run test",
+    "test:integration": "node test_phases.mjs",
+    "test:convergence": "npm run test:convergence --workspace server",
+    "benchmark:socket": "npm run benchmark:socket --workspace server"
+  },
   "workspaces": [
     "frontend",
     "server",

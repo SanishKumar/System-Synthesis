@@ -19,9 +19,17 @@ import type {
   SerializedNode,
   SerializedEdge,
   BoardOperation,
+  BoardRole,
   ValidationResult,
 } from "@system-synthesis/shared";
 import * as Y from "yjs";
+import {
+  createSharedRecord,
+  patchSharedRecord,
+  readSharedValue,
+  type SharedRecord,
+  upsertSharedRecord,
+} from "@/lib/yjsGraph";
 
 // ---------- Store Types ----------
 
@@ -37,6 +45,7 @@ interface BoardStore {
   // Board identity
   boardId: string;
   boardName: string;
+  boardRole: BoardRole | null;
 
   // React Flow state
   nodes: Node<ArchNodeData>[];
@@ -99,15 +108,14 @@ interface BoardStore {
 
   // --- Yjs Conflict Resolution ---
   yDoc: Y.Doc | null;
-  yNodes: Y.Map<SerializedNode> | null;
-  yEdges: Y.Map<SerializedEdge> | null;
+  yNodes: Y.Map<SharedRecord> | null;
+  yEdges: Y.Map<SharedRecord> | null;
+  undoManager: Y.UndoManager | null;
   initYjs: () => void;
   applyToYjs: (op: BoardOperation) => void;
   applyYjsToLocal: () => void; // Syncs from Yjs -> Zustand when remote update arrives
 
   // --- Undo / Redo ---
-  undoStack: BoardOperation[];
-  redoStack: BoardOperation[];
   undo: () => void;
   redo: () => void;
   canUndo: boolean;
@@ -148,167 +156,6 @@ function sortNodesForReactFlow<T extends { type?: string; parentId?: string; id:
   });
 }
 
-/** Compute the inverse of an operation (for undo) */
-function invertOperation(op: BoardOperation, state: BoardStore): BoardOperation | null {
-  switch (op.op) {
-    case "node_created": {
-      return { op: "node_deleted", nodeId: op.node.id };
-    }
-    case "node_deleted": {
-      const node = state.nodes.find((n) => n.id === op.nodeId);
-      if (!node) return null;
-      return { op: "node_created", node: serializeNode(node) };
-    }
-    case "node_moved": {
-      const node = state.nodes.find((n) => n.id === op.nodeId);
-      if (!node) return null;
-      return { op: "node_moved", nodeId: op.nodeId, position: { ...node.position } };
-    }
-    case "node_updated": {
-      const node = state.nodes.find((n) => n.id === op.nodeId);
-      if (!node) return null;
-      // Store the original values for every key in the patch
-      const reversePatch: Partial<ArchNodeData> = {};
-      for (const key of Object.keys(op.patch)) {
-        (reversePatch as any)[key] = (node.data as any)[key];
-      }
-      return { op: "node_updated", nodeId: op.nodeId, patch: reversePatch };
-    }
-    case "edge_created": {
-      return { op: "edge_deleted", edgeId: op.edge.id };
-    }
-    case "edge_updated": {
-      const edge = state.edges.find((e) => e.id === op.edgeId);
-      if (!edge) return null;
-      const reversePatch: Partial<ArchEdgeData> = {};
-      for (const key of Object.keys(op.patch)) {
-        (reversePatch as any)[key] = (edge.data as any)?.[key];
-      }
-      return { op: "edge_updated", edgeId: op.edgeId, patch: reversePatch };
-    }
-    case "edge_deleted": {
-      const edge = state.edges.find((e) => e.id === op.edgeId);
-      if (!edge) return null;
-      return {
-        op: "edge_created",
-        edge: {
-          id: edge.id,
-          source: edge.source,
-          target: edge.target,
-          sourceHandle: edge.sourceHandle ?? undefined,
-          targetHandle: edge.targetHandle ?? undefined,
-          data: edge.data,
-        },
-      };
-    }
-    case "bulk_sync":
-      // Can't invert a full sync — just ignore
-      return null;
-  }
-}
-
-/** Apply a single operation to the store state (mutates nodes/edges in place via set) */
-function applyOperation(
-  op: BoardOperation,
-  get: () => BoardStore,
-  set: (partial: Partial<BoardStore>) => void
-) {
-  switch (op.op) {
-    case "node_created": {
-      const newNode: any = {
-        id: op.node.id,
-        type: op.node.type || "architectureNode",
-        position: op.node.position,
-        data: op.node.data,
-      };
-      if (op.node.parentId) newNode.parentId = op.node.parentId;
-      if (op.node.extent) newNode.extent = op.node.extent;
-      if (op.node.style) newNode.style = op.node.style;
-      if (op.node.type === "groupNode") newNode.zIndex = -1;
-      
-      set({ nodes: sortNodesForReactFlow([...get().nodes, newNode]) });
-      break;
-    }
-    case "node_updated": {
-      set({
-        nodes: sortNodesForReactFlow(get().nodes.map((n) =>
-          n.id === op.nodeId
-            ? { ...n, data: { ...n.data, ...op.patch } }
-            : n
-        )),
-      });
-      break;
-    }
-    case "node_moved": {
-      set({
-        nodes: sortNodesForReactFlow(get().nodes.map((n) =>
-          n.id === op.nodeId
-            ? { ...n, position: op.position }
-            : n
-        )),
-      });
-      break;
-    }
-    case "node_deleted": {
-      set({
-        nodes: sortNodesForReactFlow(get().nodes.filter((n) => n.id !== op.nodeId)),
-        edges: get().edges.filter(
-          (e) => e.source !== op.nodeId && e.target !== op.nodeId
-        ),
-      });
-      break;
-    }
-    case "edge_created": {
-      const newEdge: Edge<ArchEdgeData> = {
-        id: op.edge.id,
-        source: op.edge.source,
-        target: op.edge.target,
-        sourceHandle: op.edge.sourceHandle,
-        targetHandle: op.edge.targetHandle,
-        type: "architectureEdge",
-        data: op.edge.data,
-      };
-      set({ edges: [...get().edges, newEdge] });
-      break;
-    }
-    case "edge_updated": {
-      set({
-        edges: get().edges.map((e) =>
-          e.id === op.edgeId
-            ? { ...e, data: { ...e.data, ...op.patch } as ArchEdgeData }
-            : e
-        ),
-      });
-      break;
-    }
-    case "edge_deleted": {
-      set({
-        edges: get().edges.filter((e) => e.id !== op.edgeId),
-      });
-      break;
-    }
-    case "bulk_sync": {
-      const newNodes = op.nodes.map((n) => ({
-        id: n.id,
-        type: n.type || "architectureNode",
-        position: n.position,
-        data: n.data,
-      }));
-      const newEdges = op.edges.map((e) => ({
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        sourceHandle: e.sourceHandle,
-        targetHandle: e.targetHandle,
-        type: "architectureEdge" as const,
-        data: e.data,
-      }));
-      set({ nodes: newNodes, edges: newEdges });
-      break;
-    }
-  }
-}
-
 // Track node positions before a drag to detect when a move completes
 let dragStartPositions: Map<string, { x: number; y: number }> = new Map();
 
@@ -317,6 +164,7 @@ let dragStartPositions: Map<string, { x: number; y: number }> = new Map();
 export const useBoardStore = create<BoardStore>((set, get) => ({
   boardId: "",
   boardName: "",
+  boardRole: null,
 
   nodes: [],
   edges: [],
@@ -324,6 +172,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
   yDoc: null,
   yNodes: null,
   yEdges: null,
+  undoManager: null,
 
   initYjs: () => {
     const currentDoc = get().yDoc;
@@ -331,19 +180,38 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       currentDoc.destroy();
     }
     const doc = new Y.Doc();
+    const yNodes = doc.getMap<SharedRecord>("nodes");
+    const yEdges = doc.getMap<SharedRecord>("edges");
+    const undoManager = new Y.UndoManager([yNodes, yEdges], {
+      trackedOrigins: new Set(["local"]),
+      captureTimeout: 250,
+    });
+    const refreshUndoState = () => {
+      set({
+        canUndo: undoManager.undoStack.length > 0,
+        canRedo: undoManager.redoStack.length > 0,
+      });
+    };
+    undoManager.on("stack-item-added", refreshUndoState);
+    undoManager.on("stack-item-popped", refreshUndoState);
+    undoManager.on("stack-cleared", refreshUndoState);
     set({
       yDoc: doc,
-      yNodes: doc.getMap<SerializedNode>("nodes"),
-      yEdges: doc.getMap<SerializedEdge>("edges"),
+      yNodes,
+      yEdges,
+      undoManager,
       nodes: [],
-      edges: []
+      edges: [],
+      canUndo: false,
+      canRedo: false,
     });
   },
 
   applyYjsToLocal: () => {
     const { yNodes, yEdges } = get();
     if (!yNodes || !yEdges) return;
-    const nodes = Array.from(yNodes.values()).map(n => {
+    const nodes = Array.from(yNodes.values()).map(value => {
+      const n = readSharedValue<SerializedNode>(value);
       const node: any = {
         id: n.id,
         type: n.type || "architectureNode",
@@ -356,7 +224,9 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       if (n.type === "groupNode") node.zIndex = -1;
       return node;
     });
-    const edges = Array.from(yEdges.values()).map(e => ({
+    const edges = Array.from(yEdges.values()).map(value => {
+      const e = readSharedValue<SerializedEdge>(value);
+      return ({
       id: e.id,
       source: e.source,
       target: e.target,
@@ -364,7 +234,8 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       targetHandle: e.targetHandle,
       type: "architectureEdge" as const,
       data: e.data,
-    }));
+      });
+    });
     set({ nodes: sortNodesForReactFlow(nodes), edges });
   },
 
@@ -375,38 +246,58 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     yDoc.transact(() => {
       switch (op.op) {
         case "node_created":
-          yNodes.set(op.node.id, op.node);
+          yNodes.set(op.node.id, createSharedRecord(op.node as unknown as Record<string, unknown>));
           break;
-        case "node_updated":
+        case "node_updated": {
+          const n = yNodes.get(op.nodeId);
+          const data = n?.get("data");
+          if (data instanceof Y.Map) patchSharedRecord(data, op.patch as Record<string, unknown>);
+          break;
+        }
         case "node_moved": {
           const n = yNodes.get(op.nodeId);
-          if (n) {
-            yNodes.set(op.nodeId, op.op === "node_updated" ? { ...n, data: { ...n.data, ...op.patch } } : { ...n, position: op.position });
-          }
+          const position = n?.get("position");
+          if (position instanceof Y.Map) patchSharedRecord(position, op.position);
           break;
         }
         case "node_deleted":
           yNodes.delete(op.nodeId);
-          Array.from(yEdges.values()).forEach(e => {
-            if (e.source === op.nodeId || e.target === op.nodeId) yEdges.delete(e.id);
+          Array.from(yEdges.entries()).forEach(([edgeId, value]) => {
+            const e = readSharedValue<SerializedEdge>(value);
+            if (e.source === op.nodeId || e.target === op.nodeId) yEdges.delete(edgeId);
           });
           break;
         case "edge_created":
-          yEdges.set(op.edge.id, op.edge);
+          yEdges.set(op.edge.id, createSharedRecord(op.edge as unknown as Record<string, unknown>));
           break;
         case "edge_updated": {
           const e = yEdges.get(op.edgeId);
-          if (e) yEdges.set(op.edgeId, { ...e, data: { ...e.data, ...op.patch } });
+          if (e) {
+            const existingData = e.get("data");
+            const dataMap: SharedRecord = existingData instanceof Y.Map
+              ? existingData
+              : createSharedRecord({});
+            if (!(existingData instanceof Y.Map)) e.set("data", dataMap);
+            patchSharedRecord(dataMap, op.patch as Record<string, unknown>);
+          }
           break;
         }
         case "edge_deleted":
           yEdges.delete(op.edgeId);
           break;
         case "bulk_sync":
-          Array.from(yNodes.keys()).forEach(k => yNodes.delete(k));
-          Array.from(yEdges.keys()).forEach(k => yEdges.delete(k));
-          op.nodes.forEach(n => yNodes.set(n.id, n));
-          op.edges.forEach(e => yEdges.set(e.id, e));
+          for (const id of yNodes.keys()) {
+            if (!op.nodes.some((node) => node.id === id)) yNodes.delete(id);
+          }
+          for (const id of yEdges.keys()) {
+            if (!op.edges.some((edge) => edge.id === id)) yEdges.delete(id);
+          }
+          op.nodes.forEach((node) =>
+            upsertSharedRecord(yNodes, node.id, node as unknown as Record<string, unknown>)
+          );
+          op.edges.forEach((edge) =>
+            upsertSharedRecord(yEdges, edge.id, edge as unknown as Record<string, unknown>)
+          );
           break;
       }
     }, "local");
@@ -444,19 +335,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
               nodeId: change.id,
               position: { ...movedNode.position },
             };
-            // Record inverse (original position) for undo
-            const inverseOp: BoardOperation = {
-              op: "node_moved",
-              nodeId: change.id,
-              position: startPos,
-            };
             get().applyToYjs(moveOp);
-            set({
-              undoStack: [...get().undoStack, inverseOp],
-              redoStack: [],
-              canUndo: true,
-              canRedo: false,
-            });
           }
         }
         dragStartPositions.delete(change.id);
@@ -473,24 +352,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
         const edge = prevEdges.find((e) => e.id === change.id);
         if (edge) {
           const deleteOp: BoardOperation = { op: "edge_deleted", edgeId: change.id };
-          const inverseOp: BoardOperation = {
-            op: "edge_created",
-            edge: {
-              id: edge.id,
-              source: edge.source,
-              target: edge.target,
-              sourceHandle: edge.sourceHandle ?? undefined,
-              targetHandle: edge.targetHandle ?? undefined,
-              data: edge.data,
-            },
-          };
           get().applyToYjs(deleteOp);
-          set({
-            undoStack: [...get().undoStack, inverseOp],
-            redoStack: [],
-            canUndo: true,
-            canRedo: false,
-          });
         }
       }
     }
@@ -548,10 +410,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
 
     set({
       edges: addEdge(newEdge, get().edges) as Edge<ArchEdgeData>[],
-      undoStack: [...get().undoStack, { op: "edge_deleted", edgeId: newEdge.id }],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -562,14 +420,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
 
-    // Compute inverse patch
-    const reversePatch: Partial<ArchNodeData> = {};
-    for (const key of Object.keys(data)) {
-      (reversePatch as any)[key] = (node.data as any)[key];
-    }
-
     const updateOp: BoardOperation = { op: "node_updated", nodeId, patch: data };
-    const inverseOp: BoardOperation = { op: "node_updated", nodeId, patch: reversePatch };
 
     get().applyToYjs(updateOp);
 
@@ -579,10 +430,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
           ? { ...n, data: { ...n.data, ...data } }
           : n
       )),
-      undoStack: [...get().undoStack, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -594,16 +441,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
       op: "node_created",
       node: serializeNode(node),
     };
-    const inverseOp: BoardOperation = { op: "node_deleted", nodeId: node.id };
-
     get().applyToYjs(createOp);
 
     set({
       nodes: sortNodesForReactFlow([...get().nodes, node]),
-      undoStack: [...get().undoStack, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -619,16 +460,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
         data: edge.data,
       },
     };
-    const inverseOp: BoardOperation = { op: "edge_deleted", edgeId: edge.id };
-
     get().applyToYjs(createOp);
 
     set({
       edges: [...get().edges, edge],
-      undoStack: [...get().undoStack, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -636,14 +471,7 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     const edge = get().edges.find((e) => e.id === edgeId);
     if (!edge) return;
 
-    // Compute inverse patch
-    const reversePatch: Partial<ArchEdgeData> = {};
-    for (const key of Object.keys(data)) {
-      (reversePatch as any)[key] = (edge.data as any)?.[key];
-    }
-
     const updateOp: BoardOperation = { op: "edge_updated", edgeId, patch: data };
-    const inverseOp: BoardOperation = { op: "edge_updated", edgeId, patch: reversePatch };
 
     get().applyToYjs(updateOp);
 
@@ -653,10 +481,6 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
           ? { ...e, data: { ...e.data, ...data } as ArchEdgeData }
           : e
       ),
-      undoStack: [...get().undoStack, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -664,46 +488,15 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     const node = get().nodes.find((n) => n.id === nodeId);
     if (!node) return;
 
-    const connectedEdges = get().edges.filter(
-      (e) => e.source === nodeId || e.target === nodeId
-    );
-
     const deleteOp: BoardOperation = { op: "node_deleted", nodeId };
-    // Inverse: recreate the node (connected edges will be handled as separate ops)
-    const inverseOp: BoardOperation = {
-      op: "node_created",
-      node: serializeNode(node),
-    };
-
-    // Also record edge deletion ops
-    const edgeDeleteOps: BoardOperation[] = connectedEdges.map((e) => ({
-      op: "edge_deleted" as const,
-      edgeId: e.id,
-    }));
-    const edgeInverseOps: BoardOperation[] = connectedEdges.map((e) => ({
-      op: "edge_created" as const,
-      edge: {
-        id: e.id,
-        source: e.source,
-        target: e.target,
-        sourceHandle: e.sourceHandle ?? undefined,
-        targetHandle: e.targetHandle ?? undefined,
-        data: e.data,
-      },
-    }));
 
     get().applyToYjs(deleteOp);
-    edgeDeleteOps.forEach(op => get().applyToYjs(op));
 
     set({
       nodes: get().nodes.filter((n) => n.id !== nodeId),
       edges: get().edges.filter(
         (e) => e.source !== nodeId && e.target !== nodeId
       ),
-      undoStack: [...get().undoStack, ...edgeInverseOps, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -712,26 +505,10 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     if (!edge) return;
 
     const deleteOp: BoardOperation = { op: "edge_deleted", edgeId };
-    const inverseOp: BoardOperation = {
-      op: "edge_created",
-      edge: {
-        id: edge.id,
-        source: edge.source,
-        target: edge.target,
-        sourceHandle: edge.sourceHandle ?? undefined,
-        targetHandle: edge.targetHandle ?? undefined,
-        data: edge.data,
-      },
-    };
-
     get().applyToYjs(deleteOp);
 
     set({
       edges: get().edges.filter((e) => e.id !== edgeId),
-      undoStack: [...get().undoStack, inverseOp],
-      redoStack: [],
-      canUndo: true,
-      canRedo: false,
     });
   },
 
@@ -781,61 +558,28 @@ export const useBoardStore = create<BoardStore>((set, get) => ({
     })),
 
   // --- Undo / Redo ---
-  undoStack: [],
-  redoStack: [],
   canUndo: false,
   canRedo: false,
 
   undo: () => {
-    const stack = get().undoStack;
-    if (stack.length === 0) return;
-
-    const inverseOp = stack[stack.length - 1];
-
-    // Compute the forward op (to push to redo) BEFORE applying the inverse
-    const forwardOp = invertOperation(inverseOp, get());
-
-    // Apply the inverse operation locally
-    applyOperation(inverseOp, get, set);
-    get().applyToYjs(inverseOp);
-
-    // Also emit the inverse op to sync with other clients
-    const newUndoStack = stack.slice(0, -1);
-    const newRedoStack = forwardOp
-      ? [...get().redoStack, forwardOp]
-      : get().redoStack;
-
+    const manager = get().undoManager;
+    if (!manager?.canUndo()) return;
+    manager.undo();
+    get().applyYjsToLocal();
     set({
-      undoStack: newUndoStack,
-      redoStack: newRedoStack,
-      canUndo: newUndoStack.length > 0,
-      canRedo: newRedoStack.length > 0,
+      canUndo: manager.canUndo(),
+      canRedo: manager.canRedo(),
     });
   },
 
   redo: () => {
-    const stack = get().redoStack;
-    if (stack.length === 0) return;
-
-    const forwardOp = stack[stack.length - 1];
-
-    // Compute inverse (to push back to undo) BEFORE applying
-    const inverseOp = invertOperation(forwardOp, get());
-
-    // Apply the forward operation locally
-    applyOperation(forwardOp, get, set);
-    get().applyToYjs(forwardOp);
-
-    const newRedoStack = stack.slice(0, -1);
-    const newUndoStack = inverseOp
-      ? [...get().undoStack, inverseOp]
-      : get().undoStack;
-
+    const manager = get().undoManager;
+    if (!manager?.canRedo()) return;
+    manager.redo();
+    get().applyYjsToLocal();
     set({
-      undoStack: newUndoStack,
-      redoStack: newRedoStack,
-      canUndo: newUndoStack.length > 0,
-      canRedo: newRedoStack.length > 0,
+      canUndo: manager.canUndo(),
+      canRedo: manager.canRedo(),
     });
   },
 }));

@@ -49,8 +49,8 @@ export default function AuthModal({ onClose }: AuthModalProps) {
         setLoading(false);
         return;
       }
-      if (!password || password.length < 6) {
-        setError("Password must be at least 6 characters");
+      if (!password || password.length < 8) {
+        setError("Password must be at least 8 characters");
         setLoading(false);
         return;
       }
@@ -92,24 +92,24 @@ export default function AuthModal({ onClose }: AuthModalProps) {
       }}
     >
       {/* Backdrop */}
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-[#1d2135]/25 backdrop-blur-sm" />
 
       {/* Modal */}
-      <div className="relative w-full max-w-sm bg-surface border border-border rounded-lg shadow-2xl animate-fade-in overflow-hidden">
+      <div className="relative mx-4 w-full max-w-sm overflow-hidden rounded-2xl border border-border bg-surface shadow-[var(--shadow-float)] animate-fade-in">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 pt-6 pb-4">
+        <div className="flex items-center justify-between px-6 pb-5 pt-6">
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-md bg-accent-cyan/15 border border-accent-cyan/30 flex items-center justify-center">
-              <Workflow className="w-5 h-5 text-accent-cyan" />
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-cyan text-white shadow-[0_7px_18px_rgba(108,79,247,0.2)]">
+              <Workflow className="h-[18px] w-[18px]" />
             </div>
             <div>
-              <h2 className="font-display font-bold text-base text-text-primary">
-                {mode === "login" ? "Welcome Back" : isGuest ? "Save Account" : "Create Account"}
+              <h2 className="font-display text-base font-bold tracking-[-0.02em] text-text-primary">
+                {mode === "login" ? "Welcome back" : isGuest ? "Keep this workspace" : "Create an account"}
               </h2>
               <p className="text-[11px] text-text-muted">
                 {mode === "login"
-                  ? "Sign in to your account"
-                  : isGuest ? "Upgrade guest to permanent account" : "Join System Synthesis"}
+                  ? "Continue to your architecture graphs"
+                  : isGuest ? "Turn this guest identity into an account" : "Save and share your architecture graphs"}
               </p>
             </div>
           </div>
@@ -122,12 +122,12 @@ export default function AuthModal({ onClose }: AuthModalProps) {
         </div>
 
         {/* Tabs */}
-        <div className="flex border-b border-border mx-6">
+        <div className="mx-6 flex rounded-lg bg-canvas-50 p-1">
           <button
             onClick={() => { setMode("login"); setError(null); }}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-display font-semibold uppercase tracking-wider transition-all flex-1 justify-center ${
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-4 py-2 text-xs font-semibold transition-all ${
               mode === "login"
-                ? "text-accent-cyan border-b-2 border-accent-cyan"
+                ? "bg-surface text-text-primary shadow-[0_1px_3px_rgba(29,33,53,0.08)]"
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
@@ -136,9 +136,9 @@ export default function AuthModal({ onClose }: AuthModalProps) {
           </button>
           <button
             onClick={() => { setMode("register"); setError(null); }}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-display font-semibold uppercase tracking-wider transition-all flex-1 justify-center ${
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-4 py-2 text-xs font-semibold transition-all ${
               mode === "register"
-                ? "text-accent-cyan border-b-2 border-accent-cyan"
+                ? "bg-surface text-text-primary shadow-[0_1px_3px_rgba(29,33,53,0.08)]"
                 : "text-text-muted hover:text-text-secondary"
             }`}
           >
@@ -151,7 +151,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
         <form onSubmit={handleSubmit} className="px-6 py-5 space-y-4">
           {mode === "register" && (
             <div>
-              <label className="text-[11px] text-text-muted font-display block mb-1.5 uppercase tracking-wider">
+              <label className="mb-1.5 block text-[10px] font-mono font-semibold uppercase tracking-[0.12em] text-text-muted">
                 Display Name
               </label>
               <input
@@ -166,7 +166,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
           )}
 
           <div>
-            <label className="text-[11px] text-text-muted font-display block mb-1.5 uppercase tracking-wider">
+            <label className="mb-1.5 block text-[10px] font-mono font-semibold uppercase tracking-[0.12em] text-text-muted">
               Email
             </label>
             <input
@@ -181,7 +181,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
           </div>
 
           <div>
-            <label className="text-[11px] text-text-muted font-display block mb-1.5 uppercase tracking-wider">
+            <label className="mb-1.5 block text-[10px] font-mono font-semibold uppercase tracking-[0.12em] text-text-muted">
               Password
             </label>
             <input
@@ -196,7 +196,7 @@ export default function AuthModal({ onClose }: AuthModalProps) {
 
           {/* Error */}
           {error && (
-            <div className="p-2.5 rounded-sm bg-status-error/10 border border-status-error/30 text-status-error text-xs font-display">
+            <div className="rounded-lg border border-status-error/20 bg-status-error/10 p-2.5 text-xs text-status-error">
               {error}
             </div>
           )}

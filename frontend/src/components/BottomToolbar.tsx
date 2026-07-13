@@ -148,12 +148,12 @@ const allNodes = nodeCategories.flatMap((cat) =>
 );
 
 const tools: { id: Tool; label: string; icon: React.ReactNode }[] = [
-  { id: "select", label: "SELECT", icon: <MousePointer2 className="w-5 h-5" /> },
-  { id: "draw", label: "CONNECT", icon: <Pencil className="w-5 h-5" /> },
-  { id: "shapes", label: "ADD NODE", icon: <ChevronUp className="w-5 h-5" /> },
-  { id: "text", label: "TEXT", icon: <Type className="w-5 h-5" /> },
-  { id: "undo", label: "UNDO", icon: <Undo2 className="w-5 h-5" /> },
-  { id: "redo", label: "REDO", icon: <Redo2 className="w-5 h-5" /> },
+  { id: "select", label: "Select", icon: <MousePointer2 className="h-[18px] w-[18px]" /> },
+  { id: "draw", label: "Connect", icon: <Pencil className="h-[18px] w-[18px]" /> },
+  { id: "shapes", label: "Component", icon: <ChevronUp className="h-[18px] w-[18px]" /> },
+  { id: "text", label: "Note", icon: <Type className="h-[18px] w-[18px]" /> },
+  { id: "undo", label: "Undo", icon: <Undo2 className="h-[18px] w-[18px]" /> },
+  { id: "redo", label: "Redo", icon: <Redo2 className="h-[18px] w-[18px]" /> },
 ];
 
 export default function BottomToolbar({
@@ -230,10 +230,7 @@ export default function BottomToolbar({
   return (
     <div
       id="bottom-toolbar"
-      className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40
-                 flex items-center gap-1 px-2 py-2
-                 bg-surface/90 backdrop-blur-md border border-border rounded-md
-                 shadow-card"
+      className="fixed bottom-4 left-1/2 z-40 flex max-w-[calc(100vw-7rem)] -translate-x-1/2 items-center gap-1 overflow-visible rounded-xl border border-border bg-surface/95 p-1.5 shadow-[var(--shadow-float)] backdrop-blur-xl sm:bottom-5"
     >
       {tools.map((tool) => {
         const isActive = activeTool === tool.id && tool.id !== "undo";
@@ -246,23 +243,24 @@ export default function BottomToolbar({
             <button
               id={`tool-${tool.id}`}
               onClick={() => handleToolClick(tool.id)}
-              className={`flex flex-col items-center gap-1 px-4 py-2 rounded-sm transition-all duration-150 ${
+              title={tool.label}
+              className={`flex h-12 min-w-11 items-center justify-center gap-2 rounded-lg px-3 transition-all duration-150 sm:min-w-0 ${
                 isActive
-                  ? "bg-accent-cyan/15 text-accent-cyan shadow-glow-cyan"
+                  ? "bg-accent-cyan/10 text-accent-cyan"
                   : "text-text-muted hover:text-text-primary hover:bg-surface-light"
               }`}
             >
               {tool.icon}
-              <span className="text-[10px] font-display font-medium tracking-wider">
+              <span className="hidden text-[11px] font-semibold sm:block">
                 {tool.label}
               </span>
             </button>
 
             {/* Enhanced Shapes Palette */}
             {tool.id === "shapes" && showShapes && (
-              <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-72 bg-surface border border-border rounded-md shadow-card overflow-hidden z-50 animate-fade-in">
+              <div className="absolute bottom-full left-1/2 z-50 mb-2 w-[340px] max-w-[calc(100vw-1.5rem)] -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-float)] animate-fade-in">
                 {/* Search */}
-                <div className="px-3 py-2 border-b border-border">
+                <div className="border-b border-border p-3">
                   <div className="relative">
                     <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-muted" />
                     <input
@@ -271,7 +269,7 @@ export default function BottomToolbar({
                       placeholder="Search components..."
                       value={paletteSearch}
                       onChange={(e) => setPaletteSearch(e.target.value)}
-                      className="w-full pl-7 pr-2 py-1.5 bg-surface-light border border-border rounded-sm text-xs text-text-primary placeholder:text-text-muted focus:outline-none focus:border-accent-cyan/40"
+                      className="input h-9 w-full bg-canvas-50 py-1.5 pl-8 pr-2 text-xs"
                     />
                   </div>
                 </div>
@@ -281,8 +279,8 @@ export default function BottomToolbar({
                   {filteredCategories.map((cat) => (
                     <div key={cat.name}>
                       {/* Category Header */}
-                      <div className="px-3 py-1.5 bg-surface-light/50 sticky top-0 z-10">
-                        <span className={`text-[10px] font-display font-semibold uppercase tracking-wider ${cat.color}`}>
+                      <div className="sticky top-0 z-10 border-y border-border/60 bg-surface-light px-3 py-1.5 first:border-t-0">
+                        <span className={`text-[9px] font-mono font-semibold uppercase tracking-[0.14em] ${cat.color}`}>
                           {cat.name}
                         </span>
                       </div>
@@ -292,13 +290,13 @@ export default function BottomToolbar({
                           <button
                             key={nt.type}
                             onClick={() => handleShapeClick(nt.type)}
-                            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-sm text-left transition-all hover:bg-accent-cyan/8 group"
+                            className="group flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-all hover:bg-accent-cyan/[0.06]"
                           >
                             <span className={`shrink-0 ${(nt as any).color || cat.color} opacity-70 group-hover:opacity-100 transition-opacity`}>
                               {nt.icon}
                             </span>
                             <div className="min-w-0 flex-1">
-                              <p className="text-xs font-display font-semibold text-text-primary group-hover:text-accent-cyan transition-colors">
+                              <p className="text-xs font-semibold text-text-primary transition-colors group-hover:text-accent-cyan">
                                 {nt.label}
                               </p>
                               <p className="text-[10px] text-text-muted truncate">

@@ -19,7 +19,7 @@ export default function NewCanvasRedirect() {
         const res = await fetch(`${API_URL}/api/boards`, {
           method: "POST",
           headers: { ...authHeaders, "Content-Type": "application/json" },
-          body: JSON.stringify({ name: "Untitled Board" }),
+          body: JSON.stringify({ name: "Untitled architecture" }),
         });
         if (res.ok) {
           const board = await res.json();
@@ -39,9 +39,9 @@ export default function NewCanvasRedirect() {
       {error ? (
         <p className="text-status-error font-mono text-sm">{error}</p>
       ) : (
-        <div className="flex flex-col items-center gap-3">
-          <div className="w-8 h-8 border-2 border-accent-cyan border-t-transparent rounded-full animate-spin" />
-          <p className="text-text-muted text-sm font-display">Creating new board...</p>
+        <div className="flex flex-col items-center gap-3 rounded-2xl border border-border bg-surface px-8 py-7 shadow-[var(--shadow-soft)]">
+          <div className="h-7 w-7 animate-spin rounded-full border-2 border-accent-cyan border-t-transparent" />
+          <p className="text-sm font-medium text-text-secondary">Preparing architecture workspace…</p>
         </div>
       )}
     </div>
