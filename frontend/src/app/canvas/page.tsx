@@ -8,7 +8,7 @@ const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
 
 export default function NewCanvasRedirect() {
   const router = useRouter();
-  const { authHeaders, isReady } = useUser();
+  const { authenticatedFetch, isReady } = useUser();
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -16,9 +16,9 @@ export default function NewCanvasRedirect() {
 
     async function createAndRedirect() {
       try {
-        const res = await fetch(`${API_URL}/api/boards`, {
+        const res = await authenticatedFetch(`${API_URL}/api/boards`, {
           method: "POST",
-          headers: { ...authHeaders, "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name: "Untitled architecture" }),
         });
         if (res.ok) {
@@ -32,7 +32,7 @@ export default function NewCanvasRedirect() {
       }
     }
     createAndRedirect();
-  }, [router, isReady, authHeaders]);
+  }, [router, isReady, authenticatedFetch]);
 
   return (
     <div className="h-screen w-screen flex items-center justify-center bg-canvas">

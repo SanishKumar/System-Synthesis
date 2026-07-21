@@ -18,7 +18,7 @@ Docker Compose output is covered by a full golden file. Terraform output is cove
 - Identical supported input produces byte-stable output.
 - Unsupported features fail instead of being silently omitted.
 - Generated files are reviewable artifacts, not a claim of complete provider coverage.
-- Import and general round-trip conversion remain out of scope.
+- Terraform import and general round-trip conversion remain out of scope. A bounded Docker Compose source adapter is covered separately by ADR-007.
 
 ## Rejected alternatives
 

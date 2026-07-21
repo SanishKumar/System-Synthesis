@@ -1,0 +1,45 @@
+name: System Synthesis Architecture Review
+description: Detect semantic Docker Compose architecture changes and enforce deterministic policy in pull requests.
+author: System Synthesis
+
+branding:
+  icon: git-pull-request
+  color: purple
+
+inputs:
+  compose-path:
+    description: Repository-relative Docker Compose file to compare.
+    required: true
+    default: compose.yaml
+  policy-path:
+    description: Repository-relative JSON policy. The base-branch version governs the review.
+    required: false
+    default: .system-synthesis/policy.json
+  base-revision:
+    description: Base commit SHA or ref.
+    required: true
+  head-revision:
+    description: Head commit SHA or ref.
+    required: true
+  output-directory:
+    description: Repository-relative directory for JSON, Markdown, and SARIF reports.
+    required: false
+    default: .system-synthesis/reports
+
+outputs:
+  exit-code:
+    description: 0 for pass, 1 for blocking findings, or 2 for invalid input.
+  status:
+    description: pass, fail, or error.
+  blocking-findings:
+    description: Number of newly introduced blocking findings.
+  json-file:
+    description: Absolute path to the machine-readable JSON report.
+  markdown-file:
+    description: Absolute path to the pull-request Markdown report.
+  sarif-file:
+    description: Absolute path to the SARIF 2.1.0 report.
+
+runs:
+  using: node24
+  main: architecture-action/dist/index.js

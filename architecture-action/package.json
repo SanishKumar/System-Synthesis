@@ -1,0 +1,22 @@
+{
+  "name": "@system-synthesis/architecture-action",
+  "version": "0.1.0",
+  "description": "Self-contained GitHub Action for System Synthesis architecture reviews",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "ncc build src/main.ts -o dist --minify",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@actions/core": "3.0.1",
+    "@system-synthesis/architecture-cli": "*",
+    "@system-synthesis/architecture-core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "@vercel/ncc": "0.44.1",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
+  }
+}

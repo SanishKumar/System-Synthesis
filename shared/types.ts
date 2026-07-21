@@ -44,6 +44,19 @@ export interface NodeMetadata {
   attachedFiles: AttachedFile[];
 }
 
+export type SourceConfidence = 'explicit' | 'static' | 'inferred' | 'user-declared';
+
+export interface SourceProvenance {
+  adapter: string;
+  repository?: string;
+  revision?: string;
+  file: string;
+  startLine?: number;
+  endLine?: number;
+  sourceAddress: string;
+  confidence: SourceConfidence;
+}
+
 export interface AttachedFile {
   id: string;
   name: string;
@@ -71,6 +84,8 @@ export interface ArchNodeData extends Record<string, unknown> {
   region?: string;
   instances?: number;
   sla?: string;
+  provenance?: SourceProvenance;
+  sourceProperties?: Record<string, unknown>;
 }
 
 // --- Edge Types ---
@@ -80,6 +95,7 @@ export interface ArchEdgeData extends Record<string, unknown> {
   protocol?: string;
   animated?: boolean;
   direction?: 'unidirectional' | 'bidirectional';
+  provenance?: SourceProvenance[];
 }
 
 // --- Board Operations (CRDT-ready) ---
@@ -128,6 +144,8 @@ export interface ValidationIssue {
   edgeIds: string[];
   /** Rule identifier for deduplication */
   ruleId: string;
+  /** Source locations that provide evidence for this finding. */
+  locations?: SourceProvenance[];
 }
 
 export interface ValidationResult {

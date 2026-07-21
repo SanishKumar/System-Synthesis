@@ -1,0 +1,12 @@
+services:
+  storefront:
+    image: ghcr.io/example/storefront:1.4.0
+    ports: ["8080:3000"]
+    depends_on:
+      - checkout
+  checkout:
+    image: ghcr.io/example/checkout:2.1.0
+  database:
+    image: postgres:16
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready"]

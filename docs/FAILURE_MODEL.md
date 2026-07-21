@@ -18,6 +18,12 @@ The system prefers an explicit rejection over acknowledging a mutation whose con
 | Version restore occurs with connected clients | Restore enters the durable Yjs stream, replaces the server document state, and emits a full-state replacement so clients discard stale structures. | Collaboration restore/replay unit test and typed socket event. |
 | Optional LLM fails or returns invalid JSON | Deterministic findings are returned unchanged. | LLM response is Zod-validated and never owns finding generation. |
 | Export sees an unsupported node or dangling edge | Request returns an explicit unsupported-resource error; no partial file is presented as complete. | IR/export tests. |
+| Compose source is invalid, duplicated, oversized, alias-heavy, or has too many services | Import fails explicitly before a graph or review is accepted. | Adapter boundary and adversarial parsing tests. |
+| Base or head Compose file is absent in a Git revision | The GitHub Action treats that revision as an empty graph, allowing creation/deletion of the supported architecture file to be reviewed. | Action unit tests and bundled-action execution. |
+| Policy is invalid | CLI/Action exits as invalid input; the browser API rejects review creation. No partial review is persisted. | CLI policy-schema tests and API validation. |
+| Review contains blocking findings | CLI/Action exits 1 and the browser refuses approval. | Core, CLI, action, and API end-to-end verification. |
+| Browser submits a stale review revision | Mutation returns HTTP 409 and preserves the newer event sequence. | Repository tests and API end-to-end verification. |
+| SARIF upload, artifact upload, or PR comment publication fails | That workflow step is visible as failed; the final policy-enforcement step still derives its result from the local deterministic action output. | Workflow ordering keeps reporting separate from enforcement. |
 
 ## Recovery order
 
@@ -33,3 +39,5 @@ The system prefers an explicit rejection over acknowledging a mutation whose con
 - PostgreSQL-authoritative deployments fail closed on PostgreSQL mutation failure. Redis is transport, not a substitute durability authority.
 - Redis loss reduces immediate cross-instance propagation, not durability, when PostgreSQL is healthy.
 - Memory mode favors convenience over durability and is clearly identified in health/benchmark documentation.
+- Architecture review decisions fail closed: unresolved blocking findings prevent approval.
+- GitHub reporting channels are redundant outputs, not the policy authority. The local action result is the merge-gating signal.

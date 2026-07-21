@@ -5,19 +5,28 @@ WORKDIR /app
 # Copy the root workspace config and lockfile
 COPY package.json package-lock.json ./
 
-# Copy the specific workspace packages we need
+# Copy workspace manifests so npm can resolve the lockfile's workspace links.
 COPY server/package.json ./server/
 COPY shared/package.json ./shared/
+COPY architecture-core/package.json ./architecture-core/
+COPY architecture-cli/package.json ./architecture-cli/
+COPY architecture-action/package.json ./architecture-action/
+COPY frontend/package.json ./frontend/
 
-# Install all dependencies (resolves workspace symlinks)
-RUN npm ci
+# Install only the workspaces needed to compile the backend.
+RUN npm ci --ignore-scripts \
+    --workspace=server \
+    --workspace=architecture-core \
+    --workspace=shared
 
-# Copy the actual source code for shared and server
+# Copy the source required by the backend runtime.
 COPY shared/ ./shared/
+COPY architecture-core/ ./architecture-core/
 COPY server/ ./server/
 
-# Build the shared and server packages
-RUN npm run build --workspace=server
+# Build the extracted analysis engine before the server that imports it.
+RUN npm run build --workspace=architecture-core \
+    && npm run build --workspace=server
 
 # --- Production Image ---
 FROM node:20-alpine
@@ -26,16 +35,24 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-# Copy root config and specific packages again
+# Copy all workspace manifests for deterministic lockfile installation.
 COPY package.json package-lock.json ./
 COPY server/package.json ./server/
 COPY shared/package.json ./shared/
+COPY architecture-core/package.json ./architecture-core/
+COPY architecture-cli/package.json ./architecture-cli/
+COPY architecture-action/package.json ./architecture-action/
+COPY frontend/package.json ./frontend/
 
-# Install only production dependencies
-RUN npm ci --omit=dev
+# Install only backend production dependencies and skip lifecycle scripts.
+RUN npm ci --omit=dev --ignore-scripts \
+    --workspace=server \
+    --workspace=architecture-core \
+    --workspace=shared
 
-# Copy the built artifacts and shared files
+# Copy the built artifacts and shared type package.
 COPY --from=builder /app/shared ./shared
+COPY --from=builder /app/architecture-core/dist ./architecture-core/dist
 COPY --from=builder /app/server/dist ./server/dist
 
 EXPOSE 4000

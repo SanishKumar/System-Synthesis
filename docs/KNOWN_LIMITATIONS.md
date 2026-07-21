@@ -9,7 +9,13 @@
 - Audit records are application records, not an immutable external compliance log.
 - Architecture rules are explainable lint policies and graph analyses, not universal architectural truth or formal verification.
 - SARIF/JSON describe deterministic findings, but rule suppression policy is not yet managed through an organization-wide policy service.
-- Terraform and Docker Compose export support only the node subset listed by the IR service. Unsupported resources fail explicitly. Import and general round-trip conversion are not implemented.
+- Docker Compose import accepts one bounded Compose document and explicit `depends_on` relationships. It does not evaluate interpolation, includes, extends, profiles, override-file merging, or dependencies implied by environment variables.
+- Compose component classification is a documented heuristic based on image/name/ports. A team must review or extend those rules for organization-specific images.
+- Terraform import and general infrastructure round-trip conversion are not implemented. Docker Compose and Terraform export still support only the node subset listed by the IR service, and unsupported resources fail explicitly.
+- GitHub Action artifacts and browser-persisted reviews use the same deterministic core but are not automatically synchronized.
+- Browser reviews are currently owned by one authenticated user. Shared team ownership and an organization-wide policy service are not implemented.
+- The repository-local action is dogfooded from the pull-request checkout. External consumers should pin a released action commit or immutable tag so a reviewed pull request cannot replace the action implementation.
+- Browser review storage retains canonical base/head graphs, policy, report, decisions, and events; it deliberately does not retain the submitted raw Compose source.
 - Terraform output is a deterministic supported model, not a guarantee that every generated deployment is secure, cost-effective, or appropriate for a specific provider account.
 - The optional LLM explains deterministic findings and can generate a separate draft architecture, but generated text/graphs remain untrusted suggestions.
 - The current live benchmark does not measure server CPU, server memory growth, Redis throughput, PostgreSQL latency, TLS, WAN latency, or browser rendering.

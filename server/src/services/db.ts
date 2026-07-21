@@ -108,10 +108,45 @@ const MIGRATION_SQL = `
     created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
+  CREATE TABLE IF NOT EXISTS architecture_reviews (
+    id              TEXT PRIMARY KEY,
+    owner_id        TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    repository      TEXT,
+    source_path     TEXT NOT NULL,
+    base_revision   TEXT NOT NULL,
+    head_revision   TEXT NOT NULL,
+    base_graph      JSONB NOT NULL,
+    head_graph      JSONB NOT NULL,
+    policy          JSONB NOT NULL DEFAULT '{}'::jsonb,
+    report          JSONB NOT NULL,
+    decision        TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (decision IN ('pending', 'approved', 'rejected')),
+    decision_note   TEXT,
+    decided_at      TIMESTAMPTZ,
+    revision        INT NOT NULL DEFAULT 1,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
+  CREATE TABLE IF NOT EXISTS architecture_review_events (
+    id              TEXT PRIMARY KEY,
+    review_id       TEXT NOT NULL REFERENCES architecture_reviews(id) ON DELETE CASCADE,
+    actor_id        TEXT NOT NULL,
+    event_type      TEXT NOT NULL,
+    review_revision INT NOT NULL,
+    data            JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+
   CREATE INDEX IF NOT EXISTS idx_board_members_user ON board_members(user_id);
   CREATE INDEX IF NOT EXISTS idx_board_invites_board ON board_invitations(board_id);
   CREATE INDEX IF NOT EXISTS idx_audit_board_created ON audit_logs(board_id, created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_board_updates_replay ON board_updates(board_id, sequence);
+  CREATE INDEX IF NOT EXISTS idx_architecture_reviews_owner_updated
+    ON architecture_reviews(owner_id, updated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_architecture_review_events_review
+    ON architecture_review_events(review_id, created_at ASC);
 `;
 
 /**

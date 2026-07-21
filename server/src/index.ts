@@ -21,6 +21,7 @@ import aiRouter from "./routes/ai.js";
 import templatesRouter from "./routes/templates.js";
 import exportRouter from "./routes/export.js";
 import authRouter, { ensureUsersTable } from "./routes/auth.js";
+import reviewsRouter from "./routes/reviews.js";
 import { initializeCollaborationSubscription } from "./services/collaborationUpdates.js";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
@@ -78,6 +79,7 @@ async function main() {
   // REST routes with targeted rate limits
   app.use("/api/auth", authRouter);
   app.use("/api/boards", requireAuth, boardsRouter);
+  app.use("/api/reviews", requireAuth, reviewsRouter);
   app.use("/api/ai", requireAuth, aiLimiter, aiRouter);
   app.use("/api/templates", templatesRouter);
   app.use("/api/export", requireAuth, exportLimiter, exportRouter);

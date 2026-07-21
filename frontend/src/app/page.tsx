@@ -34,6 +34,7 @@ interface BoardSummary {
   ownerId: string;
   ownerName: string;
   isPublic: boolean;
+  role: "owner" | "editor" | "viewer" | null;
   nodeCount: number;
   edgeCount: number;
   createdAt: string;
@@ -81,7 +82,7 @@ const workflow = [
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { userId, authHeaders, isReady } = useUser();
+  const { userId, authenticatedFetch, isReady } = useUser();
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,7 +92,7 @@ export default function DashboardPage() {
     if (!isReady) return;
     async function fetchData() {
       try {
-        const response = await fetch(`${API_URL}/api/boards`, { headers: authHeaders });
+        const response = await authenticatedFetch(`${API_URL}/api/boards`);
         if (response.ok) {
           const data = await response.json();
           setBoards(data.boards || []);
@@ -104,15 +105,15 @@ export default function DashboardPage() {
       }
     }
     fetchData();
-  }, [isReady, userId, authHeaders]);
+  }, [isReady, userId, authenticatedFetch]);
 
   const handleCreateBoard = async () => {
     if (!isReady) return;
     setCreating(true);
     try {
-      const response = await fetch(`${API_URL}/api/boards`, {
+      const response = await authenticatedFetch(`${API_URL}/api/boards`, {
         method: "POST",
-        headers: { ...authHeaders, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "Untitled architecture" }),
       });
       if (response.ok) {
@@ -135,11 +136,15 @@ export default function DashboardPage() {
     event.stopPropagation();
     if (!confirm("Delete this architecture? This cannot be undone.")) return;
     try {
-      await fetch(`${API_URL}/api/boards/${boardId}`, { method: "DELETE", headers: authHeaders });
+      const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Delete failed with status ${response.status}`);
+      }
       setBoards((current) => current.filter((board) => board.id !== boardId));
       toast.success("Workspace deleted");
-    } catch {
-      toast.error("Could not delete the workspace");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete the workspace");
     }
   };
 
@@ -259,7 +264,7 @@ export default function DashboardPage() {
                               {board.description || `${board.nodeCount} components connected by ${board.edgeCount} relationships`}
                             </p>
                           </div>
-                          {(board.ownerId === userId || board.ownerId === "system") && (
+                          {board.role === "owner" && board.ownerId === userId && (
                             <button onClick={(event) => handleDeleteBoard(board.id, event)} className="-mr-1 rounded-md p-1.5 text-text-muted opacity-0 hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100" aria-label={`Delete ${board.name}`}>
                               <Trash2 className="h-3.5 w-3.5" />
                             </button>

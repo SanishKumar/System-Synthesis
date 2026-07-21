@@ -123,6 +123,7 @@ export default function TopNav({
 
   const navLinks = [
     { href: "/", label: "Workspaces" },
+    { href: "/reviews", label: "Reviews" },
     { href: lastBoard ? `/canvas/${lastBoard}` : "/canvas", label: "Canvas" },
     { href: "/history", label: "Versions" },
   ];

@@ -47,9 +47,6 @@ export async function resolveBoardRole(
   userId: string
 ): Promise<BoardRole | null> {
   if (board.ownerId === userId) return "owner";
-  // The built-in demo remains editable, but real public boards are view-only
-  // unless the user has an explicit editor membership.
-  if (board.ownerId === "system" && board.id === "demo-ecommerce") return "editor";
 
   const pool = getPool();
   if (pool) {

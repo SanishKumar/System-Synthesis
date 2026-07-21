@@ -10,7 +10,7 @@ const API_URL = process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:4000";
 export default function AcceptInvitationPage() {
   const params = useParams();
   const router = useRouter();
-  const { authHeaders, isReady } = useUser();
+  const { authenticatedFetch, isReady } = useUser();
   const attempted = useRef(false);
   const [error, setError] = useState("");
 
@@ -21,9 +21,8 @@ export default function AcceptInvitationPage() {
 
     async function accept() {
       try {
-        const response = await fetch(`${API_URL}/api/boards/invitations/${encodeURIComponent(token)}/accept`, {
+        const response = await authenticatedFetch(`${API_URL}/api/boards/invitations/${encodeURIComponent(token)}/accept`, {
           method: "POST",
-          headers: authHeaders,
         });
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
@@ -38,7 +37,7 @@ export default function AcceptInvitationPage() {
     }
 
     void accept();
-  }, [authHeaders, isReady, params.token, router]);
+  }, [authenticatedFetch, isReady, params.token, router]);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-canvas px-6">

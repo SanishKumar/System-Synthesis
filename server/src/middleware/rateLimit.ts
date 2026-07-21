@@ -39,6 +39,16 @@ export const boardCreateLimiter = rateLimit({
   message: { error: "Board creation limit reached. Max 10 boards per hour." },
 });
 
+/** Architecture source comparisons are CPU-bound and accept larger payloads. */
+export const reviewCreateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator,
+  message: { error: "Architecture review limit reached. Max 20 reviews per hour." },
+});
+
 /**
  * AI rate limiter — 5 AI calls per minute per user
  */

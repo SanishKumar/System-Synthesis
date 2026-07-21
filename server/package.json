@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
+    "@system-synthesis/architecture-core": "*",
     "@system-synthesis/shared": "*",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",

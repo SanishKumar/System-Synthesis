@@ -1,0 +1,125 @@
+name: Architecture change review
+
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - "**/compose.yml"
+      - "**/compose.yaml"
+      - "**/docker-compose*.yml"
+      - "**/docker-compose*.yaml"
+      - ".system-synthesis/**"
+      - "architecture-core/**"
+      - "architecture-cli/**"
+      - "architecture-action/**"
+      - "action.yml"
+      - ".github/workflows/architecture-review.yml"
+
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+
+jobs:
+  architecture-review:
+    name: Deterministic architecture policy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout pull request with base history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compare base and head architecture
+        id: review
+        uses: ./
+        continue-on-error: true
+        with:
+          compose-path: docker-compose.dev.yml
+          policy-path: .system-synthesis/policy.json
+          base-revision: ${{ github.event.pull_request.base.sha }}
+          head-revision: ${{ github.event.pull_request.head.sha }}
+
+      - name: Upload source-linked findings to code scanning
+        if: >-
+          always() &&
+          steps.review.outputs.sarif-file != '' &&
+          steps.review.outputs.exit-code != '2'
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: ${{ steps.review.outputs.sarif-file }}
+          category: system-synthesis/docker-compose
+
+      - name: Publish or update pull-request summary
+        if: >-
+          always() &&
+          steps.review.outputs.markdown-file != '' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        uses: actions/github-script@v8
+        env:
+          REPORT_FILE: ${{ steps.review.outputs.markdown-file }}
+        with:
+          script: |
+            const fs = require("node:fs");
+            const marker = "<!-- system-synthesis-architecture-review -->";
+            const body = `${marker}\n${fs.readFileSync(process.env.REPORT_FILE, "utf8")}`;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                per_page: 100
+              }
+            );
+            const existing = comments.find(
+              comment =>
+                comment.user?.type === "Bot" &&
+                comment.body?.includes(marker)
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body
+              });
+            }
+
+      - name: Preserve review reports
+        if: always() && steps.review.outputs.json-file != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: architecture-review-${{ github.event.pull_request.number }}
+          path: |
+            ${{ steps.review.outputs.json-file }}
+            ${{ steps.review.outputs.markdown-file }}
+            ${{ steps.review.outputs.sarif-file }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Enforce architecture policy
+        if: always()
+        shell: bash
+        env:
+          REVIEW_EXIT_CODE: ${{ steps.review.outputs.exit-code }}
+        run: |
+          if [[ "$REVIEW_EXIT_CODE" == "0" ]]; then
+            exit 0
+          fi
+          if [[ "$REVIEW_EXIT_CODE" == "1" ]]; then
+            echo "Pull request introduces blocking architecture findings."
+            exit 1
+          fi
+          echo "Architecture review could not analyze the supplied inputs."
+          exit 2

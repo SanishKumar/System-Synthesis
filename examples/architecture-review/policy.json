@@ -1,0 +1,14 @@
+{
+  "failOn": [
+    "critical"
+  ],
+  "includeExistingFindings": false,
+  "rules": {
+    "compose-public-service-to-persistence": {
+      "enabled": true,
+      "severity": "warning",
+      "blockMerge": true
+    }
+  },
+  "suppressions": []
+}

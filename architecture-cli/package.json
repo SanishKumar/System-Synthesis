@@ -1,0 +1,25 @@
+{
+  "name": "@system-synthesis/architecture-cli",
+  "version": "0.1.0",
+  "description": "Deterministic architecture change review for source-controlled infrastructure",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "system-synthesis": "./dist/bin.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@system-synthesis/architecture-core": "*",
+    "@system-synthesis/shared": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
+  }
+}

@@ -35,6 +35,7 @@ const INITIAL_AUTH_SNAPSHOT: AuthSnapshot = {
 
 let authSnapshot = INITIAL_AUTH_SNAPSHOT;
 let initializationPromise: Promise<void> | null = null;
+let recoveryPromise: Promise<boolean> | null = null;
 const authListeners = new Set<() => void>();
 
 function generateDefaultName(): string {
@@ -92,6 +93,64 @@ function persistSession(
   });
 }
 
+async function provisionGuestSession(userName: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${API_URL}/api/auth/guest`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userName }),
+    });
+    if (!response.ok) return false;
+    const data = await response.json();
+    persistSession(data.token, data.user, true);
+    reconnectSocket();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function recoverUnauthorizedSession(): Promise<boolean> {
+  if (typeof window === "undefined") return false;
+  if (recoveryPromise) return recoveryPromise;
+
+  recoveryPromise = (async () => {
+    const userName =
+      authSnapshot.userName ||
+      localStorage.getItem(USER_NAME_KEY) ||
+      generateDefaultName();
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+    localStorage.removeItem(AUTH_GUEST_KEY);
+    return provisionGuestSession(userName);
+  })().finally(() => {
+    recoveryPromise = null;
+  });
+
+  return recoveryPromise;
+}
+
+/**
+ * Fetch an authenticated API resource and recover once from an invalid or
+ * server-rotated JWT. A rejected session is downgraded to a fresh guest
+ * identity because this application does not persist refresh tokens.
+ */
+export async function authenticatedFetch(
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> {
+  const execute = () => {
+    const headers = new Headers(init.headers);
+    if (authSnapshot.token) headers.set("Authorization", `Bearer ${authSnapshot.token}`);
+    else headers.delete("Authorization");
+    return fetch(input, { ...init, headers });
+  };
+
+  const response = await execute();
+  if (response.status !== 401) return response;
+  if (!(await recoverUnauthorizedSession())) return response;
+  return execute();
+}
+
 async function initializeAuth(): Promise<void> {
   if (typeof window === "undefined") return;
 
@@ -115,20 +174,7 @@ async function initializeAuth(): Promise<void> {
   const localId = localStorage.getItem(USER_ID_KEY) || uuidv4();
   const localName = localStorage.getItem(USER_NAME_KEY) || generateDefaultName();
 
-  try {
-    const response = await fetch(`${API_URL}/api/auth/guest`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ userName: localName }),
-    });
-    if (response.ok) {
-      const data = await response.json();
-      persistSession(data.token, data.user, true);
-      return;
-    }
-  } catch {
-    // The canvas demo remains available without a running API.
-  }
+  if (await provisionGuestSession(localName)) return;
 
   localStorage.setItem(USER_ID_KEY, localId);
   localStorage.setItem(USER_NAME_KEY, localName);
@@ -285,6 +331,7 @@ export function useUser() {
     ...snapshot,
     setUserName,
     authHeaders,
+    authenticatedFetch,
     register,
     upgradeGuest,
     login,

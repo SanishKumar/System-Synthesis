@@ -6,6 +6,12 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Added
 
+- Source-derived architecture reviews for a bounded Docker Compose subset, with stable graph identities and source-line provenance
+- Semantic pull-request impact for component/dependency, host exposure, trust-boundary, redundancy, and downstream blast-radius changes
+- Deterministic change policy with base-branch authority, scoped/expiring suppressions, Markdown/JSON/SARIF output, and merge-gating exit codes
+- Standalone architecture CLI plus a tested, bundled Node 24 GitHub Action and dogfood pull-request workflow
+- Authenticated browser review import, findings/evidence inspection, suppression, approve/reject decisions, optimistic revisions, and append-only events
+- Reproducible base/head example fixtures and ADR-007 for the source-derived product direction
 - Light-first, persisted top-navigation UI and read-only viewer/disconnected states
 - Owner/editor/viewer board roles, expiring single-use invitations, and audit records
 - Granular nested Yjs graph state with user-local undo
@@ -19,6 +25,9 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Changed
 
+- Repositioned the product around deterministic architecture change intelligence; the collaborative canvas is now a supporting inspection/modeling surface
+- Extracted canonical graph analysis, diffing, validation, source import, and review policy into the reusable `architecture-core` workspace
+- Hardened the production server image so the extracted core is built, pruned, and available at runtime
 - AI analysis now runs deterministic rules first; an LLM may only explain existing finding IDs
 - Protected collaboration no longer accepts legacy/client-supplied identity
 - Documentation no longer claims generic production readiness or unmeasured horizontal scalability

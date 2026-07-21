@@ -1,0 +1,46 @@
+{
+  "name": "@system-synthesis/architecture-core",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./graph-analysis": {
+      "types": "./dist/graphAnalysis.d.ts",
+      "import": "./dist/graphAnalysis.js"
+    },
+    "./graph-diff": {
+      "types": "./dist/graphDiff.d.ts",
+      "import": "./dist/graphDiff.js"
+    },
+    "./provenance": {
+      "types": "./dist/provenance.d.ts",
+      "import": "./dist/provenance.js"
+    },
+    "./validation": {
+      "types": "./dist/validation.d.ts",
+      "import": "./dist/validation.js"
+    },
+    "./change-review": {
+      "types": "./dist/changeReview.d.ts",
+      "import": "./dist/changeReview.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@system-synthesis/shared": "*",
+    "yaml": "2.8.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.7"
+  }
+}

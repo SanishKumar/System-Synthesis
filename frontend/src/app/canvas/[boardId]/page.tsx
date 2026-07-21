@@ -42,7 +42,7 @@ export default function CanvasBoardPage() {
   const params = useParams();
   const router = useRouter();
   const boardId = (params.boardId as string) || "demo-ecommerce";
-  const { userId, userName, authHeaders, isReady } = useUser();
+  const { userId, userName, authenticatedFetch, isReady } = useUser();
 
   const [activeTool, setActiveTool] = useState<
     "select" | "draw" | "shapes" | "text" | "undo" | "redo"
@@ -80,9 +80,7 @@ export default function CanvasBoardPage() {
 
     async function checkAccess() {
       try {
-        const res = await fetch(`${API_URL}/api/boards/${boardId}`, {
-          headers: authHeaders,
-        });
+        const res = await authenticatedFetch(`${API_URL}/api/boards/${boardId}`);
         if (res.status === 403) {
           setAccessDenied(true);
           return;
@@ -101,7 +99,7 @@ export default function CanvasBoardPage() {
       }
     }
     checkAccess();
-  }, [boardId, isReady, userId, authHeaders]);
+  }, [boardId, isReady, userId, authenticatedFetch]);
 
   const {
     sidebarMode,
@@ -133,9 +131,9 @@ export default function CanvasBoardPage() {
   const handleToggleVisibility = async () => {
     setTogglingVisibility(true);
     try {
-      const res = await fetch(`${API_URL}/api/boards/${boardId}/visibility`, {
+      const res = await authenticatedFetch(`${API_URL}/api/boards/${boardId}/visibility`, {
         method: "PATCH",
-        headers: { ...authHeaders, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
       });
       if (res.ok) {
         const data = await res.json();
@@ -161,14 +159,12 @@ export default function CanvasBoardPage() {
 
   const loadMembers = useCallback(async () => {
     if (!isOwner) return;
-    const response = await fetch(`${API_URL}/api/boards/${boardId}/members`, {
-      headers: authHeaders,
-    });
+    const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}/members`);
     if (response.ok) {
       const data = await response.json();
       setMembers(data.members || []);
     }
-  }, [authHeaders, boardId, isOwner]);
+  }, [authenticatedFetch, boardId, isOwner]);
 
   useEffect(() => {
     if (showShareMenu && isOwner) void loadMembers();
@@ -177,9 +173,9 @@ export default function CanvasBoardPage() {
   const handleCreateInvitation = async () => {
     setInviteLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/boards/${boardId}/invitations`, {
+      const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}/invitations`, {
         method: "POST",
-        headers: { ...authHeaders, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ role: inviteRole, expiresInHours: 24 }),
       });
       if (!response.ok) throw new Error();
@@ -196,9 +192,9 @@ export default function CanvasBoardPage() {
   };
 
   const handleMemberRole = async (memberId: string, role: "editor" | "viewer") => {
-    const response = await fetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
+    const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
       method: "PATCH",
-      headers: { ...authHeaders, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ role }),
     });
     if (response.ok) {
@@ -210,9 +206,8 @@ export default function CanvasBoardPage() {
   };
 
   const handleRemoveMember = async (memberId: string) => {
-    const response = await fetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
+    const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}/members/${memberId}`, {
       method: "DELETE",
-      headers: authHeaders,
     });
     if (response.ok) {
       setMembers((current) => current.filter((member) => member.userId !== memberId));

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import TopNav from "@/components/TopNav";
 import { useUser } from "@/hooks/useUser";
+import { toast } from "sonner";
 import {
   ArrowLeft,
   ArrowUpDown,
@@ -22,6 +23,8 @@ interface BoardSummary {
   id: string;
   name: string;
   description: string;
+  ownerId: string;
+  role: "owner" | "editor" | "viewer" | null;
   nodeCount: number;
   edgeCount: number;
   createdAt: string;
@@ -39,7 +42,7 @@ function timeAgo(dateStr: string): string {
 
 export default function HistoryPage() {
   const router = useRouter();
-  const { userId, authHeaders, isReady } = useUser();
+  const { userId, authenticatedFetch, isReady } = useUser();
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortAsc, setSortAsc] = useState(false);
@@ -48,7 +51,7 @@ export default function HistoryPage() {
     if (!isReady) return;
     async function fetchBoards() {
       try {
-        const response = await fetch(`${API_URL}/api/boards`, { headers: authHeaders });
+        const response = await authenticatedFetch(`${API_URL}/api/boards`);
         if (response.ok) {
           const data = await response.json();
           setBoards(data.boards || []);
@@ -58,21 +61,28 @@ export default function HistoryPage() {
       }
     }
     fetchBoards();
-  }, [isReady, userId, authHeaders]);
+  }, [isReady, userId, authenticatedFetch]);
 
   const handleDelete = async (boardId: string) => {
     if (!confirm("Delete this architecture? This cannot be undone.")) return;
     try {
-      await fetch(`${API_URL}/api/boards/${boardId}`, { method: "DELETE", headers: authHeaders });
+      const response = await authenticatedFetch(`${API_URL}/api/boards/${boardId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        throw new Error(body?.error || `Delete failed with status ${response.status}`);
+      }
       setBoards((current) => current.filter((board) => board.id !== boardId));
-    } catch {}
+      toast.success("Workspace deleted");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not delete the workspace");
+    }
   };
 
   const handleCreateBoard = async () => {
     try {
-      const response = await fetch(`${API_URL}/api/boards`, {
+      const response = await authenticatedFetch(`${API_URL}/api/boards`, {
         method: "POST",
-        headers: { ...authHeaders, "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: "Untitled architecture" }),
       });
       if (response.ok) {
@@ -147,13 +157,15 @@ export default function HistoryPage() {
                     <span>{board.edgeCount} connections</span>
                   </div>
                   <span className="hidden items-center gap-1.5 text-[10px] text-text-muted md:flex"><Clock3 className="h-3 w-3" /> {timeAgo(board.updatedAt)}</span>
-                  <button
-                    onClick={(event) => { event.preventDefault(); event.stopPropagation(); handleDelete(board.id); }}
-                    className="rounded-lg p-2 text-text-muted opacity-0 transition-all hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
-                    aria-label={`Delete ${board.name}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+                  {board.role === "owner" && board.ownerId === userId && (
+                    <button
+                      onClick={(event) => { event.preventDefault(); event.stopPropagation(); handleDelete(board.id); }}
+                      className="rounded-lg p-2 text-text-muted opacity-0 transition-all hover:bg-status-error/10 hover:text-status-error group-hover:opacity-100"
+                      aria-label={`Delete ${board.name}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </Link>
               ))}
             </div>
