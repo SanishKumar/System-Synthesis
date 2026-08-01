@@ -9,6 +9,16 @@ import type {
 
 export type ReviewDecision = "pending" | "approved" | "rejected";
 
+export interface ExternalReviewSource {
+  provider: "github";
+  repository: string;
+  changeNumber: number;
+  changeUrl: string;
+  changeVersion: number;
+  workflowRunId: string | null;
+  workflowRunUrl: string | null;
+}
+
 export interface ReviewSummary {
   id: string;
   title: string;
@@ -20,6 +30,7 @@ export interface ReviewSummary {
   decision: ReviewDecision;
   blockingFindings: number;
   semanticChanges: number;
+  externalSource: ExternalReviewSource | null;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -128,6 +139,7 @@ export interface ReviewRecord {
     suppressions?: ReviewSuppression[];
   };
   report: ReviewReport;
+  externalSource: ExternalReviewSource | null;
   decision: ReviewDecision;
   decisionNote: string | null;
   decidedAt: string | null;
@@ -140,7 +152,7 @@ export interface ReviewEvent {
   id: string;
   reviewId: string;
   actorId: string;
-  eventType: "review.created" | "suppression.added" | "decision.changed";
+  eventType: "review.created" | "review.refreshed" | "suppression.added" | "decision.changed";
   reviewRevision: number;
   data: Record<string, unknown>;
   createdAt: string;

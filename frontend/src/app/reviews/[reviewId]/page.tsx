@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import TopNav from "@/components/TopNav";
+import ReviewTopologyDiff from "@/components/reviews/ReviewTopologyDiff";
 import { useUser } from "@/hooks/useUser";
 import {
   findingLocation,
@@ -270,6 +271,16 @@ export default function ReviewDetailPage() {
 
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="min-w-0 space-y-6">
+              <ReviewTopologyDiff
+                baseNodes={review.baseGraph.nodes}
+                baseEdges={review.baseGraph.edges}
+                headNodes={review.headGraph.nodes}
+                headEdges={review.headGraph.edges}
+                changes={review.report.diff.changes}
+                baseRevision={review.baseRevision}
+                headRevision={review.headRevision}
+              />
+
               <section className="overflow-hidden rounded-2xl border border-border bg-surface">
                 <div className="flex items-center justify-between border-b border-border px-5 py-4">
                   <div>

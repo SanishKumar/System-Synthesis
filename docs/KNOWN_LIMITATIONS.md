@@ -12,7 +12,8 @@
 - Docker Compose import accepts one bounded Compose document and explicit `depends_on` relationships. It does not evaluate interpolation, includes, extends, profiles, override-file merging, or dependencies implied by environment variables.
 - Compose component classification is a documented heuristic based on image/name/ports. A team must review or extend those rules for organization-specific images.
 - Terraform import and general infrastructure round-trip conversion are not implemented. Docker Compose and Terraform export still support only the node subset listed by the IR service, and unsupported resources fail explicitly.
-- GitHub Action artifacts and browser-persisted reviews use the same deterministic core but are not automatically synchronized.
+- A secure, idempotent GitHub review-ingestion API now exists, but the bundled Action does not call it yet and the browser does not yet expose repository-token setup. Action artifacts and browser reviews therefore remain manually separated in this increment.
+- Repository tokens prove possession of a System Synthesis ingestion credential installed for the configured repository; GitHub ownership is not independently verified until a GitHub App or OIDC exchange is implemented.
 - Browser reviews are currently owned by one authenticated user. Shared team ownership and an organization-wide policy service are not implemented.
 - The repository-local action is dogfooded from the pull-request checkout. External consumers should pin a released action commit or immutable tag so a reviewed pull request cannot replace the action implementation.
 - Browser review storage retains canonical base/head graphs, policy, report, decisions, and events; it deliberately does not retain the submitted raw Compose source.

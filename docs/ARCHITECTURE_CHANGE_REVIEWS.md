@@ -81,4 +81,17 @@ Mutations require the current review revision:
 
 A stale mutation receives HTTP 409. Approval receives HTTP 422 while blocking findings remain. Rejection requires a note.
 
-Browser reviews and GitHub Action artifacts currently share the same core engine but are not automatically synchronized. That integration is intentionally listed as future work rather than implied.
+## Repository ingestion foundation
+
+The server now has the secure persistence boundary needed for future Action synchronization:
+
+- `POST /api/review-integrations` creates or rotates a GitHub repository-scoped ingestion token for the authenticated user.
+- `GET /api/review-integrations` lists token metadata without revealing token values.
+- `DELETE /api/review-integrations/:id` revokes a token.
+- `POST /api/review-ingestions/github` accepts bounded canonical Docker Compose graphs from that repository credential.
+
+Ingestion tokens are shown once and stored only as SHA-256 digests. The submitted repository must match the credential. The server validates graph shape, provenance, IDs, edge endpoints, URLs, revisions, policy, and payload size, then recomputes the deterministic report instead of trusting a caller-supplied result. Raw Compose documents are not uploaded or retained.
+
+There is exactly one persisted review per owner, provider, repository, and pull-request number. Duplicate deliveries are idempotent. A provider-supplied monotonic change version prevents a delayed older workflow from replacing a newer head. A same-version delivery with different content is rejected as a conflict. PostgreSQL advisory locking and a partial unique index protect concurrent deliveries.
+
+The bundled Action does **not** call this endpoint yet, and the browser does not yet provide integration setup controls. Until those next steps land, Action artifacts and browser-persisted reviews are not automatically synchronized.

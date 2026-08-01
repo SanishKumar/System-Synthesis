@@ -49,6 +49,17 @@ export const reviewCreateLimiter = rateLimit({
   message: { error: "Architecture review limit reached. Max 20 reviews per hour." },
 });
 
+/** Machine ingestion is CPU-bound and scoped to one repository credential. */
+export const reviewIngestionLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: any, res: any) =>
+    req.reviewIntegration?.id || ipKeyGenerator(req, res),
+  message: { error: "Architecture ingestion limit reached. Max 60 deliveries per hour." },
+});
+
 /**
  * AI rate limiter — 5 AI calls per minute per user
  */

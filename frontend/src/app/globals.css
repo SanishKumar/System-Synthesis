@@ -396,6 +396,26 @@
   stroke-width: 2 !important;
 }
 
+.react-flow__edge.review-diff-edge-added .react-flow__edge-path {
+  stroke: #10b981 !important;
+  stroke-width: 2.25 !important;
+}
+
+.react-flow__edge.review-diff-edge-removed .react-flow__edge-path {
+  stroke: #ef4444 !important;
+  stroke-dasharray: 6 5;
+  stroke-width: 2.25 !important;
+}
+
+.react-flow__edge.review-diff-edge-changed .react-flow__edge-path {
+  stroke: #f59e0b !important;
+  stroke-width: 2.25 !important;
+}
+
+.react-flow__edge.review-diff-edge-unchanged .react-flow__edge-path {
+  opacity: 0.72;
+}
+
 .react-flow__handle {
   width: 9px !important;
   height: 9px !important;

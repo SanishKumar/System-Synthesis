@@ -129,6 +129,28 @@ const MIGRATION_SQL = `
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
 
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS integration_provider TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS external_repository TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS external_change_number INT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS external_change_url TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS external_change_version BIGINT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS workflow_run_id TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS workflow_run_url TEXT;
+
+  CREATE TABLE IF NOT EXISTS architecture_review_integrations (
+    id              TEXT PRIMARY KEY,
+    owner_id        TEXT NOT NULL,
+    provider        TEXT NOT NULL CHECK (provider IN ('github')),
+    repository      TEXT NOT NULL,
+    token_hash      TEXT NOT NULL UNIQUE,
+    token_prefix    TEXT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_used_at    TIMESTAMPTZ,
+    revoked_at      TIMESTAMPTZ,
+    UNIQUE(owner_id, provider, repository)
+  );
+
   CREATE TABLE IF NOT EXISTS architecture_review_events (
     id              TEXT PRIMARY KEY,
     review_id       TEXT NOT NULL REFERENCES architecture_reviews(id) ON DELETE CASCADE,
@@ -145,8 +167,20 @@ const MIGRATION_SQL = `
   CREATE INDEX IF NOT EXISTS idx_board_updates_replay ON board_updates(board_id, sequence);
   CREATE INDEX IF NOT EXISTS idx_architecture_reviews_owner_updated
     ON architecture_reviews(owner_id, updated_at DESC);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_architecture_reviews_external_change
+    ON architecture_reviews(
+      owner_id,
+      integration_provider,
+      external_repository,
+      external_change_number
+    )
+    WHERE integration_provider IS NOT NULL
+      AND external_repository IS NOT NULL
+      AND external_change_number IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_architecture_review_events_review
     ON architecture_review_events(review_id, created_at ASC);
+  CREATE INDEX IF NOT EXISTS idx_architecture_review_integrations_owner
+    ON architecture_review_integrations(owner_id, updated_at DESC);
 `;
 
 /**

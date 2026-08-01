@@ -22,6 +22,8 @@ import templatesRouter from "./routes/templates.js";
 import exportRouter from "./routes/export.js";
 import authRouter, { ensureUsersTable } from "./routes/auth.js";
 import reviewsRouter from "./routes/reviews.js";
+import reviewIntegrationsRouter from "./routes/reviewIntegrations.js";
+import reviewIngestionsRouter from "./routes/reviewIngestions.js";
 import { initializeCollaborationSubscription } from "./services/collaborationUpdates.js";
 
 const PORT = parseInt(process.env.PORT || "4000", 10);
@@ -80,6 +82,8 @@ async function main() {
   app.use("/api/auth", authRouter);
   app.use("/api/boards", requireAuth, boardsRouter);
   app.use("/api/reviews", requireAuth, reviewsRouter);
+  app.use("/api/review-integrations", requireAuth, reviewIntegrationsRouter);
+  app.use("/api/review-ingestions", reviewIngestionsRouter);
   app.use("/api/ai", requireAuth, aiLimiter, aiRouter);
   app.use("/api/templates", templatesRouter);
   app.use("/api/export", requireAuth, exportLimiter, exportRouter);
