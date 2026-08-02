@@ -76,6 +76,10 @@ The root [`action.yml`](./action.yml) is a bundled Node 24 action. Consumer repo
     policy-path: .system-synthesis/policy.json
     base-revision: ${{ github.event.pull_request.base.sha }}
     head-revision: ${{ github.event.pull_request.head.sha }}
+    # Optional persisted browser review. Never expose this secret to
+    # PR-modifiable local Action code; pin the Action to a reviewed SHA.
+    ingestion-url: ${{ vars.SYSTEM_SYNTHESIS_INGESTION_URL }}
+    ingestion-token: ${{ secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN }}
 ```
 
 The included [dogfood workflow](./.github/workflows/architecture-review.yml):
@@ -84,6 +88,8 @@ The included [dogfood workflow](./.github/workflows/architecture-review.yml):
 - reads policy from the base commit so a PR cannot disable its own check
 - uploads source-linked SARIF through GitHub's CodeQL upload action
 - creates or updates one marker-based PR comment
+- synchronizes one idempotent browser review per same-repository PR when ingestion is configured
+- runs the secret-bearing Action implementation from the trusted base commit; forks remain local-analysis only
 - appends the report to the job summary
 - preserves JSON, Markdown, and SARIF as an artifact
 - enforces the analyzer exit code only after publishing results

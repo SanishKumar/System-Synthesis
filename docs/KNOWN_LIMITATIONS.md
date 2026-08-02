@@ -12,10 +12,11 @@
 - Docker Compose import accepts one bounded Compose document and explicit `depends_on` relationships. It does not evaluate interpolation, includes, extends, profiles, override-file merging, or dependencies implied by environment variables.
 - Compose component classification is a documented heuristic based on image/name/ports. A team must review or extend those rules for organization-specific images.
 - Terraform import and general infrastructure round-trip conversion are not implemented. Docker Compose and Terraform export still support only the node subset listed by the IR service, and unsupported resources fail explicitly.
-- A secure, idempotent GitHub review-ingestion API now exists, but the bundled Action does not call it yet and the browser does not yet expose repository-token setup. Action artifacts and browser reviews therefore remain manually separated in this increment.
+- The bundled Action can synchronize same-repository pull requests through the secure ingestion API, but repository setup is still API-only; the browser does not yet expose token creation, rotation, revocation, or copyable workflow instructions.
+- Fork pull requests deliberately do not receive the ingestion token and therefore do not create browser-persisted reviews. They still receive deterministic local Action analysis and artifacts where workflow permissions allow it.
 - Repository tokens prove possession of a System Synthesis ingestion credential installed for the configured repository; GitHub ownership is not independently verified until a GitHub App or OIDC exchange is implemented.
 - Browser reviews are currently owned by one authenticated user. Shared team ownership and an organization-wide policy service are not implemented.
-- The repository-local action is dogfooded from the pull-request checkout. External consumers should pin a released action commit or immutable tag so a reviewed pull request cannot replace the action implementation.
+- There is not yet a published immutable Action release. The dogfood workflow isolates the trusted base-commit Action from the PR source; external consumers should pin a reviewed full commit SHA until a release is published.
 - Browser review storage retains canonical base/head graphs, policy, report, decisions, and events; it deliberately does not retain the submitted raw Compose source.
 - Terraform output is a deterministic supported model, not a guarantee that every generated deployment is secure, cost-effective, or appropriate for a specific provider account.
 - The optional LLM explains deterministic findings and can generate a separate draft architecture, but generated text/graphs remain untrusted suggestions.

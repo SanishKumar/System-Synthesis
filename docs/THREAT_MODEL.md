@@ -12,6 +12,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 - Semantic versions and audit records
 - Canonical review graphs, deterministic findings, suppression justifications, decisions, and review events
 - Base-branch policy and pull-request check integrity
+- Repository-scoped review-ingestion credentials
 - Invitation capabilities
 - Exported infrastructure files
 - JWT signing secret and optional LLM credentials
@@ -25,6 +26,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 5. Generated export to operator: generated files require review and secret injection before use.
 6. Repository source to architecture adapter: Compose and policy files are hostile, bounded inputs; they do not execute.
 7. GitHub Action to pull request: the action reports deterministic artifacts, while repository permissions and branch protection decide who can publish or bypass checks.
+8. GitHub Action to review-ingestion API: the trusted Action sends bounded canonical graphs over HTTPS with a repository-scoped credential; the server revalidates and recomputes the review.
 
 ## Threats and controls
 
@@ -40,7 +42,10 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 | Cross-origin browser uses authenticated API | CORS uses an explicit frontend-origin allowlist. |
 | Malicious Compose input causes resource exhaustion or code execution | Import is data-only, rejects duplicate keys and excessive aliases, and caps source bytes and service count. No Compose interpolation, command, image, or extension is executed. |
 | Pull request weakens its own policy | The GitHub Action reads policy from the base revision. A policy change governs later pull requests only after merge. |
-| Pull request replaces the checker implementation | This repository dogfoods a local action, which is reviewable but mutable in the same pull request. External consumers must pin a released commit or immutable tag; branch protection and CODEOWNERS remain operator controls. |
+| Pull request replaces the checker implementation or reads its ingestion secret | The dogfood workflow checks the trusted base-commit Action out before the untrusted PR source and uses separate directories. Only that trusted Action receives the token. Forks receive neither ingestion input. External consumers must pin a reviewed full commit SHA. |
+| Ingestion credential is used to spoof another repository | Credentials are random, stored only as hashes, scoped to one normalized repository, independently matched on every upload, and can be rotated or revoked. |
+| Action submits a fabricated report or malformed topology | The client sends canonical graphs rather than a report. The server validates bounded graph/provenance schemas and edge integrity, rebinds authenticated repository metadata, and recomputes deterministic findings. |
+| Delayed or duplicated workflow overwrites a newer PR review | One review key exists per owner/repository/PR. Identical retries are idempotent; a monotonic PR change version rejects stale deliveries, and stale jobs do not replace the marker-based PR comment. |
 | User suppresses a different or obsolete finding | The API accepts suppression only for an active finding, requires justification, records actor/time/ticket/expiry, and recomputes the report. Expired suppressions do not apply. |
 | Stale browser overwrites a newer review decision | Every review mutation requires the current revision and uses an optimistic transactional update. Stale writes return HTTP 409. |
 | User approves a failing review | Approval is rejected while any unsuppressed blocking finding remains. Rejection requires a note. |
@@ -72,6 +77,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 - Optional LLM prompts contain deterministic finding text and modeled component metadata; operators must evaluate provider data-handling requirements.
 - Audit records are stored in the same database as application state and are not an immutable external security log.
 - Browser review ownership is per user rather than organization/role based.
+- Repository ingestion credentials are long-lived until rotation/revocation, and repository ownership is not independently verified by a GitHub App or OIDC exchange.
 - The GitHub workflow can upload SARIF and comment only with the repository permissions granted to it; branch protection and required-check configuration are outside the application.
 - Canonical review graphs are durable, but submitted raw Compose source is not retained for independent re-parsing.
 - Exported infrastructure is deterministic for a supported subset, not security-certified deployment code.

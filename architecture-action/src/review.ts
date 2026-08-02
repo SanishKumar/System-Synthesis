@@ -2,6 +2,8 @@ import {
   dockerComposeAdapter,
   reviewArchitectureChange,
   type ArchitectureChangeReview,
+  type ArchitecturePolicy,
+  type CanonicalArchitectureGraph,
 } from "@system-synthesis/architecture-core";
 import {
   parseArchitecturePolicy,
@@ -24,6 +26,9 @@ export interface ActionReviewInput {
 export interface ActionReviewReports {
   exitCode: 0 | 1;
   review: ArchitectureChangeReview;
+  baseGraph: CanonicalArchitectureGraph;
+  headGraph: CanonicalArchitectureGraph;
+  policy: ArchitecturePolicy;
   json: string;
   markdown: string;
   sarif: string;
@@ -62,6 +67,9 @@ export function createActionReview(
   return {
     exitCode: review.status === "fail" ? 1 : 0,
     review,
+    baseGraph: base.graph,
+    headGraph: head.graph,
+    policy,
     json: reviewToJson(review),
     markdown: reviewToMarkdown(review),
     sarif: reviewToSarif(review),

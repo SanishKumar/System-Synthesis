@@ -23,6 +23,10 @@ The system prefers an explicit rejection over acknowledging a mutation whose con
 | Policy is invalid | CLI/Action exits as invalid input; the browser API rejects review creation. No partial review is persisted. | CLI policy-schema tests and API validation. |
 | Review contains blocking findings | CLI/Action exits 1 and the browser refuses approval. | Core, CLI, action, and API end-to-end verification. |
 | Browser submits a stale review revision | Mutation returns HTTP 409 and preserves the newer event sequence. | Repository tests and API end-to-end verification. |
+| Configured review ingestion is temporarily unavailable | The Action retries bounded transient network/408/425/429/5xx failures with the identical payload. Exhaustion produces exit code 2, so persistence failure cannot masquerade as a completed configured review. | Action retry/failure tests; the local reports are written before upload. |
+| An ingestion response is lost after server commit | The retry uses the same repository/PR/change version and receives the existing review rather than creating a duplicate. | Server idempotency tests plus Action identical-body retry test. |
+| Older PR workflow finishes after a newer workflow | The server returns stale without replacing the newer graph. The workflow does not replace the PR comment from a stale delivery. | Server stale-watermark test and workflow condition. |
+| Pull request comes from a fork | No repository ingestion URL/token is supplied, so no browser review is persisted. Local deterministic analysis and available artifacts continue without secret access. | Fork mode Action test and workflow input conditions. |
 | SARIF upload, artifact upload, or PR comment publication fails | That workflow step is visible as failed; the final policy-enforcement step still derives its result from the local deterministic action output. | Workflow ordering keeps reporting separate from enforcement. |
 
 ## Recovery order
@@ -40,4 +44,4 @@ The system prefers an explicit rejection over acknowledging a mutation whose con
 - Redis loss reduces immediate cross-instance propagation, not durability, when PostgreSQL is healthy.
 - Memory mode favors convenience over durability and is clearly identified in health/benchmark documentation.
 - Architecture review decisions fail closed: unresolved blocking findings prevent approval.
-- GitHub reporting channels are redundant outputs, not the policy authority. The local action result is the merge-gating signal.
+- GitHub reporting channels are redundant outputs, not the policy authority. The local analysis result is the merge-gating signal; when persistence is explicitly configured, ingestion completion is also required and failures exit 2.

@@ -26,21 +26,39 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Never pass a repository secret to Action code from the pull-request
+      # checkout. The trusted implementation and untrusted source are checked
+      # out into separate directories, with the trusted base commit first.
+      - name: Checkout trusted Action implementation
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted-action
+          persist-credentials: false
+          sparse-checkout: |
+            action.yml
+            architecture-action/dist
+          sparse-checkout-cone-mode: false
+
       - name: Checkout pull request with base history
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          path: source
           persist-credentials: false
 
       - name: Compare base and head architecture
         id: review
-        uses: ./
+        uses: ./trusted-action
         continue-on-error: true
         with:
+          repository-directory: source
           compose-path: docker-compose.dev.yml
           policy-path: .system-synthesis/policy.json
           base-revision: ${{ github.event.pull_request.base.sha }}
           head-revision: ${{ github.event.pull_request.head.sha }}
+          ingestion-url: ${{ github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
+          ingestion-token: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
 
       - name: Upload source-linked findings to code scanning
         if: >-
@@ -57,15 +75,20 @@ jobs:
         if: >-
           always() &&
           steps.review.outputs.markdown-file != '' &&
+          steps.review.outputs.ingestion-status != 'stale' &&
           github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v8
         env:
           REPORT_FILE: ${{ steps.review.outputs.markdown-file }}
+          REVIEW_URL: ${{ steps.review.outputs.review-url }}
         with:
           script: |
             const fs = require("node:fs");
             const marker = "<!-- system-synthesis-architecture-review -->";
-            const body = `${marker}\n${fs.readFileSync(process.env.REPORT_FILE, "utf8")}`;
+            const persistedReview = process.env.REVIEW_URL
+              ? `\n\n---\n[Open the interactive architecture review](${process.env.REVIEW_URL})`
+              : "";
+            const body = `${marker}\n${fs.readFileSync(process.env.REPORT_FILE, "utf8")}${persistedReview}`;
             const comments = await github.paginate(
               github.rest.issues.listComments,
               {

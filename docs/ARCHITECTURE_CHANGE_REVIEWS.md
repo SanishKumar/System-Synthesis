@@ -94,4 +94,18 @@ Ingestion tokens are shown once and stored only as SHA-256 digests. The submitte
 
 There is exactly one persisted review per owner, provider, repository, and pull-request number. Duplicate deliveries are idempotent. A provider-supplied monotonic change version prevents a delayed older workflow from replacing a newer head. A same-version delivery with different content is rejected as a conflict. PostgreSQL advisory locking and a partial unique index protect concurrent deliveries.
 
-The bundled Action does **not** call this endpoint yet, and the browser does not yet provide integration setup controls. Until those next steps land, Action artifacts and browser-persisted reviews are not automatically synchronized.
+The bundled Action can now call this endpoint when both optional inputs are configured:
+
+```yaml
+with:
+  ingestion-url: ${{ vars.SYSTEM_SYNTHESIS_INGESTION_URL }}
+  ingestion-token: ${{ secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN }}
+```
+
+`SYSTEM_SYNTHESIS_INGESTION_URL` must be the complete HTTPS URL ending in `/api/review-ingestions/github`. The token comes from `POST /api/review-integrations` and must be stored as a GitHub Actions secret. A successful upload exposes `ingestion-status`, `review-id`, and `review-url` Action outputs; the repository workflow includes the interactive review link in its marker-based PR comment.
+
+The Action derives repository, pull-request, base/head SHA, update timestamp, and workflow-run identity from the GitHub event and rejects mismatches with the analyzed graphs. It retries only transient HTTP/network failures, reusing the identical idempotent payload. Authentication, configuration, validation, and conflict failures do not retry and produce exit code 2 so persistence failures cannot be mistaken for a successful review.
+
+Never pass the ingestion secret to `uses: ./` from a pull-request checkout. A pull request can modify that Action code. The repository workflow checks out the trusted Action implementation from the base commit into a separate path before supplying the secret. External consumers should pin the Action to a reviewed full commit SHA. Fork PRs receive neither ingestion input and continue with local deterministic analysis only.
+
+The browser still does not provide integration setup controls; token creation/rotation/revocation is API-only in this increment.

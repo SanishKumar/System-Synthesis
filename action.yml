@@ -7,6 +7,10 @@ branding:
   color: purple
 
 inputs:
+  repository-directory:
+    description: Repository checkout directory within GITHUB_WORKSPACE. Useful when the trusted Action and untrusted PR source are checked out separately.
+    required: false
+    default: .
   compose-path:
     description: Repository-relative Docker Compose file to compare.
     required: true
@@ -25,6 +29,12 @@ inputs:
     description: Repository-relative directory for JSON, Markdown, and SARIF reports.
     required: false
     default: .system-synthesis/reports
+  ingestion-url:
+    description: Full HTTPS System Synthesis GitHub ingestion endpoint. Omit with ingestion-token to keep analysis local.
+    required: false
+  ingestion-token:
+    description: Repository-scoped System Synthesis ingestion token. Pass from a GitHub Actions secret only to a trusted, pinned Action implementation.
+    required: false
 
 outputs:
   exit-code:
@@ -39,6 +49,12 @@ outputs:
     description: Absolute path to the pull-request Markdown report.
   sarif-file:
     description: Absolute path to the SARIF 2.1.0 report.
+  ingestion-status:
+    description: created, updated, unchanged, stale, skipped, or error.
+  review-id:
+    description: Persisted browser review identifier when ingestion succeeds.
+  review-url:
+    description: Persisted browser review URL when ingestion succeeds.
 
 runs:
   using: node24
