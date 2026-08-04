@@ -24,6 +24,8 @@ if (process.env.NODE_ENV === "production" && JWT_SECRET === DEVELOPMENT_SECRET) 
 export interface JwtPayload {
   userId: string;
   userName: string;
+  /** Explicit account class. Optional only for compatibility with older tokens. */
+  isGuest?: boolean;
 }
 
 // Extend Express Request

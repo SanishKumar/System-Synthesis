@@ -10,10 +10,13 @@ import {
   CheckCircle2,
   CircleDot,
   Clock3,
+  ExternalLink,
   FileCode2,
   GitBranch,
   GitCommitHorizontal,
+  Github,
   Loader2,
+  PlayCircle,
   ShieldCheck,
   ShieldX,
   X,
@@ -25,6 +28,8 @@ import ReviewTopologyDiff from "@/components/reviews/ReviewTopologyDiff";
 import { useUser } from "@/hooks/useUser";
 import {
   findingLocation,
+  githubLink,
+  type ExternalReviewSource,
   type ReviewEvent,
   type ReviewRecord,
 } from "@/types/reviews";
@@ -43,7 +48,15 @@ function shortRevision(value: string): string {
 }
 
 function eventLabel(event: ReviewEvent): string {
-  if (event.eventType === "review.created") return "Review created";
+  if (event.eventType === "review.created") {
+    return event.data.origin === "github" ? "Imported from pull request" : "Review created";
+  }
+  if (event.eventType === "review.refreshed") {
+    const head = event.data.headRevision;
+    return typeof head === "string"
+      ? `Refreshed from new commit ${shortRevision(head)}`
+      : "Refreshed from pull request";
+  }
   if (event.eventType === "suppression.added") return "Exception accepted";
   return `Decision changed to ${String(event.data.decision || "pending")}`;
 }
@@ -243,7 +256,15 @@ export default function ReviewDetailPage() {
                 </div>
                 <h1 className="mt-3 font-display text-2xl font-bold tracking-[-0.03em] text-text-primary sm:text-3xl">{review.title}</h1>
                 <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-muted">
-                  <span>{review.repository || "Local repository"}</span>
+                  {review.externalSource ? (
+                    <span className="inline-flex items-center gap-1.5 font-semibold text-text-secondary">
+                      <Github className="h-3.5 w-3.5" />
+                      {review.externalSource.repository}
+                      <span className="font-mono">#{review.externalSource.changeNumber}</span>
+                    </span>
+                  ) : (
+                    <span>{review.repository || "Local repository"}</span>
+                  )}
                   <span>•</span>
                   <span className="font-mono">{review.sourcePath}</span>
                   <span>•</span>
@@ -459,6 +480,15 @@ export default function ReviewDetailPage() {
                 )}
               </section>
 
+              {review.externalSource && (
+                <PullRequestSource
+                  source={review.externalSource}
+                  baseRevision={review.baseRevision}
+                  headRevision={review.headRevision}
+                  synchronizedAt={review.updatedAt}
+                />
+              )}
+
               <section className="rounded-2xl border border-border bg-surface p-5">
                 <div className="flex items-center gap-2">
                   <Clock3 className="h-4 w-4 text-accent-cyan" />
@@ -547,6 +577,85 @@ export default function ReviewDetailPage() {
         </div>
       )}
     </div>
+  );
+}
+
+function PullRequestSource({
+  source,
+  baseRevision,
+  headRevision,
+  synchronizedAt,
+}: {
+  source: ExternalReviewSource;
+  baseRevision: string;
+  headRevision: string;
+  synchronizedAt: string;
+}) {
+  const pullUrl = githubLink(source.changeUrl);
+  const workflowUrl = githubLink(source.workflowRunUrl);
+  return (
+    <section className="rounded-2xl border border-border bg-surface p-5">
+      <div className="flex items-center gap-2">
+        <Github className="h-4 w-4 text-accent-cyan" />
+        <h2 className="font-display text-sm font-bold text-text-primary">Pull request source</h2>
+      </div>
+      <p className="mt-3 text-xs leading-5 text-text-secondary">
+        This review is synchronized by the Action. Every new commit on the pull request refreshes it and returns the decision to pending.
+      </p>
+      <div className="mt-4 space-y-2">
+        {pullUrl ? (
+          <a
+            href={pullUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="flex items-center justify-between gap-3 rounded-lg border border-border bg-canvas-50 px-3 py-2.5 transition-colors hover:border-accent-cyan/40"
+          >
+            <span className="min-w-0">
+              <span className="block truncate text-xs font-semibold text-text-primary">{source.repository}</span>
+              <span className="mt-0.5 block font-mono text-[10px] text-text-muted">pull request #{source.changeNumber}</span>
+            </span>
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          </a>
+        ) : (
+          <div className="rounded-lg border border-border bg-canvas-50 px-3 py-2.5">
+            <span className="block truncate text-xs font-semibold text-text-primary">{source.repository}</span>
+            <span className="mt-0.5 block font-mono text-[10px] text-text-muted">pull request #{source.changeNumber}</span>
+          </div>
+        )}
+        {workflowUrl && (
+          <a
+            href={workflowUrl}
+            target="_blank"
+            rel="noreferrer noopener"
+            className="flex items-center justify-between gap-3 rounded-lg border border-border bg-canvas-50 px-3 py-2.5 transition-colors hover:border-accent-cyan/40"
+          >
+            <span className="inline-flex items-center gap-2 text-xs font-semibold text-text-primary">
+              <PlayCircle className="h-3.5 w-3.5 text-text-muted" />
+              Workflow run
+            </span>
+            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          </a>
+        )}
+      </div>
+      <dl className="mt-4 space-y-2 border-t border-border pt-4 text-[11px]">
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-text-muted">Base commit</dt>
+          <dd className="truncate font-mono text-text-secondary" title={baseRevision}>{shortRevision(baseRevision)}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-text-muted">Head commit</dt>
+          <dd className="truncate font-mono text-text-secondary" title={headRevision}>{shortRevision(headRevision)}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-text-muted">Last synchronized</dt>
+          <dd className="font-mono text-text-secondary">{new Date(synchronizedAt).toLocaleString()}</dd>
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <dt className="text-text-muted">Delivery version</dt>
+          <dd className="font-mono text-text-secondary">{source.changeVersion}</dd>
+        </div>
+      </dl>
+    </section>
   );
 }
 

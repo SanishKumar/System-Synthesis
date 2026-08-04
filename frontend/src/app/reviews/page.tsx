@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   FileDiff,
   FileUp,
+  Github,
   GitPullRequestArrow,
   Loader2,
   Plus,
@@ -328,7 +329,15 @@ export default function ReviewsPage() {
                         </span>
                       </span>
                       <span className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
-                        <span>{review.repository || "Local repository"}</span>
+                        {review.externalSource ? (
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-text-secondary">
+                            <Github className="h-3 w-3" />
+                            {review.externalSource.repository}
+                            <span className="font-mono">#{review.externalSource.changeNumber}</span>
+                          </span>
+                        ) : (
+                          <span>{review.repository || "Local repository"}</span>
+                        )}
                         <span>•</span>
                         <span className="font-mono">{shortRevision(review.baseRevision)} → {shortRevision(review.headRevision)}</span>
                         <span>•</span>

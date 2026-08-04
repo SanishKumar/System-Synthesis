@@ -14,6 +14,7 @@ import {
   FileText,
   History,
   Image as ImageIcon,
+  Link2,
   LogIn,
   LogOut,
   Moon,
@@ -124,6 +125,7 @@ export default function TopNav({
   const navLinks = [
     { href: "/", label: "Workspaces" },
     { href: "/reviews", label: "Reviews" },
+    { href: "/integrations", label: "Connections" },
     { href: lastBoard ? `/canvas/${lastBoard}` : "/canvas", label: "Canvas" },
     { href: "/history", label: "Versions" },
   ];
@@ -409,6 +411,9 @@ export default function TopNav({
               </div>
               <Link href="/history" onClick={() => setShowUserMenu(false)} className="mt-1 flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-light hover:text-text-primary">
                 <History className="h-3.5 w-3.5" /> Version history
+              </Link>
+              <Link href="/integrations" onClick={() => setShowUserMenu(false)} className="flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium text-text-secondary hover:bg-surface-light hover:text-text-primary">
+                <Link2 className="h-3.5 w-3.5" /> Repository connections
               </Link>
               {isGuest ? (
                 <button onClick={() => { setShowAuthModal(true); setShowUserMenu(false); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-accent-cyan hover:bg-accent-cyan/10">

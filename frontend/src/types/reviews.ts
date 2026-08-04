@@ -158,6 +158,16 @@ export interface ReviewEvent {
   createdAt: string;
 }
 
+/**
+ * Ingestion already pins pull-request and workflow URLs to the authenticated
+ * repository. Rendering re-checks the origin so a persisted row can never turn
+ * a review page into an arbitrary outbound link.
+ */
+export function githubLink(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return value.toLowerCase().startsWith("https://github.com/") ? value : null;
+}
+
 export function findingLocation(finding: ValidationIssue): string {
   const location = finding.locations?.[0];
   if (!location) return "Derived graph analysis";

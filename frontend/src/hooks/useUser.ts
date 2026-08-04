@@ -22,6 +22,7 @@ interface AuthSnapshot {
 interface TokenClaims {
   userId: string;
   userName: string;
+  isGuest?: boolean;
   exp?: number;
 }
 
@@ -164,7 +165,9 @@ async function initializeAuth(): Promise<void> {
       persistSession(
         storedToken,
         { userId: claims.userId, userName: claims.userName },
-        storedGuest === null ? claims.userId.startsWith("guest-") : storedGuest === "true"
+        storedGuest === null
+          ? claims.isGuest ?? claims.userId.startsWith("guest-")
+          : storedGuest === "true"
       );
       return;
     }

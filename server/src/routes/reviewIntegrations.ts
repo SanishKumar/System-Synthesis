@@ -21,6 +21,16 @@ const createIntegrationSchema = z.object({
   repository: repositorySchema,
 }).strict();
 
+router.use((req, res, next) => {
+  const isGuest = req.user!.isGuest ?? req.user!.userId.startsWith("guest-");
+  if (isGuest) {
+    return res.status(403).json({
+      error: "A permanent account is required to connect a repository",
+    });
+  }
+  next();
+});
+
 function badRequest(res: Response, error: z.ZodError): Response {
   return res.status(400).json({
     error: "Invalid request payload",

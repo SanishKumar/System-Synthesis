@@ -83,7 +83,7 @@ A stale mutation receives HTTP 409. Approval receives HTTP 422 while blocking fi
 
 ## Repository ingestion foundation
 
-The server now has the secure persistence boundary needed for future Action synchronization:
+The server and browser expose the secure persistence boundary used by Action synchronization:
 
 - `POST /api/review-integrations` creates or rotates a GitHub repository-scoped ingestion token for the authenticated user.
 - `GET /api/review-integrations` lists token metadata without revealing token values.
@@ -108,4 +108,6 @@ The Action derives repository, pull-request, base/head SHA, update timestamp, an
 
 Never pass the ingestion secret to `uses: ./` from a pull-request checkout. A pull request can modify that Action code. The repository workflow checks out the trusted Action implementation from the base commit into a separate path before supplying the secret. External consumers should pin the Action to a reviewed full commit SHA. Fork PRs receive neither ingestion input and continue with local deterministic analysis only.
 
-The browser still does not provide integration setup controls; token creation/rotation/revocation is API-only in this increment.
+A synchronized review carries its origin in the browser. The review list marks the repository and pull-request number, the detail header repeats them, and a pull-request source panel links back to the pull request and the workflow run, showing base commit, head commit, last synchronization, and the accepted delivery version. Both outbound links are re-checked against the GitHub origin at render time. The audit trail distinguishes `Imported from pull request` from `Refreshed from new commit <sha>`, so a reviewer can see which commit reset the decision. Manually imported reviews are unaffected and still read `Local repository`.
+
+Permanent-account users can manage these credentials at `/integrations`. The page creates or rotates a repository-scoped token, reveals it only in the immediate response, copies the ingestion endpoint and pinned-Action workflow inputs, lists non-secret metadata, and revokes or reconnects a repository. Guest sessions are rejected because a temporary identity must not own a long-lived repository secret. Dismissing the one-time panel removes the plaintext token from browser state; returning to the page cannot recover it, so a lost token must be rotated.

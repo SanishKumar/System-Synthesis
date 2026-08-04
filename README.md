@@ -108,6 +108,10 @@ Open `/reviews` to:
 6. approve only after the gate passes, or reject with a note
 7. inspect the append-only decision timeline
 
+Open `/integrations` with a permanent account to connect a GitHub repository, save the one-time ingestion token, copy the exact Action endpoint and workflow inputs, rotate a compromised token, or revoke access. Guest identities cannot own repository credentials.
+
+A review created by the Action shows where it came from: repository and pull-request number in the list and header, plus a source panel linking back to the pull request and workflow run with base commit, head commit, last synchronization, and delivery version. Its timeline separates the original import from each commit refresh.
+
 Review mutations use optimistic concurrency. A stale browser tab receives HTTP 409 instead of overwriting a newer decision. An approval attempt with blocking findings receives HTTP 422.
 
 ## How it works
@@ -179,7 +183,7 @@ These statements are limited to checked behavior in this repository.
 | Protected boards can only be mutated by owner/editor | Adversarial socket tests and authenticated integration |
 | Granular Yjs graph operations converge in the tested model | Seeded randomized convergence harness |
 
-Current automated count: 24 architecture-core tests, 7 CLI tests, 3 action tests, and 69 backend tests (103 total). The Next.js production build type-checks and prerenders both review routes.
+Current automated count: 24 architecture-core tests, 7 CLI tests, 10 Action tests, and 80 backend tests (121 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

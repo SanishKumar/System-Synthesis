@@ -102,7 +102,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const token = signToken({ userId, userName });
+    const token = signToken({ userId, userName, isGuest: false });
 
     res.status(201).json({
       token,
@@ -149,7 +149,7 @@ router.post("/login", async (req, res) => {
       await pool.query("UPDATE users SET updated_at = NOW() WHERE id = $1", [user.id]);
     }
 
-    const token = signToken({ userId: user.id, userName: user.user_name });
+    const token = signToken({ userId: user.id, userName: user.user_name, isGuest: false });
 
     res.json({
       token,
@@ -224,7 +224,11 @@ router.put("/me", requireAuth, async (req, res) => {
     }
 
     // We must return a new token because userName is baked into the JWT
-    const token = signToken({ userId, userName: userName.trim() });
+    const token = signToken({
+      userId,
+      userName: userName.trim(),
+      isGuest: req.user!.isGuest ?? userId.startsWith("guest-"),
+    });
     res.json({ token, userName: userName.trim() });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -258,7 +262,7 @@ router.post("/guest", async (req, res) => {
       }
     }
 
-    const token = signToken({ userId: guestId, userName: guestName });
+    const token = signToken({ userId: guestId, userName: guestName, isGuest: true });
 
     res.json({
       token,
@@ -306,7 +310,7 @@ router.post("/upgrade", requireAuth, async (req, res) => {
       user.is_guest = false;
     }
 
-    const token = signToken({ userId, userName: userName.trim() });
+    const token = signToken({ userId, userName: userName.trim(), isGuest: false });
     res.json({ token, user: { userId, userName: userName.trim(), email: email.toLowerCase() } });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

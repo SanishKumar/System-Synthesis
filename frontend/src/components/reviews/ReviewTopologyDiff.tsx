@@ -264,7 +264,8 @@ export default function ReviewTopologyDiff({
           ))}
         </div>
         <span className="font-mono text-[10px] text-text-muted">
-          {active.nodes.length} components · {active.edges.length} dependencies · {activeRevision}
+          {active.nodes.length} components · {active.edges.length} dependencies ·{" "}
+          <span title={activeRevision}>{revisionLabel(activeRevision)}</span>
         </span>
       </div>
 
