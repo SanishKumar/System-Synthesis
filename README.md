@@ -110,6 +110,8 @@ Open `/reviews` to:
 
 Open `/integrations` with a permanent account to connect a GitHub repository, save the one-time ingestion token, copy the exact Action endpoint and workflow inputs, rotate a compromised token, or revoke access. Guest identities cannot own repository credentials.
 
+A review also records the importer that extracted its graphs. Improving extraction does not rewrite history: an older review says so, and points at the remedy that actually applies, since re-analysis reuses the stored graphs rather than re-reading the source.
+
 Every stored review records the analyzer that produced its verdict. If the rules change afterwards, the review says so instead of presenting a stale verdict as current, and can be re-analyzed in place against its stored graphs. Re-analysis that reproduces the same verdict keeps the existing decision; only a changed verdict returns the review to pending.
 
 A review created by the Action shows where it came from: repository and pull-request number in the list and header, plus a source panel linking back to the pull request and workflow run with base commit, head commit, last synchronization, and delivery version. Its timeline separates the original import from each commit refresh.
@@ -191,8 +193,10 @@ These statements are limited to checked behavior in this repository.
 | Re-analysis that reproduces the same verdict does not revoke an existing decision | Recompute repository tests |
 | An inferred environment dependency requires an exact service-name match and never overrides a declared one | Compose environment-reference tests |
 | Environment values are never carried into the stored graph | Compose environment-reference tests |
+| A change in extraction output cannot land without a deliberate import-version decision | Pinned extraction-fingerprint test |
+| Import staleness is reported independently of analyzer staleness | Import-provenance repository tests |
 
-Current automated count: 36 architecture-core tests, 7 CLI tests, 10 Action tests, and 88 backend tests (141 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 40 architecture-core tests, 7 CLI tests, 10 Action tests, and 91 backend tests (148 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

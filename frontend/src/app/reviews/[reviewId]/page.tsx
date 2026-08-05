@@ -355,6 +355,26 @@ export default function ReviewDetailPage() {
             </section>
           )}
 
+          {review.importOutdated && (
+            <section className="mb-7 flex flex-col gap-3 rounded-2xl border border-border bg-canvas-50 px-5 py-4 sm:flex-row sm:items-start">
+              <FileCode2 className="h-5 w-5 shrink-0 text-text-muted" />
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-text-primary">
+                  Extracted by an earlier importer
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-text-secondary">
+                  These graphs were built before the current extraction rules, so the same source may now produce a different topology. Re-analysis cannot fix this — it reuses the stored graphs.{" "}
+                  {review.externalSource
+                    ? "A new commit on the pull request re-imports the source."
+                    : "Import the change again to rebuild the graphs."}
+                </p>
+                <p className="mt-2 font-mono text-[10px] text-text-muted">
+                  stored import v{review.importVersion ?? "unknown"} · current v{review.currentImportVersion}
+                </p>
+              </div>
+            </section>
+          )}
+
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="min-w-0 space-y-6">
               <ReviewTopologyDiff
@@ -598,6 +618,12 @@ export default function ReviewDetailPage() {
                     title={review.analyzerVersion || "unknown"}
                   >
                     {review.analyzerVersion || "unknown"}
+                  </span>
+                </div>
+                <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
+                  <span className="text-text-muted">Importer</span>
+                  <span className={`font-mono ${review.importOutdated ? "text-amber-600" : "text-text-secondary"}`}>
+                    v{review.importVersion ?? "unknown"}
                   </span>
                 </div>
               </section>

@@ -147,6 +147,10 @@ export interface ReviewRecord {
   /** Analyzer identity of the deployment serving this response. */
   currentAnalyzerVersion: string;
   analyzerOutdated: boolean;
+  /** Extraction contract that produced the stored graphs; null when unknown. */
+  importVersion: number | null;
+  currentImportVersion: number;
+  importOutdated: boolean;
   decision: ReviewDecision;
   decisionNote: string | null;
   decidedAt: string | null;

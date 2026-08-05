@@ -27,6 +27,24 @@ import type {
 import { SourceImportError } from "./types.js";
 
 const ADAPTER_ID = "docker-compose";
+/**
+ * Extraction contract for this adapter. Bump whenever the same Compose source
+ * would now yield a different graph — new or removed entities, changed
+ * identities, changed classification, or a new relationship source.
+ *
+ * Version 1 modelled only explicit `depends_on`. Version 2 added dependencies
+ * inferred from environment references.
+ *
+ * This is separate from the analyzer version. Analyzer identity answers "would
+ * the current rules still reach this verdict from this graph"; this answers
+ * "would the current importer still produce this graph from that source". A
+ * stored review cannot re-import itself, so an outdated graph needs a new
+ * delivery rather than re-analysis.
+ *
+ * `architecture-core/src/__tests__/importVersion.test.ts` pins extraction
+ * output so a change cannot land without a decision about this number.
+ */
+export const COMPOSE_ADAPTER_VERSION = 2;
 const MAX_COMPOSE_BYTES = 1_000_000;
 const MAX_SERVICES = 500;
 const COMPOSE_FILE_NAMES = new Set([
@@ -525,6 +543,7 @@ export const dockerComposeAdapter: ArchitectureSourceAdapter = {
       graph: canonicalizeGraph({
         source: {
           adapter: ADAPTER_ID,
+          adapterVersion: COMPOSE_ADAPTER_VERSION,
           repository: context.repository,
           revision: context.revision,
           files: [file.path],

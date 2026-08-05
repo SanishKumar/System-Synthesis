@@ -89,6 +89,21 @@ Mutations require the current review revision:
 
 A stale mutation receives HTTP 409. Approval receives HTTP 422 while blocking findings remain. Rejection requires a note.
 
+## Import provenance
+
+A graph records the extraction contract that produced it as `source.adapterVersion`. `COMPOSE_ADAPTER_VERSION` is bumped whenever the same Compose source would now yield a different graph: new or removed entities, changed identities, changed classification, or a new relationship source. Version 1 modelled only explicit `depends_on`; version 2 added inferred environment dependencies. A pinned extraction fingerprint fails whenever output changes, so the number cannot drift silently.
+
+This is a different question from analyzer identity, and the two are reported separately:
+
+- Analyzer identity answers *would the current rules still reach this verdict from this graph*. Re-analysis fixes it.
+- Import version answers *would the current importer still produce this graph from that source*. Re-analysis cannot fix it, because it reuses the stored graphs rather than re-reading the source. Only a new pull-request delivery or a fresh import rebuilds them.
+
+Review responses carry `importVersion`, `currentImportVersion`, and `importOutdated`, derived per request. Both graphs must report the same version and match the running deployment; a disagreement between base and head, or a graph written before extraction was versioned, reads as outdated rather than current. An outdated import shows its own notice naming the remedy that actually applies.
+
+The version is excluded from the content fingerprint, so restamping never changes graph identity or ingestion idempotence.
+
+For ingested reviews the value is the producer's own report: the Action performed the extraction with its bundled importer, and the server never sees the source, so it records what was reported rather than restamping. A repository pinned to an older Action therefore surfaces as an outdated import, which is the accurate signal.
+
 ## Analyzer provenance
 
 A stored review freezes a verdict, so every persisted review records the analyzer that produced it as `v<version>+<rule-set-fingerprint>`.

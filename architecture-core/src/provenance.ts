@@ -6,6 +6,12 @@ import type {
 
 export interface CanonicalGraphSource {
   adapter: string;
+  /**
+   * Extraction contract that produced this graph. Deliberately excluded from
+   * the content fingerprint: it describes how the graph was obtained, not what
+   * it says. Absent on graphs imported before extraction was versioned.
+   */
+  adapterVersion?: number;
   repository?: string;
   revision?: string;
   files: string[];

@@ -6,6 +6,7 @@ import type {
 } from "@system-synthesis/architecture-core";
 import {
   canonicalGraphFingerprint,
+  COMPOSE_ADAPTER_VERSION,
   currentAnalyzerVersion,
   stableStringify,
 } from "@system-synthesis/architecture-core";
@@ -35,6 +36,40 @@ export function analyzerStatus(review: {
     analyzerVersion: review.analyzerVersion,
     currentAnalyzerVersion: CURRENT_ANALYZER_VERSION,
     analyzerOutdated: review.analyzerVersion !== CURRENT_ANALYZER_VERSION,
+  };
+}
+
+export const CURRENT_IMPORT_VERSION = COMPOSE_ADAPTER_VERSION;
+
+export interface ImportStatus {
+  importVersion: number | null;
+  currentImportVersion: number;
+  importOutdated: boolean;
+}
+
+function graphImportVersion(graph: CanonicalArchitectureGraph): number | null {
+  const version = graph.source.adapterVersion;
+  return typeof version === "number" ? version : null;
+}
+
+/**
+ * Whether the stored graphs still match what the current importer would extract
+ * from the same source. Distinct from analyzer staleness and not fixable by
+ * re-analysis, which reuses these graphs rather than re-reading the source.
+ *
+ * Both sides must agree and match; an unknown version on either side reads as
+ * outdated so a pre-versioning graph is never assumed current.
+ */
+export function importStatus(review: {
+  baseGraph: CanonicalArchitectureGraph;
+  headGraph: CanonicalArchitectureGraph;
+}): ImportStatus {
+  const base = graphImportVersion(review.baseGraph);
+  const head = graphImportVersion(review.headGraph);
+  return {
+    importVersion: base === head ? head : null,
+    currentImportVersion: CURRENT_IMPORT_VERSION,
+    importOutdated: base !== CURRENT_IMPORT_VERSION || head !== CURRENT_IMPORT_VERSION,
   };
 }
 

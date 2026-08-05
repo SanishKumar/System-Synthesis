@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  COMPOSE_ADAPTER_VERSION,
   dockerComposeAdapter,
   SourceImportError,
 } from "../index.js";
@@ -75,6 +76,7 @@ describe("Docker Compose import", () => {
     expect(result.diagnostics).toEqual([]);
     expect(result.graph.source).toEqual({
       adapter: "docker-compose",
+      adapterVersion: COMPOSE_ADAPTER_VERSION,
       repository: "acme/shop",
       revision: "base-sha",
       files: ["deploy/compose.yaml"],

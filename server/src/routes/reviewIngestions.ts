@@ -138,6 +138,10 @@ const graphSchema = z.object({
   edges: z.array(edgeSchema).max(5_000),
   source: z.object({
     adapter: z.literal("docker-compose"),
+    // The Action performed the extraction, so this is the producer's own
+    // report about its bundled importer. The server never sees the source and
+    // cannot verify it; an absent value reads as unknown, never as current.
+    adapterVersion: z.number().int().positive().max(1_000_000).optional(),
     repository: repositorySchema.optional(),
     revision: commitSchema.optional(),
     files: z.array(sourcePathSchema).min(1).max(10),
@@ -269,6 +273,7 @@ function bindGraph(
   return canonicalizeGraph({
     source: {
       adapter: "docker-compose",
+      adapterVersion: graph.source.adapterVersion,
       repository,
       revision,
       files: [sourcePath],

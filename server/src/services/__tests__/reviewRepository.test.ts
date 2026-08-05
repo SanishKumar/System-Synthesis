@@ -10,7 +10,9 @@ import {
   analyzerStatus,
   createArchitectureReview,
   CURRENT_ANALYZER_VERSION,
+  CURRENT_IMPORT_VERSION,
   getArchitectureReview,
+  importStatus,
   ingestArchitectureReview,
   recomputeArchitectureReviewAnalysis,
   listArchitectureReviewEvents,
@@ -237,6 +239,62 @@ describe("analyzer provenance", () => {
     expect(refreshed.status).toBe("updated");
     expect(refreshed.review.id).toBe(created.review.id);
     expect(refreshed.review.analyzerVersion).toBe(CURRENT_ANALYZER_VERSION);
+  });
+
+  it("reports stored graphs extracted by the current importer as current", async () => {
+    const review = await create();
+
+    expect(importStatus(review)).toEqual({
+      importVersion: CURRENT_IMPORT_VERSION,
+      currentImportVersion: CURRENT_IMPORT_VERSION,
+      importOutdated: false,
+    });
+  });
+
+  it("treats an older, unknown, or disagreeing import as outdated", async () => {
+    const review = await create();
+    const older = (version: unknown) => ({
+      ...review.headGraph,
+      source: { ...review.headGraph.source, adapterVersion: version },
+    }) as typeof review.headGraph;
+
+    // A graph produced by an older pinned Action.
+    expect(importStatus({
+      baseGraph: older(CURRENT_IMPORT_VERSION - 1),
+      headGraph: older(CURRENT_IMPORT_VERSION - 1),
+    })).toMatchObject({
+      importVersion: CURRENT_IMPORT_VERSION - 1,
+      importOutdated: true,
+    });
+    // Written before extraction was versioned.
+    expect(importStatus({
+      baseGraph: older(undefined),
+      headGraph: older(undefined),
+    })).toMatchObject({ importVersion: null, importOutdated: true });
+    // Sides disagreeing cannot describe one extraction contract.
+    expect(importStatus({
+      baseGraph: older(CURRENT_IMPORT_VERSION - 1),
+      headGraph: review.headGraph,
+    })).toMatchObject({ importVersion: null, importOutdated: true });
+  });
+
+  it("keeps import staleness independent of analyzer staleness", async () => {
+    const review = await create();
+    const stale = {
+      ...review,
+      baseGraph: {
+        ...review.baseGraph,
+        source: { ...review.baseGraph.source, adapterVersion: 1 },
+      },
+      headGraph: {
+        ...review.headGraph,
+        source: { ...review.headGraph.source, adapterVersion: 1 },
+      },
+    };
+
+    // Re-analysis reuses these graphs, so it cannot clear an outdated import.
+    expect(analyzerStatus(stale).analyzerOutdated).toBe(false);
+    expect(importStatus(stale).importOutdated).toBe(true);
   });
 
   it("treats an unknown or foreign analyzer as outdated", () => {
