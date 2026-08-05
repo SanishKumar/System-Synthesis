@@ -12,6 +12,7 @@ import {
   CURRENT_ANALYZER_VERSION,
   getArchitectureReview,
   ingestArchitectureReview,
+  recomputeArchitectureReviewAnalysis,
   listArchitectureReviewEvents,
   listArchitectureReviews,
   resetMemoryReviewsForTests,
@@ -247,6 +248,125 @@ describe("analyzer provenance", () => {
     // A verdict produced by a different rule set must never read as current.
     expect(analyzerStatus({ analyzerVersion: "v0+0000000000000000" })).toMatchObject({
       analyzerOutdated: true,
+    });
+  });
+
+  it("treats a freshly computed identical analysis as unchanged", async () => {
+    const review = await create();
+    // Exactly what the endpoint does: stored graphs and policy, new clock. The
+    // report carries wall-clock stamps, so a naive comparison reports a changed
+    // verdict here and silently revokes decisions on every recompute.
+    const recomputedReport = reviewArchitectureChange(
+      review.baseGraph,
+      review.headGraph,
+      review.policy,
+      new Date(),
+      {
+        base: review.report.baseDiagnostics,
+        head: review.report.headDiagnostics,
+      }
+    );
+
+    const result = await recomputeArchitectureReviewAnalysis(
+      review.id,
+      "owner-1",
+      1,
+      recomputedReport
+    );
+
+    expect(result).toMatchObject({
+      status: "unchanged",
+      review: { revision: 1, decision: "pending" },
+    });
+  });
+
+  it("re-stamps without disturbing an approved review when the verdict is unchanged", async () => {
+    const review = await create();
+    const passingReport = {
+      ...review.report,
+      status: "pass" as const,
+      blockingFindings: [],
+    };
+    await updateArchitectureReviewAnalysis(
+      review.id,
+      "owner-1",
+      1,
+      { suppressions: [] },
+      passingReport,
+      { ruleId: "compose-public-service-to-persistence" }
+    );
+    const approved = await updateArchitectureReviewDecision(
+      review.id,
+      "owner-1",
+      2,
+      "approved",
+      "Matches ADR-014."
+    );
+    expect(approved).toMatchObject({ status: "updated" });
+
+    const recomputed = await recomputeArchitectureReviewAnalysis(
+      review.id,
+      "owner-1",
+      3,
+      // Same verdict, only the review timestamp moves.
+      { ...passingReport, reviewedAt: new Date().toISOString() }
+    );
+
+    expect(recomputed).toMatchObject({
+      status: "unchanged",
+      review: {
+        revision: 3,
+        decision: "approved",
+        decisionNote: "Matches ADR-014.",
+        analyzerVersion: CURRENT_ANALYZER_VERSION,
+      },
+    });
+    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    expect(events.at(-1)).toMatchObject({
+      eventType: "review.recomputed",
+      reviewRevision: 3,
+      data: { changed: false },
+    });
+  });
+
+  it("returns a changed verdict to pending on a new revision", async () => {
+    const review = await create();
+    const recomputed = await recomputeArchitectureReviewAnalysis(
+      review.id,
+      "owner-1",
+      1,
+      { ...review.report, status: "pass" as const, blockingFindings: [] }
+    );
+
+    expect(recomputed).toMatchObject({
+      status: "updated",
+      review: {
+        revision: 2,
+        decision: "pending",
+        analyzerVersion: CURRENT_ANALYZER_VERSION,
+      },
+    });
+    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    expect(events.at(-1)).toMatchObject({
+      eventType: "review.recomputed",
+      reviewRevision: 2,
+      data: { changed: true, previousBlockingFindings: 1, blockingFindings: 0 },
+    });
+  });
+
+  it("refuses a stale or foreign recompute", async () => {
+    const review = await create();
+
+    await expect(
+      recomputeArchitectureReviewAnalysis(review.id, "owner-1", 99, review.report)
+    ).resolves.toEqual({ status: "conflict" });
+    await expect(
+      recomputeArchitectureReviewAnalysis(review.id, "other-user", 1, review.report)
+    ).resolves.toEqual({ status: "not_found" });
+    // A refused recompute must not have touched the row.
+    await expect(getArchitectureReview(review.id, "owner-1")).resolves.toMatchObject({
+      revision: 1,
+      decision: "pending",
     });
   });
 

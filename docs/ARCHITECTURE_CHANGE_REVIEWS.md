@@ -89,7 +89,19 @@ The fingerprint is derived from rule identities and default severities, so addin
 
 Review responses carry `analyzerVersion`, `currentAnalyzerVersion`, and `analyzerOutdated`. Staleness is derived per request, never stored, because "current" is a property of the running deployment. Rows written before this column report `null` and are treated as outdated rather than assumed current.
 
-An outdated review shows a banner instead of silently presenting a verdict the current rules would not produce. Recomputation is not automatic: a pull-request review refreshes when the workflow runs again, and accepting an exception re-analyzes and re-stamps the review because that path already recomputes the report.
+An outdated review shows a banner instead of silently presenting a verdict the current rules would not produce, and offers re-analysis in place.
+
+`POST /api/reviews/:id/recompute` takes the expected revision and re-runs the analysis against the stored canonical graphs and policy. Submitted source is never retained and is not needed. The stored import diagnostics are carried through so re-analysis does not lose evidence it cannot re-derive.
+
+Recomputation is deliberately conservative about decisions:
+
+- An unchanged verdict re-stamps the analyzer only. The revision does not advance and an existing approval survives, because a rule change that does not affect this review must not silently revoke it.
+- A changed verdict advances the revision and returns the decision to pending, like any other analysis update.
+- Either way an audit event records the previous and current analyzer, status, and blocking-finding count.
+
+The report carries the review time and both validation timestamps from the wall clock. Those are normalized before comparison; otherwise every recomputation looks like a changed verdict and revokes decisions.
+
+Recomputation is never automatic. A pull-request review also refreshes when the workflow runs again, and accepting an exception re-analyzes and re-stamps because that path already recomputes the report. There is no bulk re-analysis across reviews.
 
 ## Repository ingestion foundation
 

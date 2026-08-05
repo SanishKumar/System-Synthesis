@@ -15,6 +15,7 @@ import {
   getArchitectureReview,
   listArchitectureReviewEvents,
   listArchitectureReviews,
+  recomputeArchitectureReviewAnalysis,
   updateArchitectureReviewAnalysis,
   updateArchitectureReviewDecision,
   type ReviewMutationResult,
@@ -74,6 +75,9 @@ const addSuppressionSchema = suppressionSchema
     expectedRevision: z.number().int().positive(),
   })
   .strict();
+const recomputeSchema = z.object({
+  expectedRevision: z.number().int().positive(),
+}).strict();
 const decisionSchema = z.object({
   expectedRevision: z.number().int().positive(),
   decision: z.enum(["approved", "rejected"]),
@@ -266,6 +270,50 @@ router.post("/:id/suppressions", async (req, res) => {
       }
     );
     return mutationResponse(res, result);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
+  const id = reviewIdSchema.safeParse(req.params.id);
+  if (!id.success) return res.status(400).json({ error: "Invalid review identifier" });
+  const parsed = recomputeSchema.safeParse(req.body);
+  if (!parsed.success) return badRequest(res, parsed.error);
+  try {
+    const current = await getArchitectureReview(id.data, req.user!.userId);
+    if (!current) return res.status(404).json({ error: "Architecture review not found" });
+    // Stored canonical graphs and policy only: the submitted source is never
+    // retained, and re-analysis must not depend on it.
+    const report = reviewArchitectureChange(
+      current.baseGraph,
+      current.headGraph,
+      current.policy,
+      new Date(),
+      {
+        base: current.report.baseDiagnostics,
+        head: current.report.headDiagnostics,
+      }
+    );
+    const result = await recomputeArchitectureReviewAnalysis(
+      current.id,
+      req.user!.userId,
+      parsed.data.expectedRevision,
+      report
+    );
+    if (result.status === "not_found") {
+      return res.status(404).json({ error: "Architecture review not found" });
+    }
+    if (result.status === "conflict") {
+      return res.status(409).json({
+        error: "This review changed in another session. Refresh before retrying.",
+      });
+    }
+    return res.json({
+      ...result.review,
+      ...analyzerStatus(result.review),
+      changed: result.status === "updated",
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

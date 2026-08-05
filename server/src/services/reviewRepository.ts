@@ -98,6 +98,7 @@ export interface ArchitectureReviewEvent {
   eventType:
     | "review.created"
     | "review.refreshed"
+    | "review.recomputed"
     | "suppression.added"
     | "decision.changed";
   reviewRevision: number;
@@ -107,6 +108,11 @@ export interface ArchitectureReviewEvent {
 
 export type ReviewMutationResult =
   | { status: "updated"; review: ArchitectureReviewRecord }
+  | { status: "conflict" }
+  | { status: "not_found" };
+
+export type ReviewRecomputeResult =
+  | { status: "updated" | "unchanged"; review: ArchitectureReviewRecord }
   | { status: "conflict" }
   | { status: "not_found" };
 
@@ -751,6 +757,155 @@ export async function updateArchitectureReviewAnalysis(
     createdAt: now,
   });
   return { status: "updated", review: structuredClone(review) };
+}
+
+/**
+ * Analysis stamps the review time and both validation timestamps with the
+ * wall clock. Those move on every run by design, so comparing them would make
+ * every recomputation look like a changed verdict and needlessly revoke
+ * decisions. Everything else in the report is deterministic.
+ */
+function comparableReport(report: ArchitectureChangeReview): string {
+  const { reviewedAt: _reviewedAt, baseValidation, headValidation, ...rest } = report;
+  return stableStringify({
+    ...rest,
+    baseValidation: { ...baseValidation, timestamp: "" },
+    headValidation: { ...headValidation, timestamp: "" },
+  });
+}
+
+/**
+ * Re-analyze a stored review against the running analyzer, reusing its
+ * canonical graphs and policy. Raw source is never retained, but nothing here
+ * needs it.
+ *
+ * A recomputation that produces the same verdict re-stamps the analyzer without
+ * bumping the revision or discarding a decision: a rule change that does not
+ * affect this review must not silently revoke its approval. A changed verdict
+ * behaves like any other analysis update and returns the decision to pending.
+ */
+export async function recomputeArchitectureReviewAnalysis(
+  id: string,
+  ownerId: string,
+  expectedRevision: number,
+  report: ArchitectureChangeReview
+): Promise<ReviewRecomputeResult> {
+  const pool = getPool();
+  if (pool) {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const existing = await client.query(
+        `SELECT * FROM architecture_reviews
+         WHERE id = $1 AND owner_id = $2
+         FOR UPDATE`,
+        [id, ownerId]
+      );
+      if (!existing.rows[0]) {
+        await client.query("ROLLBACK");
+        return { status: "not_found" };
+      }
+      const current = rowToReview(existing.rows[0]);
+      if (current.revision !== expectedRevision) {
+        await client.query("ROLLBACK");
+        return { status: "conflict" };
+      }
+      const changed = comparableReport(current.report) !== comparableReport(report);
+      const updated = changed
+        ? await client.query(
+            `UPDATE architecture_reviews
+             SET report = $3,
+                 analyzer_version = $4,
+                 decision = 'pending',
+                 decision_note = NULL,
+                 decided_at = NULL,
+                 revision = revision + 1,
+                 updated_at = NOW()
+             WHERE id = $1 AND owner_id = $2
+             RETURNING *`,
+            [id, ownerId, JSON.stringify(report), CURRENT_ANALYZER_VERSION]
+          )
+        : await client.query(
+            `UPDATE architecture_reviews
+             SET analyzer_version = $3, updated_at = NOW()
+             WHERE id = $1 AND owner_id = $2
+             RETURNING *`,
+            [id, ownerId, CURRENT_ANALYZER_VERSION]
+          );
+      const review = rowToReview(updated.rows[0]);
+      await client.query(
+        `INSERT INTO architecture_review_events (
+           id, review_id, actor_id, event_type, review_revision, data
+         ) VALUES ($1, $2, $3, 'review.recomputed', $4, $5)`,
+        [
+          randomUUID(),
+          id,
+          ownerId,
+          review.revision,
+          JSON.stringify(recomputeEventData(current, review, changed)),
+        ]
+      );
+      await client.query("COMMIT");
+      return { status: changed ? "updated" : "unchanged", review };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  const current = memoryReviews.get(id);
+  if (!current || current.ownerId !== ownerId) return { status: "not_found" };
+  if (current.revision !== expectedRevision) return { status: "conflict" };
+  const changed = comparableReport(current.report) !== comparableReport(report);
+  const now = new Date().toISOString();
+  const review: ArchitectureReviewRecord = changed
+    ? {
+        ...current,
+        report: structuredClone(report),
+        analyzerVersion: CURRENT_ANALYZER_VERSION,
+        decision: "pending",
+        decisionNote: null,
+        decidedAt: null,
+        revision: current.revision + 1,
+        updatedAt: now,
+      }
+    : {
+        ...current,
+        analyzerVersion: CURRENT_ANALYZER_VERSION,
+        updatedAt: now,
+      };
+  memoryReviews.set(id, review);
+  memoryEvents.get(id)!.push({
+    id: randomUUID(),
+    reviewId: id,
+    actorId: ownerId,
+    eventType: "review.recomputed",
+    reviewRevision: review.revision,
+    data: recomputeEventData(current, review, changed),
+    createdAt: now,
+  });
+  return {
+    status: changed ? "updated" : "unchanged",
+    review: structuredClone(review),
+  };
+}
+
+function recomputeEventData(
+  before: ArchitectureReviewRecord,
+  after: ArchitectureReviewRecord,
+  changed: boolean
+): Record<string, unknown> {
+  return {
+    changed,
+    previousAnalyzerVersion: before.analyzerVersion,
+    analyzerVersion: after.analyzerVersion,
+    previousAnalysisStatus: before.report.status,
+    analysisStatus: after.report.status,
+    previousBlockingFindings: before.report.blockingFindings.length,
+    blockingFindings: after.report.blockingFindings.length,
+  };
 }
 
 export async function updateArchitectureReviewDecision(

@@ -159,7 +159,12 @@ export interface ReviewEvent {
   id: string;
   reviewId: string;
   actorId: string;
-  eventType: "review.created" | "review.refreshed" | "suppression.added" | "decision.changed";
+  eventType:
+    | "review.created"
+    | "review.refreshed"
+    | "review.recomputed"
+    | "suppression.added"
+    | "decision.changed";
   reviewRevision: number;
   data: Record<string, unknown>;
   createdAt: string;

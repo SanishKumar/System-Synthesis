@@ -17,6 +17,7 @@ import {
   Github,
   Loader2,
   PlayCircle,
+  RefreshCw,
   ShieldCheck,
   ShieldX,
   X,
@@ -56,6 +57,11 @@ function eventLabel(event: ReviewEvent): string {
     return typeof head === "string"
       ? `Refreshed from new commit ${shortRevision(head)}`
       : "Refreshed from pull request";
+  }
+  if (event.eventType === "review.recomputed") {
+    return event.data.changed
+      ? "Re-analyzed — verdict changed"
+      : "Re-analyzed — verdict unchanged";
   }
   if (event.eventType === "suppression.added") return "Exception accepted";
   return `Decision changed to ${String(event.data.decision || "pending")}`;
@@ -161,6 +167,40 @@ export default function ReviewDetailPage() {
       if (eventResponse.ok) setEvents((await eventResponse.json()).events || []);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not accept this exception.");
+    } finally {
+      setMutating(false);
+    }
+  };
+
+  const recompute = async () => {
+    if (!review || mutating) return;
+    setMutating(true);
+    try {
+      const response = await authenticatedFetch(
+        `${API_URL}/api/reviews/${review.id}/recompute`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedRevision: review.revision }),
+        }
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) {
+        if (response.status === 409) void loadReview();
+        throw new Error(body?.error || "Could not re-analyze this review.");
+      }
+      setReview(body);
+      toast.success(
+        body.changed
+          ? "Re-analyzed — the verdict changed, so the decision is pending again"
+          : "Re-analyzed — the current rules produce the same verdict"
+      );
+      const eventResponse = await authenticatedFetch(
+        `${API_URL}/api/reviews/${review.id}/events`
+      );
+      if (eventResponse.ok) setEvents((await eventResponse.json()).events || []);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not re-analyze this review.");
     } finally {
       setMutating(false);
     }
@@ -298,14 +338,19 @@ export default function ReviewDetailPage() {
                   Produced by an earlier analyzer
                 </h2>
                 <p className="mt-1 text-xs leading-5 text-text-secondary">
-                  The rules changed after this verdict was stored, so the findings below may not match what the current analyzer would report.{" "}
-                  {review.externalSource
-                    ? "Re-run the pull request workflow to refresh it."
-                    : "Import the change again to re-analyze it."}
+                  The rules changed after this verdict was stored, so the findings below may not match what the current analyzer would report. Re-analyze the stored graphs to bring it up to date; an unchanged verdict keeps the existing decision.
                 </p>
                 <p className="mt-2 font-mono text-[10px] text-text-muted">
                   stored {review.analyzerVersion || "unknown"} · current {review.currentAnalyzerVersion}
                 </p>
+                <button
+                  onClick={() => void recompute()}
+                  disabled={mutating}
+                  className="btn-secondary mt-3 h-9 gap-2 text-xs"
+                >
+                  {mutating ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                  Re-analyze with current rules
+                </button>
               </div>
             </section>
           )}
