@@ -294,3 +294,115 @@ services:
     }
   });
 });
+
+describe("Docker Compose environment references", () => {
+  function importCompose(content: string) {
+    return dockerComposeAdapter.import([{ path: "compose.yaml", content }]);
+  }
+
+  function edgeSummary(graph: { nodes: any[]; edges: any[] }) {
+    const label = new Map(graph.nodes.map((node) => [node.id, node.data.label]));
+    return graph.edges
+      .map((edge) => `${label.get(edge.source)} -${edge.data?.label}-> ${label.get(edge.target)}`)
+      .sort();
+  }
+
+  it("infers a dependency from a service host in a connection string", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    environment:
+      DATABASE_URL: postgres://user:secret@database:5432/app
+  database:
+    image: postgres:16
+`);
+
+    expect(edgeSummary(graph)).toEqual(["api -environment-> database"]);
+    const edge = graph.edges[0];
+    expect(edge.data?.provenance?.[0]).toMatchObject({
+      confidence: "inferred",
+      sourceAddress: "services.api.environment.DATABASE_URL",
+    });
+  });
+
+  it("matches a bare service name and a host:port value", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    environment:
+      - REDIS_HOST=cache
+      - SEARCH_ADDR=search:9200
+  cache:
+    image: redis:7
+  search:
+    image: elasticsearch:8
+`);
+
+    expect(edgeSummary(graph)).toEqual([
+      "api -environment-> cache",
+      "api -environment-> search",
+    ]);
+  });
+
+  it("never invents a dependency from a partial or unknown name", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    environment:
+      NEAR_MISS: databases
+      PREFIXED: my-database
+      EXTERNAL: postgres://db.example.com:5432/app
+      SELF: api
+      PLAIN: info
+  database:
+    image: postgres:16
+`);
+
+    expect(graph.edges).toEqual([]);
+  });
+
+  it("does not duplicate or downgrade an explicit depends_on", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    depends_on:
+      - database
+    environment:
+      DATABASE_URL: postgres://database:5432/app
+  database:
+    image: postgres:16
+`);
+
+    expect(edgeSummary(graph)).toEqual(["api -depends_on-> database"]);
+    expect(graph.edges[0].data?.provenance?.[0]?.confidence).toBe("explicit");
+  });
+
+  it("keeps environment values out of the graph", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    environment:
+      DATABASE_URL: postgres://user:hunter2@database:5432/app
+  database:
+    image: postgres:16
+`);
+
+    expect(JSON.stringify(graph)).not.toContain("hunter2");
+    const api = graph.nodes.find((node) => node.data.label === "api");
+    expect(api?.data.sourceProperties?.environmentKeys).toEqual(["DATABASE_URL"]);
+  });
+
+  it("records one edge per referenced service, not per variable", () => {
+    const { graph } = importCompose(`services:
+  api:
+    image: example/api:1
+    environment:
+      PRIMARY_URL: postgres://database:5432/app
+      REPLICA_URL: postgres://database:5433/app
+  database:
+    image: postgres:16
+`);
+
+    expect(graph.edges).toHaveLength(1);
+  });
+});

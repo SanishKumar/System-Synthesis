@@ -60,14 +60,15 @@ function provenance(
   file: string,
   sourceAddress: string,
   revision: string | undefined,
-  line?: number
+  line?: number,
+  confidence: SourceProvenance["confidence"] = "explicit"
 ): SourceProvenance {
   return {
     adapter: ADAPTER_ID,
     revision,
     file,
     sourceAddress,
-    confidence: "explicit",
+    confidence,
     ...(line ? { startLine: line, endLine: line } : {}),
   };
 }
@@ -115,6 +116,74 @@ function environmentKeys(value: unknown): string[] {
       .sort();
   }
   return isRecord(value) ? Object.keys(value).sort() : [];
+}
+
+/**
+ * Environment entries as key/value pairs. Values are read to resolve service
+ * references and are never carried into the graph: a Compose environment block
+ * routinely holds credentials, and the review model deliberately stores only
+ * key names.
+ */
+function environmentEntries(value: unknown): Array<[string, string]> {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      if (typeof entry !== "string") return [];
+      const separator = entry.indexOf("=");
+      if (separator <= 0) return [];
+      return [[entry.slice(0, separator), entry.slice(separator + 1)] as [string, string]];
+    });
+  }
+  if (!isRecord(value)) return [];
+  return Object.entries(value).flatMap(([key, item]) =>
+    typeof item === "string" || typeof item === "number"
+      ? [[key, String(item)] as [string, string]]
+      : []
+  );
+}
+
+/**
+ * Host candidates in an environment value, in the two forms a Compose service
+ * reference actually takes: a bare service name, or the host component of a
+ * URL/authority. Anything else is left alone — a substring match would invent
+ * dependencies that do not exist.
+ */
+function hostCandidates(value: string): string[] {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > 500) return [];
+  const candidates = [trimmed];
+  const authority = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?([^/?#:]+)/i.exec(trimmed);
+  if (authority) candidates.push(authority[1]);
+  const hostPort = /^([A-Za-z0-9_.-]+):\d{1,5}$/.exec(trimmed);
+  if (hostPort) candidates.push(hostPort[1]);
+  return candidates;
+}
+
+/**
+ * Service references expressed through environment values, such as
+ * `DATABASE_URL=postgres://database:5432/app`. Compose does not treat these as
+ * dependencies, but they are how most real projects wire services together, so
+ * they are modelled as inferred edges rather than ignored.
+ */
+function environmentReferences(
+  service: ComposeService,
+  serviceName: string,
+  knownServices: Set<string>
+): Array<{ key: string; target: string }> {
+  const seen = new Set<string>();
+  const references: Array<{ key: string; target: string }> = [];
+  for (const [key, value] of environmentEntries(service.environment)) {
+    for (const candidate of hostCandidates(value)) {
+      if (candidate === serviceName || !knownServices.has(candidate)) continue;
+      if (seen.has(candidate)) continue;
+      seen.add(candidate);
+      references.push({ key, target: candidate });
+      break;
+    }
+  }
+  return references.sort(
+    (left, right) =>
+      left.target.localeCompare(right.target) || left.key.localeCompare(right.key)
+  );
 }
 
 function portStrings(value: unknown): string[] {
@@ -233,6 +302,41 @@ function makeDependencyEdge(
           `${sourceAddress}.depends_on.${targetName}`,
           revision,
           line
+        ),
+      ],
+    },
+  };
+}
+
+/** Unambiguous key for a directed service pair, free of delimiter collisions. */
+function pairKey(from: string, to: string): string {
+  return JSON.stringify([from, to]);
+}
+
+function makeEnvironmentEdge(
+  sourceName: string,
+  targetName: string,
+  environmentKey: string,
+  file: string,
+  revision: string | undefined,
+  line: number | undefined
+): SerializedEdge {
+  const sourceAddress = `services.${sourceName}`;
+  const targetAddress = `services.${targetName}`;
+  return {
+    id: stableEdgeId(ADAPTER_ID, sourceAddress, targetAddress, "environment"),
+    source: stableEntityId("node", ADAPTER_ID, sourceAddress),
+    target: stableEntityId("node", ADAPTER_ID, targetAddress),
+    data: {
+      label: "environment",
+      direction: "unidirectional",
+      provenance: [
+        provenance(
+          file,
+          `${sourceAddress}.environment.${environmentKey}`,
+          revision,
+          line,
+          "inferred"
         ),
       ],
     },
@@ -389,6 +493,32 @@ export const dockerComposeAdapter: ArchitectureSourceAdapter = {
         }
         return [makeDependencyEdge(name, dependency, file.path, context.revision, line)];
       })
+    );
+    // An explicit `depends_on` already states the relationship; an inferred
+    // environment reference must not duplicate or outrank it.
+    const declaredPairs = new Set(
+      serviceNames.flatMap((name) =>
+        dependencyNames(compose.services[name])
+          .filter((dependency) => knownServices.has(dependency))
+          .map((dependency) => pairKey(name, dependency))
+      )
+    );
+    edges.push(
+      ...serviceNames.flatMap((name) =>
+        environmentReferences(compose.services[name], name, knownServices)
+          .filter(({ target }) => !declaredPairs.has(pairKey(name, target)))
+          .map(({ key, target }) =>
+            makeEnvironmentEdge(
+              name,
+              target,
+              key,
+              file.path,
+              context.revision,
+              sourceLine(document, lineCounter, ["services", name, "environment", key])
+                || sourceLine(document, lineCounter, ["services", name, "environment"])
+            )
+          )
+      )
     );
 
     return {

@@ -155,12 +155,15 @@ Docker Compose import currently models:
 - services, images, and build context
 - published/exposed ports
 - explicit short/long `depends_on`
+- dependencies inferred from environment values that name another service, such as `DATABASE_URL: postgres://database:5432/app`
 - networks, volumes, secret names, and environment variable names
 - healthcheck presence
 - deploy replica count
 - common database/cache/broker/search/proxy/monitor/storage/auth classifications
 
-It deliberately does not claim full Compose evaluation. Interpolation, includes, extends, profiles, override merging, and dependencies implied only by environment values are not resolved.
+Inferred edges require an exact service-name match on a whole value, URL host, or `host:port` host, and are marked `inferred` so a reviewer can tell them from declared ones. Environment values are read to resolve references and never stored — the graph keeps only key names.
+
+It deliberately does not claim full Compose evaluation. Interpolation, includes, extends, profiles, and override merging are not resolved.
 
 See [architecture change review details](./docs/ARCHITECTURE_CHANGE_REVIEWS.md) and [known limitations](./docs/KNOWN_LIMITATIONS.md).
 
@@ -186,8 +189,10 @@ These statements are limited to checked behavior in this repository.
 | Granular Yjs graph operations converge in the tested model | Seeded randomized convergence harness |
 | A verdict produced by an earlier rule set is reported as outdated, never as current | Pinned rule-set and analyzer-provenance tests |
 | Re-analysis that reproduces the same verdict does not revoke an existing decision | Recompute repository tests |
+| An inferred environment dependency requires an exact service-name match and never overrides a declared one | Compose environment-reference tests |
+| Environment values are never carried into the stored graph | Compose environment-reference tests |
 
-Current automated count: 30 architecture-core tests, 7 CLI tests, 10 Action tests, and 88 backend tests (135 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 36 architecture-core tests, 7 CLI tests, 10 Action tests, and 88 backend tests (141 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

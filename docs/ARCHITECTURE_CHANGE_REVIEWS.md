@@ -31,7 +31,15 @@ The adapter currently models:
 
 It derives common service categories from well-known service/image names, including databases, caches, brokers, search engines, proxies, monitoring, storage, vault, and auth.
 
-It does not resolve Compose interpolation, `extends`, `include`, profiles, generated overrides, runtime service discovery, or dependencies implied only by environment values. Only explicit `depends_on` relationships become edges. See [known limitations](./KNOWN_LIMITATIONS.md).
+It does not resolve Compose interpolation, `extends`, `include`, profiles, generated overrides, or runtime service discovery. See [known limitations](./KNOWN_LIMITATIONS.md).
+
+### Inferred environment dependencies
+
+Most projects wire services together through environment values rather than `depends_on`, so a value naming another service becomes an edge labelled `environment` with `inferred` confidence, separate from the `explicit` confidence carried by `depends_on`.
+
+The match is deliberately narrow. A value contributes an edge only when the whole value, the host of a URL, or the host of a `host:port` pair is **exactly** a service name in the same file. `databases`, `my-database`, and `db.example.com` do not match a service called `database`, and a service does not depend on itself. One edge is recorded per referenced service however many variables name it, and an explicit `depends_on` always wins — an inferred edge never duplicates or downgrades it.
+
+Environment values are read to resolve these references and are never stored. A Compose environment block routinely holds credentials, so the graph keeps only key names, and provenance points at the key that produced the edge, such as `services.api.environment.DATABASE_URL`.
 
 ## Policy
 
