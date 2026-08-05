@@ -32,7 +32,7 @@ export function stableStringify(value: unknown): string {
   return JSON.stringify(stableValue(value));
 }
 
-function fnv1a64(value: string): string {
+export function fnv1a64(value: string): string {
   let hash = 0xcbf29ce484222325n;
   const prime = 0x100000001b3n;
   for (let index = 0; index < value.length; index += 1) {

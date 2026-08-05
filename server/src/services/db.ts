@@ -136,6 +136,9 @@ const MIGRATION_SQL = `
   ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS external_change_version BIGINT;
   ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS workflow_run_id TEXT;
   ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS workflow_run_url TEXT;
+  -- Rows created before analyzer provenance keep NULL and are reported as
+  -- produced by an unknown analyzer rather than silently assumed current.
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS analyzer_version TEXT;
 
   CREATE TABLE IF NOT EXISTS architecture_review_integrations (
     id              TEXT PRIMARY KEY,

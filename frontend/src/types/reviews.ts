@@ -31,6 +31,8 @@ export interface ReviewSummary {
   blockingFindings: number;
   semanticChanges: number;
   externalSource: ExternalReviewSource | null;
+  analyzerVersion: string | null;
+  analyzerOutdated: boolean;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -140,6 +142,11 @@ export interface ReviewRecord {
   };
   report: ReviewReport;
   externalSource: ExternalReviewSource | null;
+  /** Analyzer identity stored with the verdict; null for pre-provenance rows. */
+  analyzerVersion: string | null;
+  /** Analyzer identity of the deployment serving this response. */
+  currentAnalyzerVersion: string;
+  analyzerOutdated: boolean;
   decision: ReviewDecision;
   decisionNote: string | null;
   decidedAt: string | null;

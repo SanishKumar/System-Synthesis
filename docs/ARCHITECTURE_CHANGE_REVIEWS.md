@@ -81,6 +81,16 @@ Mutations require the current review revision:
 
 A stale mutation receives HTTP 409. Approval receives HTTP 422 while blocking findings remain. Rejection requires a note.
 
+## Analyzer provenance
+
+A stored review freezes a verdict, so every persisted review records the analyzer that produced it as `v<version>+<rule-set-fingerprint>`.
+
+The fingerprint is derived from rule identities and default severities, so adding, removing, renaming, or re-grading a rule changes it automatically. Rule titles, rationale, and references are excluded: rewording a message must not invalidate stored reviews. `ANALYZER_VERSION` is the manual part and covers what a fingerprint cannot see — an existing rule whose findings change while its id and severity stay the same. A pinned rule-set test fails whenever the rule set changes, so the identity is always a deliberate decision.
+
+Review responses carry `analyzerVersion`, `currentAnalyzerVersion`, and `analyzerOutdated`. Staleness is derived per request, never stored, because "current" is a property of the running deployment. Rows written before this column report `null` and are treated as outdated rather than assumed current.
+
+An outdated review shows a banner instead of silently presenting a verdict the current rules would not produce. Recomputation is not automatic: a pull-request review refreshes when the workflow runs again, and accepting an exception re-analyzes and re-stamps the review because that path already recomputes the report.
+
 ## Repository ingestion foundation
 
 The server and browser expose the secure persistence boundary used by Action synchronization:

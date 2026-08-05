@@ -6,9 +6,37 @@ import type {
 } from "@system-synthesis/architecture-core";
 import {
   canonicalGraphFingerprint,
+  currentAnalyzerVersion,
   stableStringify,
 } from "@system-synthesis/architecture-core";
 import { getPool } from "./db.js";
+
+/**
+ * Captured once per process. A stored review records the analyzer that produced
+ * its verdict so a frozen report can be told apart from one today's rules would
+ * still produce.
+ */
+export const CURRENT_ANALYZER_VERSION = currentAnalyzerVersion();
+
+export interface AnalyzerStatus {
+  analyzerVersion: string | null;
+  currentAnalyzerVersion: string;
+  analyzerOutdated: boolean;
+}
+
+/**
+ * Derived at read time, never stored: "current" is a property of the running
+ * deployment, not of the row.
+ */
+export function analyzerStatus(review: {
+  analyzerVersion: string | null;
+}): AnalyzerStatus {
+  return {
+    analyzerVersion: review.analyzerVersion,
+    currentAnalyzerVersion: CURRENT_ANALYZER_VERSION,
+    analyzerOutdated: review.analyzerVersion !== CURRENT_ANALYZER_VERSION,
+  };
+}
 
 export type ReviewDecision = "pending" | "approved" | "rejected";
 
@@ -35,6 +63,7 @@ export interface ArchitectureReviewRecord {
   policy: ArchitecturePolicy;
   report: ArchitectureChangeReview;
   externalSource: ExternalReviewSource | null;
+  analyzerVersion: string | null;
   decision: ReviewDecision;
   decisionNote: string | null;
   decidedAt: string | null;
@@ -55,6 +84,8 @@ export interface ArchitectureReviewSummary {
   blockingFindings: number;
   semanticChanges: number;
   externalSource: ExternalReviewSource | null;
+  analyzerVersion: string | null;
+  analyzerOutdated: boolean;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -130,6 +161,7 @@ function rowToReview(row: any): ArchitectureReviewRecord {
     policy: row.policy || {},
     report: row.report,
     externalSource,
+    analyzerVersion: row.analyzer_version || null,
     decision: row.decision,
     decisionNote: row.decision_note,
     decidedAt: row.decided_at ? timestamp(row.decided_at) : null,
@@ -152,6 +184,8 @@ function toSummary(review: ArchitectureReviewRecord): ArchitectureReviewSummary 
     blockingFindings: review.report.blockingFindings.length,
     semanticChanges: review.report.diff.stats.total,
     externalSource: review.externalSource,
+    analyzerVersion: review.analyzerVersion,
+    analyzerOutdated: analyzerStatus(review).analyzerOutdated,
     revision: review.revision,
     createdAt: review.createdAt,
     updatedAt: review.updatedAt,
@@ -278,6 +312,7 @@ export async function ingestArchitectureReview(
                external_change_version = $12,
                workflow_run_id = $13,
                workflow_run_url = $14,
+               analyzer_version = $15,
                revision = revision + 1,
                updated_at = NOW()
            WHERE id = $1
@@ -297,6 +332,7 @@ export async function ingestArchitectureReview(
             input.externalSource.changeVersion,
             input.externalSource.workflowRunId,
             input.externalSource.workflowRunUrl,
+            CURRENT_ANALYZER_VERSION,
           ]
         );
         const review = rowToReview(updated.rows[0]);
@@ -329,10 +365,10 @@ export async function ingestArchitectureReview(
            head_revision, base_graph, head_graph, policy, report,
            integration_provider, external_repository, external_change_number,
            external_change_url, external_change_version, workflow_run_id,
-           workflow_run_url
+           workflow_run_url, analyzer_version
          ) VALUES (
            $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-           $12, $13, $14, $15, $16, $17, $18
+           $12, $13, $14, $15, $16, $17, $18, $19
          )
          RETURNING *`,
         [
@@ -354,6 +390,7 @@ export async function ingestArchitectureReview(
           input.externalSource.changeVersion,
           input.externalSource.workflowRunId,
           input.externalSource.workflowRunUrl,
+          CURRENT_ANALYZER_VERSION,
         ]
       );
       const review = rowToReview(inserted.rows[0]);
@@ -416,6 +453,7 @@ export async function ingestArchitectureReview(
     const updated: ArchitectureReviewRecord = {
       ...current,
       ...input,
+      analyzerVersion: CURRENT_ANALYZER_VERSION,
       decision: "pending",
       decisionNote: null,
       decidedAt: null,
@@ -445,6 +483,7 @@ export async function ingestArchitectureReview(
   const review: ArchitectureReviewRecord = {
     ...input,
     id: randomUUID(),
+    analyzerVersion: CURRENT_ANALYZER_VERSION,
     decision: "pending",
     decisionNote: null,
     decidedAt: null,
@@ -477,6 +516,7 @@ export async function createArchitectureReview(
     ArchitectureReviewRecord,
     | "id"
     | "externalSource"
+    | "analyzerVersion"
     | "decision"
     | "decisionNote"
     | "decidedAt"
@@ -494,8 +534,9 @@ export async function createArchitectureReview(
       const inserted = await client.query(
         `INSERT INTO architecture_reviews (
            id, owner_id, title, repository, source_path, base_revision,
-           head_revision, base_graph, head_graph, policy, report
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           head_revision, base_graph, head_graph, policy, report,
+           analyzer_version
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          RETURNING *`,
         [
           id,
@@ -509,6 +550,7 @@ export async function createArchitectureReview(
           JSON.stringify(input.headGraph),
           JSON.stringify(input.policy),
           JSON.stringify(input.report),
+          CURRENT_ANALYZER_VERSION,
         ]
       );
       const review = rowToReview(inserted.rows[0]);
@@ -541,6 +583,7 @@ export async function createArchitectureReview(
     ...input,
     id,
     externalSource: null,
+    analyzerVersion: CURRENT_ANALYZER_VERSION,
     decision: "pending",
     decisionNote: null,
     decidedAt: null,
@@ -639,6 +682,8 @@ export async function updateArchitectureReviewAnalysis(
         `UPDATE architecture_reviews
          SET policy = $4,
              report = $5,
+             -- The caller recomputed this report with the running analyzer.
+             analyzer_version = $6,
              decision = 'pending',
              decision_note = NULL,
              decided_at = NULL,
@@ -646,7 +691,14 @@ export async function updateArchitectureReviewAnalysis(
              updated_at = NOW()
          WHERE id = $1 AND owner_id = $2 AND revision = $3
          RETURNING *`,
-        [id, ownerId, expectedRevision, JSON.stringify(policy), JSON.stringify(report)]
+        [
+          id,
+          ownerId,
+          expectedRevision,
+          JSON.stringify(policy),
+          JSON.stringify(report),
+          CURRENT_ANALYZER_VERSION,
+        ]
       );
       if (!updated.rows[0]) {
         await client.query("ROLLBACK");
@@ -681,6 +733,7 @@ export async function updateArchitectureReviewAnalysis(
     ...current,
     policy: structuredClone(policy),
     report: structuredClone(report),
+    analyzerVersion: CURRENT_ANALYZER_VERSION,
     decision: "pending",
     decisionNote: null,
     decidedAt: null,

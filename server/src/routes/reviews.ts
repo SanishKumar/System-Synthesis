@@ -10,6 +10,7 @@ import {
 } from "@system-synthesis/architecture-core";
 import { reviewCreateLimiter } from "../middleware/rateLimit.js";
 import {
+  analyzerStatus,
   createArchitectureReview,
   getArchitectureReview,
   listArchitectureReviewEvents,
@@ -106,7 +107,7 @@ function mutationResponse(
       error: "This review changed in another session. Refresh before retrying.",
     });
   }
-  return res.json(result.review);
+  return res.json({ ...result.review, ...analyzerStatus(result.review) });
 }
 
 router.get("/", async (req, res) => {
@@ -161,7 +162,7 @@ router.post("/", reviewCreateLimiter, async (req, res) => {
       policy,
       report,
     });
-    res.status(201).json(review);
+    res.status(201).json({ ...review, ...analyzerStatus(review) });
   } catch (error) {
     if (error instanceof SourceImportError) {
       return res.status(422).json({
@@ -181,7 +182,7 @@ router.get("/:id", async (req, res) => {
   try {
     const review = await getArchitectureReview(id.data, req.user!.userId);
     if (!review) return res.status(404).json({ error: "Architecture review not found" });
-    res.json(review);
+    res.json({ ...review, ...analyzerStatus(review) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

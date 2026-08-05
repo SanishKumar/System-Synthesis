@@ -7,8 +7,11 @@ import {
   reviewArchitectureChange,
 } from "@system-synthesis/architecture-core";
 import {
+  analyzerStatus,
   createArchitectureReview,
+  CURRENT_ANALYZER_VERSION,
   getArchitectureReview,
+  ingestArchitectureReview,
   listArchitectureReviewEvents,
   listArchitectureReviews,
   resetMemoryReviewsForTests,
@@ -172,5 +175,95 @@ describe("architecture review repository memory fallback", () => {
       ["suppression.added", 2],
       ["decision.changed", 3],
     ]);
+  });
+});
+
+describe("analyzer provenance", () => {
+  beforeEach(() => resetMemoryReviewsForTests());
+
+  function externalSource(changeVersion: number) {
+    return {
+      provider: "github" as const,
+      repository: "acme/shop",
+      changeNumber: 7,
+      changeUrl: "https://github.com/acme/shop/pull/7",
+      changeVersion,
+      workflowRunId: "1001",
+      workflowRunUrl: "https://github.com/acme/shop/actions/runs/1001",
+    };
+  }
+
+  async function ingest(headRevision: string, changeVersion: number) {
+    const { base, head, report } = analysis();
+    return ingestArchitectureReview({
+      ownerId: "owner-1",
+      title: "Checkout dependency review",
+      repository: "acme/shop",
+      sourcePath: "compose.yaml",
+      baseRevision: "base",
+      headRevision,
+      baseGraph: base.graph,
+      headGraph: { ...head.graph, source: { ...head.graph.source, revision: headRevision } },
+      policy: {},
+      report,
+      externalSource: externalSource(changeVersion),
+    });
+  }
+
+  it("stamps the running analyzer on a manually created review", async () => {
+    const review = await create();
+
+    expect(review.analyzerVersion).toBe(CURRENT_ANALYZER_VERSION);
+    expect(analyzerStatus(review)).toEqual({
+      analyzerVersion: CURRENT_ANALYZER_VERSION,
+      currentAnalyzerVersion: CURRENT_ANALYZER_VERSION,
+      analyzerOutdated: false,
+    });
+    await expect(listArchitectureReviews("owner-1")).resolves.toEqual([
+      expect.objectContaining({
+        analyzerVersion: CURRENT_ANALYZER_VERSION,
+        analyzerOutdated: false,
+      }),
+    ]);
+  });
+
+  it("stamps ingested reviews and re-stamps every pull-request refresh", async () => {
+    const created = await ingest("head", 1_000);
+    expect(created.status).toBe("created");
+    expect(created.review.analyzerVersion).toBe(CURRENT_ANALYZER_VERSION);
+
+    const refreshed = await ingest("head-2", 2_000);
+    expect(refreshed.status).toBe("updated");
+    expect(refreshed.review.id).toBe(created.review.id);
+    expect(refreshed.review.analyzerVersion).toBe(CURRENT_ANALYZER_VERSION);
+  });
+
+  it("treats an unknown or foreign analyzer as outdated", () => {
+    // Rows written before this column existed.
+    expect(analyzerStatus({ analyzerVersion: null })).toMatchObject({
+      analyzerVersion: null,
+      analyzerOutdated: true,
+    });
+    // A verdict produced by a different rule set must never read as current.
+    expect(analyzerStatus({ analyzerVersion: "v0+0000000000000000" })).toMatchObject({
+      analyzerOutdated: true,
+    });
+  });
+
+  it("returns to current after the report is recomputed", async () => {
+    const review = await create();
+    const updated = await updateArchitectureReviewAnalysis(
+      review.id,
+      "owner-1",
+      1,
+      { suppressions: [] },
+      { ...review.report, status: "pass" as const, blockingFindings: [] },
+      { ruleId: "compose-public-service-to-persistence" }
+    );
+
+    expect(updated).toMatchObject({
+      status: "updated",
+      review: { analyzerVersion: CURRENT_ANALYZER_VERSION },
+    });
   });
 });

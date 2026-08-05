@@ -290,6 +290,26 @@ export default function ReviewDetailPage() {
             </div>
           </section>
 
+          {review.analyzerOutdated && (
+            <section className="mb-7 flex flex-col gap-3 rounded-2xl border border-amber-500/25 bg-amber-500/10 px-5 py-4 sm:flex-row sm:items-start">
+              <AlertTriangle className="h-5 w-5 shrink-0 text-amber-600" />
+              <div className="min-w-0">
+                <h2 className="text-sm font-bold text-text-primary">
+                  Produced by an earlier analyzer
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-text-secondary">
+                  The rules changed after this verdict was stored, so the findings below may not match what the current analyzer would report.{" "}
+                  {review.externalSource
+                    ? "Re-run the pull request workflow to refresh it."
+                    : "Import the change again to re-analyze it."}
+                </p>
+                <p className="mt-2 font-mono text-[10px] text-text-muted">
+                  stored {review.analyzerVersion || "unknown"} · current {review.currentAnalyzerVersion}
+                </p>
+              </div>
+            </section>
+          )}
+
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
             <div className="min-w-0 space-y-6">
               <ReviewTopologyDiff
@@ -525,6 +545,15 @@ export default function ReviewDetailPage() {
                   Critical findings block by severity.<br />
                   Public → persistence blocks by rule.<br />
                   Existing debt is reported but not newly gated.
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-3 text-[11px]">
+                  <span className="text-text-muted">Analyzer</span>
+                  <span
+                    className={`truncate font-mono ${review.analyzerOutdated ? "text-amber-600" : "text-text-secondary"}`}
+                    title={review.analyzerVersion || "unknown"}
+                  >
+                    {review.analyzerVersion || "unknown"}
+                  </span>
                 </div>
               </section>
             </aside>

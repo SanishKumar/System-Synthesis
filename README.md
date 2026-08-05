@@ -110,6 +110,8 @@ Open `/reviews` to:
 
 Open `/integrations` with a permanent account to connect a GitHub repository, save the one-time ingestion token, copy the exact Action endpoint and workflow inputs, rotate a compromised token, or revoke access. Guest identities cannot own repository credentials.
 
+Every stored review records the analyzer that produced its verdict. If the rules change afterwards, the review says so instead of presenting a stale verdict as current.
+
 A review created by the Action shows where it came from: repository and pull-request number in the list and header, plus a source panel linking back to the pull request and workflow run with base commit, head commit, last synchronization, and delivery version. Its timeline separates the original import from each commit refresh.
 
 Review mutations use optimistic concurrency. A stale browser tab receives HTTP 409 instead of overwriting a newer decision. An approval attempt with blocking findings receives HTTP 422.
@@ -182,8 +184,9 @@ These statements are limited to checked behavior in this repository.
 | Review creation, suppression, and decision are auditable | Transactional repository tests and API event-sequence verification |
 | Protected boards can only be mutated by owner/editor | Adversarial socket tests and authenticated integration |
 | Granular Yjs graph operations converge in the tested model | Seeded randomized convergence harness |
+| A verdict produced by an earlier rule set is reported as outdated, never as current | Pinned rule-set and analyzer-provenance tests |
 
-Current automated count: 24 architecture-core tests, 7 CLI tests, 10 Action tests, and 80 backend tests (121 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 30 architecture-core tests, 7 CLI tests, 10 Action tests, and 84 backend tests (131 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
