@@ -65,6 +65,18 @@ Expired, malformed, or blank-justification suppressions do not apply.
 
 The GitHub Action reads policy from the base commit. A pull request therefore cannot change the policy that evaluates that same pull request. A merged policy change governs later reviews.
 
+## Resolving compose-path
+
+The Action reads the configured `compose-path` at both the base and head commit and treats the two absences differently.
+
+- **Present at both.** Normal comparison.
+- **Absent on one side.** A real architecture change: the pull request adds or deletes the file, and the missing side is an empty architecture.
+- **Absent on both sides.** A configuration error, not a review. The Action exits 2 and names any root-level Compose file it can see, so `compose.yaml` configured against a repository that uses `docker-compose.yml` reports the correction instead of silently comparing two empty documents, finding no components, and passing.
+
+That last case matters because `compose-path` defaults to `compose.yaml`. Without the check a misconfigured workflow reports a healthy architecture review forever while reviewing nothing at all, which is indistinguishable from real coverage.
+
+Only root-level Compose filenames are suggested. A file kept in a subdirectory still works when configured explicitly; it is simply not guessed.
+
 ## GitHub outputs
 
 The bundled Node 24 action writes:

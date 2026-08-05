@@ -47,12 +47,14 @@ const ADAPTER_ID = "docker-compose";
 export const COMPOSE_ADAPTER_VERSION = 2;
 const MAX_COMPOSE_BYTES = 1_000_000;
 const MAX_SERVICES = 500;
-const COMPOSE_FILE_NAMES = new Set([
+/** Filenames `docker compose` picks up without an explicit `-f`. */
+export const COMPOSE_FILE_NAMES: readonly string[] = [
   "compose.yml",
   "compose.yaml",
   "docker-compose.yml",
   "docker-compose.yaml",
-]);
+];
+const COMPOSE_FILE_NAME_SET = new Set(COMPOSE_FILE_NAMES);
 
 type ComposeService = Record<string, unknown>;
 type ComposeDocument = {
@@ -363,7 +365,7 @@ function makeEnvironmentEdge(
 
 function composeFile(files: RepositorySourceFile[]): RepositorySourceFile | undefined {
   const namedMatch = [...files]
-    .filter((file) => COMPOSE_FILE_NAMES.has(file.path.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || ""))
+    .filter((file) => COMPOSE_FILE_NAME_SET.has(file.path.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || ""))
     .sort((left, right) => left.path.localeCompare(right.path))[0];
   // An explicit single-file import may use any filename accepted by
   // `docker compose -f`; repository auto-detection remains conservative.
@@ -375,7 +377,7 @@ export const dockerComposeAdapter: ArchitectureSourceAdapter = {
 
   detect(files): DetectionResult {
     const matches = files
-      .filter((file) => COMPOSE_FILE_NAMES.has(file.path.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || ""))
+      .filter((file) => COMPOSE_FILE_NAME_SET.has(file.path.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() || ""))
       .map((file) => file.path)
       .sort();
     return {

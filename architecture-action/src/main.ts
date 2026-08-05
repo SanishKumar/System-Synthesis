@@ -5,6 +5,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
+import { COMPOSE_FILE_NAMES } from "@system-synthesis/architecture-core";
+import { resolveComposeSources } from "./composeSources.js";
 import { createActionReview } from "./review.js";
 import {
   createIngestionPayload,
@@ -13,7 +15,6 @@ import {
   uploadArchitectureReview,
 } from "./ingestion.js";
 
-const EMPTY_COMPOSE = "services: {}\n";
 const MAX_GIT_FILE_BYTES = 1_100_000;
 
 function safeRepositoryPath(value: string, label: string): string {
@@ -67,6 +68,25 @@ function revisionFile(
   });
 }
 
+/**
+ * Root-level Compose files present at a revision, used only to turn a
+ * misconfigured `compose-path` into an actionable message. Probing the known
+ * names directly keeps this to a few cheap lookups instead of listing the tree.
+ */
+function composeCandidates(revision: string, cwd: string): string[] {
+  return COMPOSE_FILE_NAMES.filter((name) => {
+    try {
+      execFileSync("git", ["cat-file", "-e", `${revision}:${name}`], {
+        cwd,
+        stdio: "ignore",
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
 function outputDirectory(value: string): string {
   const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
   const requested = isAbsolute(value) ? resolve(value) : resolve(workspace, value);
@@ -94,9 +114,18 @@ async function run(): Promise<void> {
   verifyRevision(baseRevision, sourceDirectory);
   verifyRevision(headRevision, sourceDirectory);
 
+  const sources = resolveComposeSources({
+    composePath,
+    baseRevision,
+    headRevision,
+    baseFile: revisionFile(baseRevision, composePath, sourceDirectory),
+    headFile: revisionFile(headRevision, composePath, sourceDirectory),
+    findCandidates: () => composeCandidates(headRevision, sourceDirectory),
+  });
+
   const reports = createActionReview({
-    baseContent: revisionFile(baseRevision, composePath, sourceDirectory) || EMPTY_COMPOSE,
-    headContent: revisionFile(headRevision, composePath, sourceDirectory) || EMPTY_COMPOSE,
+    baseContent: sources.baseContent,
+    headContent: sources.headContent,
     sourcePath: composePath,
     repository: process.env.GITHUB_REPOSITORY,
     baseRevision,

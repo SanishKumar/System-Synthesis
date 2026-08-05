@@ -17,6 +17,7 @@
 - Compose component classification is a documented heuristic based on image/name/ports. A team must review or extend those rules for organization-specific images.
 - Terraform import and general infrastructure round-trip conversion are not implemented. Docker Compose and Terraform export still support only the node subset listed by the IR service, and unsupported resources fail explicitly.
 - The browser can create, rotate, and revoke repository-scoped ingestion credentials and provide copyable GitHub Actions inputs, but installation remains a manual repository secret/variable/workflow setup rather than a GitHub App flow.
+- A `compose-path` that exists at neither commit fails the Action rather than reviewing two empty documents, but a path that exists and is simply the wrong file is still reviewed as configured. The suggestion list covers root-level Compose filenames only; a Compose file in a subdirectory must be configured explicitly.
 - Fork pull requests deliberately do not receive the ingestion token and therefore do not create browser-persisted reviews. They still receive deterministic local Action analysis and artifacts where workflow permissions allow it.
 - Repository tokens prove possession of a System Synthesis ingestion credential installed for the configured repository; GitHub ownership is not independently verified until a GitHub App or OIDC exchange is implemented.
 - Browser reviews are currently owned by one authenticated user. Shared team ownership and an organization-wide policy service are not implemented.
