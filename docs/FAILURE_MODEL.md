@@ -1,5 +1,25 @@
 # Failure model
 
+## Persistence startup
+
+`DATABASE_URL` being absent and being unusable are different situations and are
+not treated alike.
+
+- **Absent.** Memory storage is the deliberate development mode. `/health`
+  reports `ok` with `persistence: "disabled"`.
+- **Configured but unreachable, or migration fails.** The operator asked for a
+  database, so memory storage would accept writes and lose them on the next
+  restart while appearing to work. In production the boot logs the reason and
+  exits non-zero, letting the platform fail the deploy and keep the previous
+  release. Outside production the process continues, warns that data will not
+  survive a restart, and `/health` reports HTTP 503 with
+  `persistence: "failed"`.
+
+Migrations run inside an explicit transaction, so a failure cannot leave a
+partially applied schema that the next boot mistakes for a completed migration.
+Creating the users table is treated as part of persistence: a database that
+cannot authenticate anyone is a failure, not a warning.
+
 The system prefers an explicit rejection over acknowledging a mutation whose configured durability requirement was not met.
 
 | Failure | Expected behavior | Evidence or caveat |

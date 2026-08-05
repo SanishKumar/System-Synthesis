@@ -195,8 +195,9 @@ These statements are limited to checked behavior in this repository.
 | Environment values are never carried into the stored graph | Compose environment-reference tests |
 | A change in extraction output cannot land without a deliberate import-version decision | Pinned extraction-fingerprint test |
 | Import staleness is reported independently of analyzer staleness | Import-provenance repository tests |
+| A configured but unusable database stops a production boot instead of silently serving memory storage | Persistence startup tests and an unreachable-database boot |
 
-Current automated count: 40 architecture-core tests, 7 CLI tests, 10 Action tests, and 91 backend tests (148 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 40 architecture-core tests, 7 CLI tests, 10 Action tests, and 95 backend tests (152 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

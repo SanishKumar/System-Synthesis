@@ -11,7 +11,13 @@ import {
 } from "./socket/handlers.js";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { initRedis, redis } from "./services/redis.js";
-import { initDatabase, isDbAvailable } from "./services/db.js";
+import {
+  getPersistenceState,
+  initDatabase,
+  isDbAvailable,
+  markPersistenceFailed,
+  shouldHaltOnPersistenceFailure,
+} from "./services/db.js";
 import { optionalAuth, requireAuth } from "./middleware/auth.js";
 import { apiLimiter, aiLimiter, exportLimiter } from "./middleware/rateLimit.js";
 import { logger, requestLogger } from "./middleware/logger.js";
@@ -52,8 +58,24 @@ async function main() {
     try {
       await ensureUsersTable();
     } catch (err: any) {
+      // Schema setup is part of persistence: a database without this table
+      // cannot authenticate anyone, so it is a failure, not a warning.
       logger.error("Users table creation failed", { error: err.message });
+      markPersistenceFailed(err?.message || "users table creation failed");
     }
+  }
+
+  const persistence = getPersistenceState();
+  if (persistence.mode === "failed") {
+    logger.error(
+      "DATABASE_URL is configured but PostgreSQL is unusable. Memory storage would accept writes and lose them on restart.",
+      { reason: persistence.reason }
+    );
+    if (shouldHaltOnPersistenceFailure(persistence, process.env.NODE_ENV)) {
+      logger.error("Refusing to start without the configured database.");
+      process.exit(1);
+    }
+    logger.warn("Continuing without persistence. Data will not survive a restart.");
   }
 
   // Express app
@@ -90,10 +112,16 @@ async function main() {
 
   // Health check
   app.get("/health", (_req, res) => {
-    res.json({
-      status: "ok",
+    const persistence = getPersistenceState();
+    // A configured-but-unusable database is not a healthy instance. Reporting
+    // "ok" here is what lets a platform promote a deploy that silently drops
+    // every write.
+    const degraded = persistence.mode === "failed";
+    res.status(degraded ? 503 : 200).json({
+      status: degraded ? "degraded" : "ok",
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
+      persistence: persistence.mode,
       dbAvailable: isDbAvailable(),
     });
   });

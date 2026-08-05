@@ -3,6 +3,7 @@
 - Offline editing is not supported. The UI pauses graph mutations while disconnected instead of claiming an unsent-operation queue.
 - Concurrent edits to different fields of one node merge independently; concurrent edits to the same scalar field use Yjs conflict resolution and may not preserve both users' intent.
 - PostgreSQL plus Redis multi-instance behavior is implemented and failure-policy tested, but the published latency run is single-process, loopback, and in-memory. There is no multi-host production capacity claim.
+- The PostgreSQL migration path has never been executed against a real database in this repository's automated checks; no PostgreSQL is available in the development environment. Startup behaviour on connection and schema failure is tested, but the migration statements themselves are verified only by review. The first real deployment is still the first execution.
 - Redis-only mode retains its ordered stream and deliberately does not compact without the PostgreSQL-backed distributed snapshot lock.
 - Semantic version history requires PostgreSQL. Development memory mode returns an explicit unavailable response for durable checkpoint creation.
 - JWTs have expiry but no server-side denylist. Guest JWTs are server-verified identities, not proof of a real human identity.

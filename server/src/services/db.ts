@@ -187,12 +187,53 @@ const MIGRATION_SQL = `
 `;
 
 /**
+ * Why persistence is or is not active.
+ *
+ * `disabled` and `failed` both mean "no PostgreSQL", but they are not the same
+ * situation and must not be treated alike. Running without a database is a
+ * legitimate development choice; failing to reach one the operator explicitly
+ * configured is an error, and quietly serving memory-backed storage in that
+ * case loses every write on the next restart while looking healthy.
+ */
+export type PersistenceState =
+  | { mode: "disabled" }
+  | { mode: "active" }
+  | { mode: "failed"; reason: string };
+
+let persistenceState: PersistenceState = { mode: "disabled" };
+
+export function getPersistenceState(): PersistenceState {
+  return persistenceState;
+}
+
+/**
+ * A configured database that cannot be reached or migrated must stop a
+ * production boot. The platform can then fail the deploy and keep the previous
+ * release, instead of promoting an instance whose data disappears on restart.
+ * Development stays runnable, loudly.
+ */
+export function shouldHaltOnPersistenceFailure(
+  state: PersistenceState,
+  nodeEnv: string | undefined
+): boolean {
+  return state.mode === "failed" && nodeEnv === "production";
+}
+
+/** Records a schema failure discovered after the pool itself came up. */
+export function markPersistenceFailed(reason: string): void {
+  persistenceState = { mode: "failed", reason };
+  pool = null;
+}
+
+/**
  * Initialize the PostgreSQL connection pool and run migrations.
- * Returns true if the database is available, false if not configured.
+ * Returns true if the database is available, false otherwise; inspect
+ * `getPersistenceState()` to tell an intended memory mode from a failure.
  */
 export async function initDatabase(): Promise<boolean> {
   const databaseUrl = process.env.DATABASE_URL;
   if (!databaseUrl) {
+    persistenceState = { mode: "disabled" };
     console.log("  ⚡ DATABASE_URL not configured — Postgres disabled, using Redis/memory only");
     return false;
   }
@@ -213,14 +254,29 @@ export async function initDatabase(): Promise<boolean> {
     const client = await pool.connect();
     console.log("  ✅ PostgreSQL connected");
 
-    // Run migrations
-    await client.query(MIGRATION_SQL);
+    // Run migrations. PostgreSQL DDL is transactional, so an explicit
+    // transaction keeps a failed migration from leaving a half-applied schema
+    // that the next boot would treat as already migrated.
+    try {
+      await client.query("BEGIN");
+      await client.query(MIGRATION_SQL);
+      await client.query("COMMIT");
+    } catch (migrationError) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw migrationError;
+    } finally {
+      client.release();
+    }
     console.log("  ✅ PostgreSQL migrations applied");
-    client.release();
 
+    persistenceState = { mode: "active" };
     return true;
   } catch (err: any) {
-    console.error("  ⚠ PostgreSQL connection failed:", err.message);
+    // DATABASE_URL was set, so memory storage is not what the operator asked
+    // for. Record the failure rather than silently degrading.
+    persistenceState = { mode: "failed", reason: err?.message || String(err) };
+    console.error("  ⚠ PostgreSQL unavailable:", persistenceState.reason);
+    if (pool) await pool.end().catch(() => undefined);
     pool = null;
     return false;
   }
