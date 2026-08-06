@@ -3,17 +3,14 @@ name: Architecture change review
 on:
   pull_request:
     branches: ["main"]
-    paths:
-      - "**/compose.yml"
-      - "**/compose.yaml"
-      - "**/docker-compose*.yml"
-      - "**/docker-compose*.yaml"
-      - ".system-synthesis/**"
-      - "architecture-core/**"
-      - "architecture-cli/**"
-      - "architecture-action/**"
-      - "action.yml"
-      - ".github/workflows/architecture-review.yml"
+    # Deliberately unfiltered. A path filter that fails to match does not report
+    # a skipped check — it reports nothing at all, which is indistinguishable
+    # from a passing review and hides the gate exactly when it is needed. A
+    # filter written as "**/docker-compose*.yml" also never matches a
+    # root-level file, because the slash after ** requires a directory.
+    # The review is a few seconds, and a wrong compose-path now fails loudly,
+    # so running it on every pull request is both cheaper and safer than
+    # deciding in advance which changes could affect architecture.
 
 permissions:
   contents: read
