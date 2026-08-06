@@ -91,9 +91,11 @@ services:
       - "3000:3000"
     environment:
       NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
+      DATABASE_URL: postgresql://ss_user:ss_dev_password@postgres:5432/system_synthesis  # ⚠️ direct DB access
       NODE_ENV: development
     depends_on:
       - server
+      - postgres        # ⚠️ DELIBERATE VIOLATION: public service → persistence
     volumes:
       - ./frontend/src:/app/frontend/src
       - ./shared:/app/shared
