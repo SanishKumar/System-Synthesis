@@ -15,9 +15,9 @@ const themeBootstrap = `
 `;
 
 export const metadata: Metadata = {
-  title: "System Synthesis — Collaborative Architecture Modeling",
+  title: "System Synthesis — Architecture Review for Pull Requests",
   description:
-    "Model, lint, version, and export collaborative software architecture graphs.",
+    "Derive architecture from infrastructure source, review what each pull request changes, and block a merge that introduces a forbidden dependency.",
   keywords: [
     "system architecture",
     "whiteboard",

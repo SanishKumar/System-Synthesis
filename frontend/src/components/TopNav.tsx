@@ -123,7 +123,7 @@ export default function TopNav({
   }, [searchQuery, authHeaders]);
 
   const navLinks = [
-    { href: "/", label: "Workspaces" },
+    { href: "/", label: "Overview" },
     { href: "/reviews", label: "Reviews" },
     { href: "/integrations", label: "Connections" },
     { href: lastBoard ? `/canvas/${lastBoard}` : "/canvas", label: "Canvas" },

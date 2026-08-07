@@ -6,10 +6,9 @@ import { useRouter } from "next/navigation";
 import TopNav from "@/components/TopNav";
 import { useUser } from "@/hooks/useUser";
 import { toast } from "sonner";
+import type { ReviewSummary } from "@/types/reviews";
 import {
-  Activity,
   ArrowRight,
-  Boxes,
   CheckCircle2,
   Clock3,
   FileCode2,
@@ -21,6 +20,7 @@ import {
   LockKeyhole,
   Plus,
   ScanSearch,
+  ShieldAlert,
   Trash2,
   Users,
 } from "lucide-react";
@@ -48,13 +48,6 @@ interface Metrics {
   uptimeSeconds: number;
 }
 
-function formatUptime(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
-}
-
 function timeAgo(dateStr: string): string {
   const diff = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
   if (diff < 60) return "Just now";
@@ -74,10 +67,10 @@ function getTag(name: string): string {
 }
 
 const workflow = [
-  { icon: <GitBranch className="h-4 w-4" />, label: "Model a typed architecture graph" },
-  { icon: <ScanSearch className="h-4 w-4" />, label: "Run deterministic lint rules" },
-  { icon: <History className="h-4 w-4" />, label: "Restore durable graph versions" },
-  { icon: <FileCode2 className="h-4 w-4" />, label: "Export the supported resource subset" },
+  { icon: <Globe2 className="h-4 w-4" />, label: "Connect a repository to GitHub Actions" },
+  { icon: <GitBranch className="h-4 w-4" />, label: "Derive the architecture of both commits" },
+  { icon: <ScanSearch className="h-4 w-4" />, label: "Gate only the findings the change introduced" },
+  { icon: <CheckCircle2 className="h-4 w-4" />, label: "Accept a justified exception, or reject" },
 ];
 
 export default function DashboardPage() {
@@ -85,6 +78,7 @@ export default function DashboardPage() {
   const { userId, authenticatedFetch, isReady } = useUser();
   const [boards, setBoards] = useState<BoardSummary[]>([]);
   const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [reviews, setReviews] = useState<ReviewSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
 
@@ -92,11 +86,17 @@ export default function DashboardPage() {
     if (!isReady) return;
     async function fetchData() {
       try {
-        const response = await authenticatedFetch(`${API_URL}/api/boards`);
-        if (response.ok) {
-          const data = await response.json();
+        const [boardResponse, reviewResponse] = await Promise.all([
+          authenticatedFetch(`${API_URL}/api/boards`),
+          authenticatedFetch(`${API_URL}/api/reviews`),
+        ]);
+        if (boardResponse.ok) {
+          const data = await boardResponse.json();
           setBoards(data.boards || []);
           setMetrics(data.metrics || null);
+        }
+        if (reviewResponse.ok) {
+          setReviews((await reviewResponse.json()).reviews || []);
         }
       } catch {
         // The local workspace remains usable through the demo route.
@@ -106,6 +106,9 @@ export default function DashboardPage() {
     }
     fetchData();
   }, [isReady, userId, authenticatedFetch]);
+
+  const awaitingDecision = reviews.filter((review) => review.decision === "pending");
+  const blocked = reviews.filter((review) => review.analysisStatus === "fail");
 
   const handleCreateBoard = async () => {
     if (!isReady) return;
@@ -149,10 +152,10 @@ export default function DashboardPage() {
   };
 
   const statCards = [
-    { label: "Architectures", value: metrics?.totalBoards ?? boards.length, icon: <Layers3 className="h-4 w-4" /> },
-    { label: "Components", value: metrics?.totalNodes ?? "—", icon: <Boxes className="h-4 w-4" /> },
-    { label: "Connections", value: metrics?.totalEdges ?? "—", icon: <GitBranch className="h-4 w-4" /> },
-    { label: "Process uptime", value: metrics ? formatUptime(metrics.uptimeSeconds) : "—", icon: <Activity className="h-4 w-4" /> },
+    { label: "Reviews", value: reviews.length, icon: <ScanSearch className="h-4 w-4" /> },
+    { label: "Awaiting decision", value: awaitingDecision.length, icon: <Clock3 className="h-4 w-4" /> },
+    { label: "Blocked by policy", value: blocked.length, icon: <ShieldAlert className="h-4 w-4" /> },
+    { label: "Architecture models", value: metrics?.totalBoards ?? boards.length, icon: <Layers3 className="h-4 w-4" /> },
   ];
 
   return (
@@ -164,22 +167,24 @@ export default function DashboardPage() {
             <div>
               <div className="mb-3 flex items-center gap-2 text-[10px] font-mono font-semibold uppercase tracking-[0.17em] text-accent-cyan">
                 <span className="h-1.5 w-1.5 rounded-full bg-accent-cyan" />
-                Collaborative graph workspace
+                Architecture review for pull requests
               </div>
               <h1 className="max-w-3xl font-display text-3xl font-bold leading-[1.12] tracking-[-0.04em] text-text-primary sm:text-4xl lg:text-[44px]">
-                Architecture is a model,
-                <br className="hidden sm:block" /> not a static picture.
+                Catch architecture drift
+                <br className="hidden sm:block" /> before it merges.
               </h1>
               <p className="mt-4 max-w-2xl text-sm leading-6 text-text-secondary sm:text-[15px]">
-                Build a shared system graph, inspect rule-based findings, track versions, and export only what the model can represent faithfully.
+                System Synthesis derives your architecture from infrastructure source, compares every pull request against the commit it branched from, and blocks the merge when a change introduces a dependency your policy forbids — deterministically, with file and line evidence. No model decides the verdict.
               </p>
             </div>
             <div className="flex flex-col items-start gap-3 lg:items-end">
-              <button onClick={handleCreateBoard} disabled={creating} id="new-project-btn" className="btn-primary gap-2 px-5 py-2.5 text-sm">
-                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
-                New architecture
-              </button>
-              <p className="text-[11px] text-text-muted">Start blank or continue with the demo when the service is offline.</p>
+              <Link href="/reviews" className="btn-primary gap-2 px-5 py-2.5 text-sm">
+                <ScanSearch className="h-4 w-4" />
+                Review a change
+              </Link>
+              <Link href="/integrations" className="flex items-center gap-1.5 text-xs font-semibold text-text-secondary hover:text-accent-cyan">
+                Connect a repository <ArrowRight className="h-3.5 w-3.5" />
+              </Link>
             </div>
           </section>
 
@@ -197,14 +202,97 @@ export default function DashboardPage() {
             ))}
           </section>
 
+          <section className="mb-10">
+            <div className="mb-4 flex items-end justify-between">
+              <div>
+                <h2 className="font-display text-lg font-bold tracking-[-0.02em] text-text-primary">
+                  Pull request reviews
+                </h2>
+                <p className="mt-1 text-xs text-text-muted">
+                  Every change the analyzer has compared, newest first.
+                </p>
+              </div>
+              {reviews.length > 0 && (
+                <Link href="/reviews" className="flex items-center gap-1.5 text-xs font-semibold text-text-secondary hover:text-accent-cyan">
+                  View all <ArrowRight className="h-3.5 w-3.5" />
+                </Link>
+              )}
+            </div>
+
+            {loading ? (
+              <div className="space-y-3">
+                {Array.from({ length: 2 }).map((_, index) => (
+                  <div key={index} className="h-20 animate-pulse rounded-xl border border-border bg-surface" />
+                ))}
+              </div>
+            ) : reviews.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-border-light bg-surface px-6 py-12 text-center">
+                <ScanSearch className="mx-auto h-7 w-7 text-accent-cyan" />
+                <h3 className="mt-4 font-display text-base font-bold text-text-primary">No architecture reviews yet</h3>
+                <p className="mx-auto mt-2 max-w-md text-xs leading-5 text-text-secondary">
+                  Connect a repository to review every pull request automatically, or compare two Compose revisions by hand to see what the analyzer reports.
+                </p>
+                <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+                  <Link href="/integrations" className="btn-primary gap-2 text-xs"><Globe2 className="h-3.5 w-3.5" /> Connect a repository</Link>
+                  <Link href="/reviews" className="btn-secondary gap-2 text-xs"><FileCode2 className="h-3.5 w-3.5" /> Compare manually</Link>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {reviews.slice(0, 4).map((review) => (
+                  <Link
+                    key={review.id}
+                    href={`/reviews/${review.id}`}
+                    className="group grid gap-3 rounded-xl border border-border bg-surface px-4 py-4 transition-all hover:-translate-y-px hover:border-border-light hover:shadow-[var(--shadow-soft)] sm:grid-cols-[auto_minmax(0,1fr)_auto] sm:items-center sm:px-5"
+                  >
+                    <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${
+                      review.analysisStatus === "pass"
+                        ? "bg-emerald-500/10 text-emerald-600"
+                        : "bg-red-500/10 text-red-600"
+                    }`}>
+                      {review.analysisStatus === "pass" ? <CheckCircle2 className="h-4.5 w-4.5" /> : <ShieldAlert className="h-4.5 w-4.5" />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="truncate font-display text-sm font-bold text-text-primary">{review.title}</span>
+                      <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-text-muted">
+                        {review.externalSource ? (
+                          <span className="font-semibold text-text-secondary">
+                            {review.externalSource.repository} #{review.externalSource.changeNumber}
+                          </span>
+                        ) : (
+                          <span>{review.repository || "Local repository"}</span>
+                        )}
+                        <span>•</span>
+                        <span>{review.blockingFindings} blocking</span>
+                        <span>•</span>
+                        <span>{timeAgo(review.updatedAt)}</span>
+                      </span>
+                    </span>
+                    <span className={`badge ${
+                      review.decision === "approved"
+                        ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-600"
+                        : review.decision === "rejected"
+                          ? "border-red-500/20 bg-red-500/10 text-red-600"
+                          : "border-border bg-canvas-50 text-text-muted"
+                    }`}>
+                      {review.decision}
+                    </span>
+                  </Link>
+                ))}
+              </div>
+            )}
+          </section>
+
           <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_310px]">
             <section className="min-w-0">
               <div className="mb-4 flex items-end justify-between">
                 <div>
                   <h2 className="font-display text-lg font-bold tracking-[-0.02em] text-text-primary">
-                    {boards.length ? "Recent workspaces" : "Start modeling"}
+                    Architecture models
                   </h2>
-                  <p className="mt-1 text-xs text-text-muted">Your latest architecture graphs and access state.</p>
+                  <p className="mt-1 text-xs text-text-muted">
+                    Model an intended architecture, separate from what the analyzer derives from source.
+                  </p>
                 </div>
                 {boards.length > 3 && (
                   <Link href="/history" className="flex items-center gap-1.5 text-xs font-semibold text-text-secondary hover:text-accent-cyan">
