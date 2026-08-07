@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import {
@@ -81,7 +81,12 @@ export default function ReviewDetailPage() {
   const [expiresOn, setExpiresOn] = useState("");
   const [decisionNote, setDecisionNote] = useState("");
 
-  const loadReview = useCallback(async () => {
+  const mutatingRef = useRef(false);
+  useEffect(() => {
+    mutatingRef.current = mutating;
+  }, [mutating]);
+
+  const loadReview = useCallback(async (options: { silent?: boolean } = {}) => {
     if (!isReady || !reviewId) return;
     try {
       const [reviewResponse, eventsResponse] = await Promise.all([
@@ -97,15 +102,45 @@ export default function ReviewDetailPage() {
       setReview(record);
       setEvents(eventBody.events || []);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not load the review.");
+      // A background refresh that fails must not interrupt the reader.
+      if (!options.silent) {
+        toast.error(error instanceof Error ? error.message : "Could not load the review.");
+      }
     } finally {
-      setLoading(false);
+      if (!options.silent) setLoading(false);
     }
   }, [authenticatedFetch, isReady, reviewId]);
 
   useEffect(() => {
     void loadReview();
   }, [loadReview, userId]);
+
+  const externalSource = review?.externalSource;
+  const decision = review?.decision;
+  /**
+   * A pull-request review changes underneath whoever is reading it: the Action
+   * refreshes it on every new commit. Re-read when the tab regains attention,
+   * and poll while a decision is still outstanding, so an open tab never shows
+   * a verdict that no longer matches the pull request. A mutation in flight
+   * always wins — a refresh must never overwrite what the reader just did.
+   */
+  useEffect(() => {
+    if (!externalSource) return;
+    const refresh = () => {
+      if (document.visibilityState !== "visible" || mutatingRef.current) return;
+      void loadReview({ silent: true });
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    const timer = decision === "pending"
+      ? window.setInterval(refresh, 20_000)
+      : undefined;
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [decision, externalSource, loadReview]);
 
   const nodeChanges = useMemo(() => {
     if (!review) return [];

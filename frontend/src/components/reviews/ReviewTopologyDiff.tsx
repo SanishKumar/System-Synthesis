@@ -78,7 +78,7 @@ function ReviewDiffNode({ data }: NodeProps) {
 
   return (
     <div
-      className="min-w-[190px] rounded-xl border-2 px-3.5 py-3 shadow-[var(--shadow-soft)]"
+      className="h-full w-full rounded-xl border-2 px-3.5 py-3 shadow-[var(--shadow-soft)]"
       style={{
         borderColor: presentation.border,
         background: presentation.background,
@@ -126,6 +126,11 @@ function modeChangeKind(
   return change.kind;
 }
 
+const NODE_WIDTH = 210;
+const NODE_HEIGHT = 112;
+/** Below this a minimap only covers the diagram it claims to summarize. */
+const MINIMAP_MIN_NODES = 10;
+
 function revisionLabel(value: string): string {
   return value.length > 18 ? value.slice(0, 12) : value;
 }
@@ -165,8 +170,8 @@ export default function ReviewTopologyDiff({
     ];
     const laidOut = autoLayoutNodes(unionNodes, unionEdges, {
       direction: "LR",
-      nodeWidth: 210,
-      nodeHeight: 112,
+      nodeWidth: NODE_WIDTH,
+      nodeHeight: NODE_HEIGHT,
       rankSep: 90,
       nodeSep: 55,
     });
@@ -188,6 +193,11 @@ export default function ReviewTopologyDiff({
             zone: node.data.zone ? String(node.data.zone) : undefined,
             changeKind: modeChangeKind(node.id, revisionMode, nodeChanges),
           },
+          // Declared rather than measured: the minimap draws from node geometry,
+          // and measurement is lost every time the revision toggle rebuilds the
+          // node list, which left it rendering an empty box.
+          width: NODE_WIDTH,
+          height: NODE_HEIGHT,
           draggable: false,
           selectable: true,
         })),
@@ -286,14 +296,17 @@ export default function ReviewTopologyDiff({
             proOptions={{ hideAttribution: true }}
           >
             <Background variant={BackgroundVariant.Dots} gap={24} size={1} />
-            <MiniMap
-              pannable
-              zoomable
-              nodeColor={(node) =>
-                changePresentation[(node.data as DiffNodeData).changeKind].border
-              }
-              maskColor="var(--color-minimap-mask)"
-            />
+            {active.nodes.length >= MINIMAP_MIN_NODES && (
+              <MiniMap
+                pannable
+                zoomable
+                nodeStrokeWidth={4}
+                nodeColor={(node) =>
+                  changePresentation[(node.data as DiffNodeData).changeKind].border
+                }
+                maskColor="var(--color-minimap-mask)"
+              />
+            )}
             <Controls showInteractive={false} />
           </ReactFlow>
         ) : (
