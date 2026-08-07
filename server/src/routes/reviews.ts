@@ -9,6 +9,8 @@ import {
   type RuleSuppression,
 } from "@system-synthesis/architecture-core";
 import { reviewCreateLimiter } from "../middleware/rateLimit.js";
+import { logger } from "../middleware/logger.js";
+import { writeDecisionCheck } from "../services/githubChecks.js";
 import {
   analyzerStatus,
   importStatus,
@@ -19,6 +21,7 @@ import {
   recomputeArchitectureReviewAnalysis,
   updateArchitectureReviewAnalysis,
   updateArchitectureReviewDecision,
+  type ArchitectureReviewRecord,
   type ReviewMutationResult,
 } from "../services/reviewRepository.js";
 
@@ -100,10 +103,33 @@ function badRequest(res: Response, error: z.ZodError): Response {
   });
 }
 
-function mutationResponse(
+/**
+ * Publish the decision to the pull request without letting GitHub affect the
+ * reviewer's request. The decision is already durable and audited by this
+ * point; an unreachable or uninstalled App must not turn a recorded decision
+ * into a failed action.
+ */
+async function publishDecisionCheck(review: ArchitectureReviewRecord): Promise<void> {
+  try {
+    const result = await writeDecisionCheck(review);
+    if (result.status === "error") {
+      logger.warn("Architecture decision check not published", {
+        reviewId: review.id,
+        reason: result.reason,
+      });
+    }
+  } catch (error) {
+    logger.warn("Architecture decision check not published", {
+      reviewId: review.id,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
+  }
+}
+
+async function mutationResponse(
   res: Response,
   result: ReviewMutationResult
-): Response {
+): Promise<Response> {
   if (result.status === "not_found") {
     return res.status(404).json({ error: "Architecture review not found" });
   }
@@ -112,6 +138,7 @@ function mutationResponse(
       error: "This review changed in another session. Refresh before retrying.",
     });
   }
+  await publishDecisionCheck(result.review);
   return res.json({ ...result.review, ...analyzerStatus(result.review), ...importStatus(result.review) });
 }
 
@@ -270,7 +297,7 @@ router.post("/:id/suppressions", async (req, res) => {
         expiresAt: suppression.expiresAt,
       }
     );
-    return mutationResponse(res, result);
+    return await mutationResponse(res, result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -310,6 +337,9 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
         error: "This review changed in another session. Refresh before retrying.",
       });
     }
+    // Re-analysis can turn a blocking verdict into a passing one, or return an
+    // approved review to pending, so the gate has to follow it.
+    await publishDecisionCheck(result.review);
     return res.json({
       ...result.review,
       ...analyzerStatus(result.review),
@@ -341,7 +371,7 @@ router.patch("/:id/decision", async (req, res) => {
       parsed.data.decision,
       parsed.data.note || null
     );
-    return mutationResponse(res, result);
+    return await mutationResponse(res, result);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

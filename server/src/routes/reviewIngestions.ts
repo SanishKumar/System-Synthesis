@@ -9,6 +9,8 @@ import {
 import type { SourceProvenance } from "@system-synthesis/shared";
 import { requireReviewIntegration } from "../middleware/reviewIntegrationAuth.js";
 import { reviewIngestionLimiter } from "../middleware/rateLimit.js";
+import { logger } from "../middleware/logger.js";
+import { writeDecisionCheck } from "../services/githubChecks.js";
 import {
   ingestArchitectureReview,
   type IngestReviewResult,
@@ -383,6 +385,25 @@ router.post("/github", async (req, res) => {
         workflowRunUrl: parsed.data.workflowRun?.url || null,
       },
     });
+    // The gate has to appear when the review does, not only once somebody
+    // decides — a reviewer needs to see that a decision is owed. A stale
+    // delivery is ignored so a late workflow cannot reopen a settled gate.
+    if (result.status !== "stale") {
+      try {
+        const published = await writeDecisionCheck(result.review);
+        if (published.status === "error") {
+          logger.warn("Architecture decision check not published", {
+            reviewId: result.review.id,
+            reason: published.reason,
+          });
+        }
+      } catch (error) {
+        logger.warn("Architecture decision check not published", {
+          reviewId: result.review.id,
+          reason: error instanceof Error ? error.message : "unknown",
+        });
+      }
+    }
     return responseFor(res, result);
   } catch (error) {
     res.status(500).json({

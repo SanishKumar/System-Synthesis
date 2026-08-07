@@ -27,7 +27,7 @@ export type InstallationTokenResult =
 /** Injectable so tests never reach the network. */
 export type HttpTransport = (
   url: string,
-  init: { method: string; headers: Record<string, string> }
+  init: { method: string; headers: Record<string, string>; body?: string }
 ) => Promise<{ status: number; json: () => Promise<unknown> }>;
 
 interface CachedToken {

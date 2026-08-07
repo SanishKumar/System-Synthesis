@@ -159,7 +159,24 @@ Nothing long-lived is held. The private key signs a short RS256 assertion, backd
 
 A repository whose owner has not installed the App is reported as not installed, distinct from an error, because it is a setup state a user can resolve. Failures never echo the request that carried the signed assertion.
 
-This layer is credentials only. Nothing yet writes a check run; the review decision remains browser-local until that is built on top.
+### The decision check
+
+The App publishes an `Architecture Decision` check run on the pull request's head commit, deliberately separate from the Action's own check. The Action answers *what deterministic analysis found*, which is fixed for a head commit, a policy and an analyzer version. This answers *whether a person has accepted the change*, which is not fixed and belongs to a reviewer. Merging them would make a verdict look revisable and a decision look computed.
+
+| Review state | Conclusion |
+| --- | --- |
+| Blocking findings, nobody has ruled | `action_required` |
+| No blocking findings | `success` — no reviewer is owed |
+| Approved | `success` |
+| Rejected | `failure` |
+
+`action_required` is used rather than a plain failure because the resolution is a person opening the review, not a code change. The check's details link points at that review, which is the affordance a reviewer actually clicks.
+
+It is written when a review is ingested, when a decision changes, and when re-analysis changes the verdict — so the gate appears with the review rather than only once somebody decides. A stale delivery is ignored, so a late workflow cannot reopen a settled gate. An existing check on the same commit is updated rather than duplicated, because a reviewer who changes their mind should replace the gate rather than add a second one.
+
+Publishing is best effort. The decision is durable and audited before the check is attempted, so an unreachable or uninstalled App is logged and never turns a recorded decision into a failed request. Manual reviews and any head revision that is not a commit SHA are skipped, since only a commit can carry a check run.
+
+Making this the merge gate is a repository setting: mark `Architecture Decision` as a required status check in branch protection.
 
 ## Repository ingestion foundation
 
