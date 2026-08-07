@@ -146,6 +146,21 @@ The report carries the review time and both validation timestamps from the wall 
 
 Recomputation is never automatic. A pull-request review also refreshes when the workflow runs again, and accepting an exception re-analyzes and re-stamps because that path already recomputes the report. There is no bulk re-analysis across reviews.
 
+## GitHub App credentials
+
+Writing back to a pull request needs write access to the repository, which a repository-scoped ingestion token deliberately does not carry. That access comes from a GitHub App rather than a personal access token, because an App is installed per repository by its owner, grants only the permissions it declares, and issues tokens that expire in an hour.
+
+Two environment variables configure it, and their absence is a supported state rather than a failure:
+
+- `GITHUB_APP_ID`
+- `GITHUB_APP_PRIVATE_KEY` — the PEM; escaped newlines are restored, since an environment variable usually flattens them and would otherwise break signing silently
+
+Nothing long-lived is held. The private key signs a short RS256 assertion, backdated a minute against clock skew and valid for well under the ten minutes GitHub allows. That assertion is only ever used to resolve a repository to its installation and to mint an installation token; it never reaches repository content itself. Installation tokens are cached per repository and re-minted a minute before expiry, so a token is never presented at the edge of its lifetime.
+
+A repository whose owner has not installed the App is reported as not installed, distinct from an error, because it is a setup state a user can resolve. Failures never echo the request that carried the signed assertion.
+
+This layer is credentials only. Nothing yet writes a check run; the review decision remains browser-local until that is built on top.
+
 ## Repository ingestion foundation
 
 The server and browser expose the secure persistence boundary used by Action synchronization:

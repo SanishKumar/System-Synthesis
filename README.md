@@ -198,7 +198,9 @@ These statements are limited to checked behavior in this repository.
 | A configured but unusable database stops a production boot instead of silently serving memory storage | Persistence startup tests and an unreachable-database boot |
 | A compose-path matching no file at either commit fails instead of passing an empty review | Compose source-resolution tests and a real two-commit repository run |
 
-Current automated count: 40 architecture-core tests, 7 CLI tests, 24 Action tests, and 95 backend tests (166 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+| GitHub App access is short-lived, repository-scoped, and never served near expiry | GitHub App credential tests |
+
+Current automated count: 40 architecture-core tests, 7 CLI tests, 24 Action tests, and 108 backend tests (179 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
