@@ -71,21 +71,17 @@ jobs:
       - name: Publish or update pull-request summary
         if: >-
           always() &&
-          steps.review.outputs.markdown-file != '' &&
+          steps.review.outputs.comment-file != '' &&
           steps.review.outputs.ingestion-status != 'stale' &&
           github.event.pull_request.head.repo.full_name == github.repository
         uses: actions/github-script@v8
         env:
-          REPORT_FILE: ${{ steps.review.outputs.markdown-file }}
-          REVIEW_URL: ${{ steps.review.outputs.review-url }}
+          COMMENT_FILE: ${{ steps.review.outputs.comment-file }}
         with:
           script: |
             const fs = require("node:fs");
             const marker = "<!-- system-synthesis-architecture-review -->";
-            const persistedReview = process.env.REVIEW_URL
-              ? `\n\n---\n[Open the interactive architecture review](${process.env.REVIEW_URL})`
-              : "";
-            const body = `${marker}\n${fs.readFileSync(process.env.REPORT_FILE, "utf8")}${persistedReview}`;
+            const body = fs.readFileSync(process.env.COMMENT_FILE, "utf8");
             const comments = await github.paginate(
               github.rest.issues.listComments,
               {

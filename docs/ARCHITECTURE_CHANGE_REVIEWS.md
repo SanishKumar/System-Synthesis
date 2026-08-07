@@ -77,6 +77,14 @@ That last case matters because `compose-path` defaults to `compose.yaml`. Withou
 
 Only root-level Compose filenames are suggested. A file kept in a subdirectory still works when configured explicitly; it is simply not guessed.
 
+## Pull-request comment
+
+The deterministic report is thorough, which is why it buries the one thing a reviewer must act on. The Action therefore emits a ready-to-post comment through the `comment-file` output rather than leaving consumers to assemble one.
+
+It leads with the verdict, names the finding that produced it, and offers the decision link, then reproduces the full report unchanged beneath a rule. The stable marker comes first so repeated runs update a single comment instead of appending. When ingestion is not configured no link is invented; the comment points at the policy file instead.
+
+The job summary is written on a best-effort basis. GitHub caps summaries at 1 MB and omits the backing file in some environments, so a summary failure is downgraded to a warning: it must not abort the run, discard the verdict, or suppress the comment.
+
 ## GitHub outputs
 
 The bundled Node 24 action writes:

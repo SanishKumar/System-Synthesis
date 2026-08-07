@@ -6,6 +6,7 @@ import {
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { COMPOSE_FILE_NAMES } from "@system-synthesis/architecture-core";
+import { composeReviewComment } from "./comment.js";
 import { resolveComposeSources } from "./composeSources.js";
 import { createActionReview } from "./review.js";
 import {
@@ -87,6 +88,23 @@ function composeCandidates(revision: string, cwd: string): string[] {
   });
 }
 
+/**
+ * The job summary is a convenience; the reports, the policy verdict, and the
+ * pull-request comment are the product. GitHub caps summaries at 1 MB and omits
+ * the backing file in some environments, so a summary failure must not abort the
+ * run and take the comment down with it.
+ */
+async function writeJobSummary(markdown: string): Promise<void> {
+  try {
+    core.summary.addRaw(markdown);
+    await core.summary.write();
+  } catch (error) {
+    core.warning(
+      `Job summary unavailable: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
 function outputDirectory(value: string): string {
   const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
   const requested = isAbsolute(value) ? resolve(value) : resolve(workspace, value);
@@ -161,9 +179,9 @@ async function run(): Promise<void> {
     "blocking-findings",
     String(reports.review.blockingFindings.length)
   );
-  core.summary.addRaw(reports.markdown);
-  await core.summary.write();
+  await writeJobSummary(reports.markdown);
 
+  let reviewUrl = "";
   const ingestionUrl = core.getInput("ingestion-url").trim();
   const ingestionToken = core.getInput("ingestion-token").trim();
   if (ingestionToken) core.setSecret(ingestionToken);
@@ -183,17 +201,30 @@ async function run(): Promise<void> {
           policy: reports.policy,
         }),
       });
+      reviewUrl = ingestion.reviewUrl;
       core.setOutput("ingestion-status", ingestion.status);
       core.setOutput("review-id", ingestion.reviewId);
       core.setOutput("review-url", ingestion.reviewUrl);
-      core.summary.addRaw(
+      await writeJobSummary(
         `\n\n[Open the persisted architecture review](${ingestion.reviewUrl})\n`
       );
-      await core.summary.write();
     }
   } else {
     ingestionMode(ingestionUrl, ingestionToken, false);
   }
+
+  // Written after ingestion so the comment can lead with the decision link.
+  const commentPath = resolve(directory, "architecture-review-comment.md");
+  writeFileSync(
+    commentPath,
+    composeReviewComment({
+      markdown: reports.markdown,
+      review: reports.review,
+      reviewUrl: reviewUrl || undefined,
+    }),
+    "utf8"
+  );
+  core.setOutput("comment-file", commentPath);
 
   if (reports.exitCode === 1) {
     core.setFailed(

@@ -47,6 +47,11 @@ outputs:
     description: Absolute path to the machine-readable JSON report.
   markdown-file:
     description: Absolute path to the pull-request Markdown report.
+  comment-file:
+    description: >-
+      Absolute path to a ready-to-post pull-request comment. Leads with the
+      verdict and the review link, carries the marker used to update one comment
+      across runs, and embeds the full Markdown report.
   sarif-file:
     description: Absolute path to the SARIF 2.1.0 report.
   ingestion-status:
