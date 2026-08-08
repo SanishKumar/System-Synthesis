@@ -1,5 +1,6 @@
 {
   "name": "system-synthesis",
+  "license": "Apache-2.0",
   "private": true,
   "scripts": {
     "build": "npm run build --workspace architecture-core && npm run build --workspace architecture-cli && npm run build --workspace architecture-action && npm run build --workspace frontend && npm run build --workspace server",

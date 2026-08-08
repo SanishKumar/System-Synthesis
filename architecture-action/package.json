@@ -1,6 +1,7 @@
 {
   "name": "@system-synthesis/architecture-action",
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "description": "Self-contained GitHub Action for System Synthesis architecture reviews",
   "private": true,
   "type": "module",

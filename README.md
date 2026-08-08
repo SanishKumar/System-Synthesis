@@ -294,4 +294,8 @@ Cloudflare Workers/Sites output is not configured. Moving the Socket.IO backend 
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+
+Apache-2.0 rather than MIT because this runs inside other organizations' CI. Section 3 grants contributors' patent rights explicitly and terminates them for anyone who initiates patent litigation over the work, which is the assurance a legal review looks for before a tool is allowed near a build pipeline. MIT is silent on patents.
+
+Contributions are accepted under the same license, as section 5 provides. No separate agreement is required.
