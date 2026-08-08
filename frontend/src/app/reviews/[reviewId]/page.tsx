@@ -86,8 +86,22 @@ export default function ReviewDetailPage() {
     mutatingRef.current = mutating;
   }, [mutating]);
 
+  /**
+   * Counts applied states so a background read cannot resurrect a stale one.
+   * Checking for a mutation before starting the request is not enough: an
+   * approval can begin and finish while that request is in flight, and the
+   * response would then overwrite the decision the reviewer just made with the
+   * pending state it was fetched under.
+   */
+  const applied = useRef(0);
+  const applyReview = useCallback((record: ReviewRecord) => {
+    applied.current += 1;
+    setReview(record);
+  }, []);
+
   const loadReview = useCallback(async (options: { silent?: boolean } = {}) => {
     if (!isReady || !reviewId) return;
+    const seen = applied.current;
     try {
       const [reviewResponse, eventsResponse] = await Promise.all([
         authenticatedFetch(`${API_URL}/api/reviews/${reviewId}`),
@@ -99,7 +113,9 @@ export default function ReviewDetailPage() {
       }
       const record = await reviewResponse.json();
       const eventBody = eventsResponse.ok ? await eventsResponse.json() : { events: [] };
-      setReview(record);
+      // Something newer landed while this read was in flight; it wins.
+      if (options.silent && applied.current !== seen) return;
+      applyReview(record);
       setEvents(eventBody.events || []);
     } catch (error) {
       // A background refresh that fails must not interrupt the reader.
@@ -190,7 +206,7 @@ export default function ReviewDetailPage() {
         if (response.status === 409) void loadReview();
         throw new Error(body?.error || "Could not accept this exception.");
       }
-      setReview(body);
+      applyReview(body);
       setSelectedFinding(null);
       setJustification("");
       setTicket("");
@@ -224,7 +240,7 @@ export default function ReviewDetailPage() {
         if (response.status === 409) void loadReview();
         throw new Error(body?.error || "Could not re-analyze this review.");
       }
-      setReview(body);
+      applyReview(body);
       toast.success(
         body.changed
           ? "Re-analyzed — the verdict changed, so the decision is pending again"
@@ -266,7 +282,7 @@ export default function ReviewDetailPage() {
         if (response.status === 409) void loadReview();
         throw new Error(body?.error || "Could not save the decision.");
       }
-      setReview(body);
+      applyReview(body);
       setDecisionNote("");
       toast.success(decision === "approved" ? "Architecture change approved" : "Architecture change rejected");
       const eventResponse = await authenticatedFetch(

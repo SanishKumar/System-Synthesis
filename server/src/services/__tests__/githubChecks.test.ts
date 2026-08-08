@@ -42,17 +42,22 @@ interface Recorded {
   body?: Record<string, unknown>;
 }
 
-function transportFor(existingCheckId?: number): {
+const REVIEW_ID = "8f2a1c00-0000-4000-8000-000000000001";
+
+/**
+ * Enforces the parts of GitHub's contract this service depends on, rather than
+ * accepting any payload. `head_sha` identifies the commit a run is created
+ * against and is not an update parameter; a transport that accepts it anyway
+ * lets a request that production would reject pass here.
+ */
+function transportFor(existing: Array<{ id: number; external_id?: string }> = []): {
   transport: HttpTransport;
   recorded: Recorded[];
 } {
   const recorded: Recorded[] = [];
   const transport: HttpTransport = async (url, init) => {
-    recorded.push({
-      method: init.method,
-      url,
-      body: init.body ? JSON.parse(init.body) : undefined,
-    });
+    const body = init.body ? JSON.parse(init.body) : undefined;
+    recorded.push({ method: init.method, url, body });
     if (url.endsWith("/installation")) return { status: 200, json: async () => ({ id: 42 }) };
     if (url.includes("/access_tokens")) {
       return {
@@ -61,12 +66,21 @@ function transportFor(existingCheckId?: number): {
       };
     }
     if (url.includes("/check-runs?check_name=")) {
-      return {
-        status: 200,
-        json: async () => ({ check_runs: existingCheckId ? [{ id: existingCheckId }] : [] }),
-      };
+      return { status: 200, json: async () => ({ check_runs: existing }) };
     }
-    return { status: init.method === "PATCH" ? 200 : 201, json: async () => ({ id: 99 }) };
+    if (init.method === "PATCH") {
+      if (body && "head_sha" in body) {
+        return {
+          status: 422,
+          json: async () => ({ message: 'Invalid request. "head_sha" is not a permitted key.' }),
+        };
+      }
+      return { status: 200, json: async () => ({ id: 99 }) };
+    }
+    if (!body || typeof body.head_sha !== "string") {
+      return { status: 422, json: async () => ({ message: "head_sha is required" }) };
+    }
+    return { status: 201, json: async () => ({ id: 99 }) };
   };
   return { transport, recorded };
 }
@@ -121,13 +135,34 @@ describe("publishing the decision check", () => {
   });
 
   it("replaces the existing gate instead of adding a second one", async () => {
-    const { transport, recorded } = transportFor(555);
-    await writeDecisionCheck(review({ decision: "approved" }), { transport, env });
+    const { transport, recorded } = transportFor([{ id: 555, external_id: REVIEW_ID }]);
+    const result = await writeDecisionCheck(review({ decision: "approved" }), { transport, env });
 
+    expect(result).toEqual({ status: "written", conclusion: "success" });
     expect(recorded.some((call) => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
     const patched = recorded.find((call) => call.method === "PATCH");
     expect(patched?.url).toContain("/check-runs/555");
     expect(patched?.body).toMatchObject({ conclusion: "success" });
+  });
+
+  it("never sends head_sha when updating, which GitHub refuses", async () => {
+    const { transport, recorded } = transportFor([{ id: 555, external_id: REVIEW_ID }]);
+    const result = await writeDecisionCheck(review({ decision: "approved" }), { transport, env });
+
+    expect(result.status).toBe("written");
+    expect(recorded.find((call) => call.method === "PATCH")?.body).not.toHaveProperty("head_sha");
+  });
+
+  it("adopts only the run it published, not another application's", async () => {
+    const { transport, recorded } = transportFor([
+      { id: 111, external_id: "someone-else" },
+      { id: 222 },
+    ]);
+    await writeDecisionCheck(review({ decision: "approved" }), { transport, env });
+
+    // Updating a run this service did not create would hijack another check.
+    expect(recorded.some((call) => call.method === "PATCH")).toBe(false);
+    expect(recorded.find((call) => call.method === "POST" && call.url.endsWith("/check-runs"))).toBeDefined();
   });
 
   it("leaves a manually imported review alone", async () => {

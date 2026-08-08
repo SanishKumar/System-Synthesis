@@ -117,9 +117,11 @@ export async function writeDecisionCheck(
     "User-Agent": "system-synthesis",
   };
   const state = decisionCheckState(review);
-  const body = {
+  // Fields common to both writes. `head_sha` is deliberately absent: it
+  // identifies the commit a run is created against and is not an update
+  // parameter, so sending it on a PATCH risks a rejected request.
+  const common = {
     name: DECISION_CHECK_NAME,
-    head_sha: review.headRevision,
     status: "completed",
     conclusion: state.conclusion,
     details_url: reviewUrl(review),
@@ -135,21 +137,27 @@ export async function writeDecisionCheck(
     let existingId: number | undefined;
     if (existing.status === 200) {
       const payload = (await existing.json().catch(() => null)) as
-        | { check_runs?: Array<{ id?: unknown }> }
+        | { check_runs?: Array<{ id?: unknown; external_id?: unknown }> }
         | null;
-      const candidate = payload?.check_runs?.[0]?.id;
-      if (typeof candidate === "number") existingId = candidate;
+      // Match on the identifier this service set, not on position. Another
+      // application may publish a check of the same name against the same
+      // commit, and updating someone else's run would be worse than adding one.
+      const mine = (payload?.check_runs || [])
+        .filter((run) => run.external_id === review.id && typeof run.id === "number")
+        .map((run) => run.id as number)
+        .sort((left, right) => right - left);
+      existingId = mine[0];
     }
 
     const written = existingId
       ? await transport(
           `${GITHUB_API}/repos/${source.repository}/check-runs/${existingId}`,
-          { method: "PATCH", headers, body: JSON.stringify(body) }
+          { method: "PATCH", headers, body: JSON.stringify(common) }
         )
       : await transport(`${GITHUB_API}/repos/${source.repository}/check-runs`, {
           method: "POST",
           headers,
-          body: JSON.stringify(body),
+          body: JSON.stringify({ ...common, head_sha: review.headRevision }),
         });
 
     if (written.status !== 200 && written.status !== 201) {
