@@ -148,6 +148,10 @@ Recomputation is never automatic. A pull-request review also refreshes when the 
 
 ## GitHub App credentials
 
+Registration, installation, key handling, and the pull-request verification
+sequence are in [GitHub App setup](./GITHUB_APP_SETUP.md). This section covers
+what the server does with the credentials.
+
 Writing back to a pull request needs write access to the repository, which a repository-scoped ingestion token deliberately does not carry. That access comes from a GitHub App rather than a personal access token, because an App is installed per repository by its owner, grants only the permissions it declares, and issues tokens that expire in an hour.
 
 Two environment variables configure it, and their absence is a supported state rather than a failure:

@@ -167,7 +167,7 @@ Inferred edges require an exact service-name match on a whole value, URL host, o
 
 It deliberately does not claim full Compose evaluation. Interpolation, includes, extends, profiles, and override merging are not resolved.
 
-See [architecture change review details](./docs/ARCHITECTURE_CHANGE_REVIEWS.md) and [known limitations](./docs/KNOWN_LIMITATIONS.md).
+See [architecture change review details](./docs/ARCHITECTURE_CHANGE_REVIEWS.md), [GitHub App setup](./docs/GITHUB_APP_SETUP.md), and [known limitations](./docs/KNOWN_LIMITATIONS.md).
 
 ## Tested guarantees
 
@@ -197,7 +197,6 @@ These statements are limited to checked behavior in this repository.
 | Import staleness is reported independently of analyzer staleness | Import-provenance repository tests |
 | A configured but unusable database stops a production boot instead of silently serving memory storage | Persistence startup tests and an unreachable-database boot |
 | A compose-path matching no file at either commit fails instead of passing an empty review | Compose source-resolution tests and a real two-commit repository run |
-
 | GitHub App access is short-lived, repository-scoped, and never served near expiry | GitHub App credential tests |
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
 | A GitHub outage cannot fail a decision that is already recorded | Best-effort publishing with skip/error outcomes |
