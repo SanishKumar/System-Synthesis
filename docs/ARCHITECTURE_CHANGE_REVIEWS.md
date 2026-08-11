@@ -45,7 +45,22 @@ How a binding was written is deliberately not recorded. `sourceProperties` is in
 
 An absent host port means Docker allocates one, which is still host publication and must not be read as an internal-only port. `expose` remains separate and never denotes host publication.
 
-Rules do not yet read these bindings; every published port is still treated as public exposure. See [known limitations](./KNOWN_LIMITATIONS.md).
+An entry the adapter cannot fully model is kept rather than dropped. Losing a declared published port is a false negative in a security review, so what cannot be parsed into an address and ports is still recorded.
+
+Each binding classifies into how far the port reaches:
+
+| Host address | Reach |
+| --- | --- |
+| Absent, `0.0.0.0`, `::` | External — every interface |
+| `127.0.0.0/8`, `::1`, `localhost` | Loopback — the machine only |
+| Any other resolvable address | Host — that network |
+| Unexpanded variable, or unrecognized | Unknown |
+
+Unknown is never folded into loopback. An unexpanded variable could hold `0.0.0.0`, so a port whose reach cannot be established is treated as reachable rather than reported as contained.
+
+Zone assignment follows that classification: a service is in the perimeter when any port reaches beyond the machine, rather than merely because a port exists. A loopback-only service is `private`, which is what stops a local binding from being read as public and producing a spurious trust-boundary crossing.
+
+The rules have not been updated yet, so `compose-published-persistence-port` and `compose-public-service-to-persistence` still read the port strings and still treat any published port as public. See [known limitations](./KNOWN_LIMITATIONS.md).
 
 ### Inferred environment dependencies
 

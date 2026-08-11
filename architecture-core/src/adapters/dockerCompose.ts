@@ -11,6 +11,7 @@ import {
   type Document,
   type ParsedNode,
 } from "yaml";
+import { isPubliclyReachable } from "../portExposure.js";
 import {
   canonicalizeGraph,
   stableEdgeId,
@@ -36,6 +37,9 @@ const ADAPTER_ID = "docker-compose";
  * inferred from environment references. Version 3 parses each published port
  * into a structured binding, preserving the host address that the long syntax
  * previously discarded, and renders the string form from that same parse.
+ * Version 4 reads an unbracketed IPv6 host address, keeps an entry it cannot
+ * fully model instead of dropping it, and assigns the zone from whether a port
+ * is reachable beyond the machine rather than from whether one exists.
  *
  * This is separate from the analyzer version. Analyzer identity answers "would
  * the current rules still reach this verdict from this graph"; this answers
@@ -46,7 +50,7 @@ const ADAPTER_ID = "docker-compose";
  * `architecture-core/src/__tests__/importVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const COMPOSE_ADAPTER_VERSION = 3;
+export const COMPOSE_ADAPTER_VERSION = 4;
 const MAX_COMPOSE_BYTES = 1_000_000;
 const MAX_SERVICES = 500;
 /** Filenames `docker compose` picks up without an explicit `-f`. */
@@ -252,14 +256,22 @@ function parseShortPort(raw: string): PublishedPortBinding | null {
   if (hostIp !== undefined) {
     if (parts.length === 2) return { hostIp, published: parts[0], target: parts[1], protocol };
     if (parts.length === 1) return { hostIp, target: parts[0], protocol };
-    return null;
+    // Brackets already delimited the address, so anything further is unmodelled.
+    return { hostIp, target: parts.join(":"), protocol };
   }
   if (parts.length === 1) return { target: parts[0], protocol };
   if (parts.length === 2) return { published: parts[0], target: parts[1], protocol };
-  if (parts.length === 3) {
-    return { hostIp: parts[0], published: parts[1], target: parts[2], protocol };
-  }
-  return null;
+  // The host port and container port are always the final two segments, so
+  // everything before them is the address. This is what makes an unbracketed
+  // IPv6 address work as well as an IPv4 one: `::1:6000:6000` splits into more
+  // pieces than an address plus two ports, and taking the ports from the end
+  // reassembles the rest correctly.
+  return {
+    hostIp: parts.slice(0, -2).join(":"),
+    published: parts[parts.length - 2],
+    target: parts[parts.length - 1],
+    protocol,
+  };
 }
 
 function parseLongPort(entry: Record<string, unknown>): PublishedPortBinding | null {
@@ -297,10 +309,6 @@ function formatBinding(binding: PublishedPortBinding): string {
     .filter((part) => part !== undefined)
     .join(":");
   return binding.protocol === "udp" ? `${address}/udp` : address;
-}
-
-function portStrings(value: unknown): string[] {
-  return portBindings(value).map(formatBinding);
 }
 
 function exposedPortStrings(value: unknown): string[] {
@@ -367,7 +375,10 @@ function makeNode(
       tech: displayTechnology(image),
       environment: "development",
       instances: replicas(service),
-      zone: publishedPorts.length ? "dmz" : "private",
+      // A port reachable only from the machine itself does not put the service
+      // in a perimeter zone; treating it as though it did marked correct local
+      // bindings as publicly exposed.
+      zone: publishedPortBindings.some(isPubliclyReachable) ? "dmz" : "private",
       provenance: provenance(file, address, revision, line),
       sourceProperties: {
         image: image || undefined,

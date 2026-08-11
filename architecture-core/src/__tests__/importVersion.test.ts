@@ -4,7 +4,9 @@ import { canonicalGraphFingerprint } from "../provenance.js";
 
 /**
  * Exercises every relationship source and classification path the adapter
- * claims to model, so a change in extraction shows up here.
+ * claims to model, so a change in extraction shows up here. The loopback
+ * binding is deliberate: without one the fixture could not detect a change to
+ * host-address handling or zone assignment.
  */
 const FIXTURE = `name: shop
 services:
@@ -31,6 +33,8 @@ services:
       replicas: 3
   database:
     image: postgres:16
+    ports:
+      - "127.0.0.1:5432:5432"
     volumes:
       - data:/var/lib/postgresql/data
     healthcheck:
@@ -50,7 +54,7 @@ volumes:
  * different graph, which is exactly when COMPOSE_ADAPTER_VERSION must be
  * reconsidered. Update both together, deliberately.
  */
-const PINNED_FINGERPRINT = "8100a3158b0283cd";
+const PINNED_FINGERPRINT = "ac41dbc8cfa7163b";
 
 describe("Compose import version", () => {
   const { graph } = dockerComposeAdapter.import([

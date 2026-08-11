@@ -1,6 +1,7 @@
 export * from "./analyzer.js";
 export * from "./graphAnalysis.js";
 export * from "./graphDiff.js";
+export * from "./portExposure.js";
 export * from "./provenance.js";
 export * from "./validation.js";
 export * from "./changeReview.js";

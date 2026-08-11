@@ -80,6 +80,25 @@ describe("published port extraction", () => {
     ]);
   });
 
+  it("reads an unbracketed IPv6 host address", () => {
+    // The host and container ports are the final two segments, so the address
+    // reassembles from everything before them however many colons it holds.
+    expect(bindingsFor(`      - "::1:6000:6000"`).publishedPortBindings).toEqual([
+      { hostIp: "::1", published: "6000", target: "6000", protocol: "tcp" },
+    ]);
+    expect(bindingsFor(`      - "2001:db8::1:6000:6000"`).publishedPortBindings).toEqual([
+      { hostIp: "2001:db8::1", published: "6000", target: "6000", protocol: "tcp" },
+    ]);
+  });
+
+  it("never drops a declared port it cannot fully model", () => {
+    // Losing a published port is a false negative in a security review, so an
+    // unmodelled entry is kept rather than discarded.
+    const { publishedPorts, publishedPortBindings } = bindingsFor(`      - "::1:6000:6000"`);
+    expect(publishedPorts).toEqual(["::1:6000:6000"]);
+    expect(publishedPortBindings).toHaveLength(1);
+  });
+
   it("omits the structured field entirely when nothing is published", () => {
     const { graph } = dockerComposeAdapter.import([
       { path: "compose.yaml", content: "services:\n  api:\n    image: api:1\n" },
