@@ -201,7 +201,7 @@ These statements are limited to checked behavior in this repository.
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
 | A GitHub outage cannot fail a decision that is already recorded | Best-effort publishing with skip/error outcomes |
 
-Current automated count: 40 architecture-core tests, 7 CLI tests, 24 Action tests, and 120 backend tests (191 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 57 architecture-core tests, 7 CLI tests, 24 Action tests, and 121 backend tests (209 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

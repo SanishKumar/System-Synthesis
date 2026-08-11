@@ -50,7 +50,7 @@ volumes:
  * different graph, which is exactly when COMPOSE_ADAPTER_VERSION must be
  * reconsidered. Update both together, deliberately.
  */
-const PINNED_FINGERPRINT = "e672d49fa54178fa";
+const PINNED_FINGERPRINT = "8100a3158b0283cd";
 
 describe("Compose import version", () => {
   const { graph } = dockerComposeAdapter.import([

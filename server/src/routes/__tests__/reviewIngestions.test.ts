@@ -159,6 +159,27 @@ describe("GitHub architecture review ingestion", () => {
     expect(invalid.response.status).toBe(401);
   });
 
+  it("still accepts a graph from an Action that predates structured port bindings", async () => {
+    const baseUrl = await startApp();
+    const token = await issueToken();
+    const body = payload();
+    // Reproduce what a pinned older importer sends: published ports as strings,
+    // with no structured bindings at all. Rejecting this would break every
+    // repository that pinned the Action, which is exactly what pinning prevents.
+    for (const side of ["baseGraph", "headGraph"] as const) {
+      for (const node of body[side].nodes) {
+        const properties = node.data.sourceProperties as Record<string, unknown>;
+        delete properties.publishedPortBindings;
+      }
+    }
+    expect(
+      JSON.stringify(body).includes("publishedPortBindings")
+    ).toBe(false);
+
+    const { response } = await post(baseUrl, body, token);
+    expect(response.status).toBe(201);
+  });
+
   it("rejects a repository identity not scoped to the credential", async () => {
     const baseUrl = await startApp();
     const token = await issueToken();

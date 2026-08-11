@@ -33,6 +33,20 @@ It derives common service categories from well-known service/image names, includ
 
 It does not resolve Compose interpolation, `extends`, `include`, profiles, generated overrides, or runtime service discovery. See [known limitations](./KNOWN_LIMITATIONS.md).
 
+### Published port bindings
+
+Each published port is parsed once into a structured binding carrying the target port, the host port where one is given, the host address where one is given, and the protocol. Ports and addresses stay strings so a range such as `8000-8010` survives without being coerced to a number.
+
+Both `publishedPorts` and `publishedPortBindings` are rendered from that single parse, and a test asserts they cannot drift. The structured field is additive: an Action pinned to an importer that predates it keeps sending only the strings, and the ingestion boundary keeps accepting that. Its absence therefore means the producer could not report a host address — never that the ports bind to loopback.
+
+The host address was previously lost. The long syntax discarded `host_ip` entirely, so `127.0.0.1:5432:5432` and its long-form equivalent extracted differently and rewriting one as the other registered as an architecture change. They now agree, as do `5432:5432` and `5432:5432/tcp`, since `tcp` is the default.
+
+How a binding was written is deliberately not recorded. `sourceProperties` is inside the content fingerprint, so keeping the syntax would make reformatting Compose report a change.
+
+An absent host port means Docker allocates one, which is still host publication and must not be read as an internal-only port. `expose` remains separate and never denotes host publication.
+
+Rules do not yet read these bindings; every published port is still treated as public exposure. See [known limitations](./KNOWN_LIMITATIONS.md).
+
 ### Inferred environment dependencies
 
 Most projects wire services together through environment values rather than `depends_on`, so a value naming another service becomes an edge labelled `environment` with `inferred` confidence, separate from the `explicit` confidence carried by `depends_on`.

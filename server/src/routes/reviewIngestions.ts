@@ -82,6 +82,15 @@ const sourcePropertiesSchema = z.object({
   image: z.string().max(500).optional(),
   command: z.string().max(2_000).optional(),
   publishedPorts: stringListSchema.optional(),
+  // Optional so an Action pinned to an importer that predates structured
+  // bindings keeps validating. Its absence means the producer could not report
+  // a host address, never that the ports bind to loopback.
+  publishedPortBindings: z.array(z.object({
+    target: z.string().trim().min(1).max(60),
+    published: z.string().trim().min(1).max(60).optional(),
+    hostIp: z.string().trim().min(1).max(120).optional(),
+    protocol: z.enum(["tcp", "udp"]),
+  }).strict()).max(500).optional(),
   exposedPorts: stringListSchema.optional(),
   networks: stringListSchema.optional(),
   volumes: stringListSchema.optional(),
