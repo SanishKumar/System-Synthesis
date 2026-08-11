@@ -91,9 +91,11 @@ services:
       - "3000:3000"
     environment:
       NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
+      REDIS_URL: redis://redis:6379            # ⚠️ VIOLATION: frontend talks to Redis directly
       NODE_ENV: development
     depends_on:
       - server
+      - redis                                  # ⚠️ VIOLATION: public service → persistence
     volumes:
       - ./frontend/src:/app/frontend/src
       - ./shared:/app/shared
