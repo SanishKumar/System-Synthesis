@@ -60,7 +60,21 @@ Unknown is never folded into loopback. An unexpanded variable could hold `0.0.0.
 
 Zone assignment follows that classification: a service is in the perimeter when any port reaches beyond the machine, rather than merely because a port exists. A loopback-only service is `private`, which is what stops a local binding from being read as public and producing a spurious trust-boundary crossing.
 
-The rules have not been updated yet, so `compose-published-persistence-port` and `compose-public-service-to-persistence` still read the port strings and still treat any published port as public. See [known limitations](./KNOWN_LIMITATIONS.md).
+Exposure findings read that classification:
+
+| Reach | Database, storage, warehouse | Cache, broker, search |
+| --- | --- | --- |
+| External | `compose-published-persistence-port`, critical | `compose-published-sensitive-service-port`, critical |
+| Host or unknown | `compose-restricted-sensitive-service-port`, warning | `compose-restricted-sensitive-service-port`, warning |
+| Loopback | None | None |
+
+The rules are deliberately disjoint by service type, so one exposure produces one finding rather than two. The warning tier is a separate rule rather than a severity inside an existing one, because a rule carries a single configured severity and cannot report an external binding as critical while reporting a specific-address binding as a warning.
+
+A service counts as public for `compose-public-service-to-persistence` when any of its ports reaches beyond the machine, so a loopback-bound frontend no longer registers as a public service.
+
+Impacts follow the same classification, since a report that raises no exposure finding while describing the change as a public exposure contradicts itself. An external binding remains `public-exposure-added`; a specific address is `restricted-exposure-added`; an unresolved one is `unresolved-exposure-added`; and loopback is `loopback-binding-added` at informational severity. Impact wording is invisible to the rule-set fingerprint, which is why the analyzer version is bumped by hand.
+
+A graph from an importer that predates structured bindings is read through its port strings, which retain the host address for every short-syntax entry. That keeps the rules working for a repository still pinned to an older Action instead of silently reporting nothing; a long-syntax entry had its address discarded at extraction and can still only read as external.
 
 ### Inferred environment dependencies
 

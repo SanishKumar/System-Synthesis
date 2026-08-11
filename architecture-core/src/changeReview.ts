@@ -11,6 +11,12 @@ import {
   diffArchitectureGraphs,
   type SemanticGraphDiff,
 } from "./graphDiff.js";
+import {
+  formatPublishedPort,
+  nodePortBindings,
+  portExposure,
+  type PortExposure,
+} from "./portExposure.js";
 import type { CanonicalArchitectureGraph } from "./provenance.js";
 import type { SourceImportDiagnostic } from "./adapters/types.js";
 import {
@@ -27,6 +33,11 @@ export type ArchitectureImpactKind =
   | "dependency-removed"
   | "public-exposure-added"
   | "public-exposure-removed"
+  // Distinct kinds so a consumer is not obliged to read prose to tell how far a
+  // new binding actually reaches.
+  | "restricted-exposure-added"
+  | "unresolved-exposure-added"
+  | "loopback-binding-added"
   | "trust-boundary-crossing-added"
   | "trust-boundary-crossing-removed"
   | "redundancy-increased"
@@ -206,18 +217,68 @@ export function deriveArchitectureImpacts(
       const persistence = ["database", "storage", "warehouse"].includes(
         after.data.nodeType
       );
-      impacts.push(impact(
-        `public-exposure-added:${nodeId}:${addedPorts.join(",")}`,
-        "public-exposure-added",
-        persistence ? "critical" : "warning",
-        `Published ${after.data.label} to the host`,
-        `New host port(s): ${addedPorts.join(", ")}.`,
-        [nodeId],
-        [],
-        nodeLocations(after),
-        beforePorts,
-        afterPorts
-      ));
+      // Grouped by how far each new port reaches. Describing a loopback binding
+      // as a public exposure contradicts the rules, which correctly raise
+      // nothing for it, and the contradiction is visible in the same report.
+      const added = new Set(addedPorts);
+      const byReach = new Map<PortExposure, string[]>();
+      for (const binding of nodePortBindings(after)) {
+        const rendered = formatPublishedPort(binding);
+        if (!added.has(rendered)) continue;
+        const reach = portExposure(binding);
+        byReach.set(reach, [...(byReach.get(reach) || []), rendered]);
+      }
+      // A graph whose ports could not be classified at all keeps the previous
+      // wording rather than losing the impact entirely.
+      if (!byReach.size) byReach.set("external", addedPorts);
+
+      for (const [reach, ports] of [...byReach].sort(
+        (left, right) => left[0].localeCompare(right[0])
+      )) {
+        const presentation: {
+          kind: ArchitectureImpactKind;
+          severity: ValidationSeverity;
+          summary: string;
+          description: string;
+        } = {
+          external: {
+            kind: "public-exposure-added" as const,
+            severity: persistence ? ("critical" as const) : ("warning" as const),
+            summary: `Published ${after.data.label} to the host`,
+            description: `New host port(s) on every interface: ${ports.join(", ")}.`,
+          },
+          host: {
+            kind: "restricted-exposure-added" as const,
+            severity: "warning" as const,
+            summary: `Bound ${after.data.label} to a reachable address`,
+            description: `New host port(s) bound to a specific non-loopback address: ${ports.join(", ")}.`,
+          },
+          unknown: {
+            kind: "unresolved-exposure-added" as const,
+            severity: "warning" as const,
+            summary: `Bound ${after.data.label} to an unresolved address`,
+            description: `New host port(s) whose bind address could not be resolved: ${ports.join(", ")}.`,
+          },
+          loopback: {
+            kind: "loopback-binding-added" as const,
+            severity: "info" as const,
+            summary: `Bound ${after.data.label} to loopback`,
+            description: `New host port(s) reachable only from the machine: ${ports.join(", ")}.`,
+          },
+        }[reach];
+        impacts.push(impact(
+          `${presentation.kind}:${nodeId}:${ports.join(",")}`,
+          presentation.kind,
+          presentation.severity,
+          presentation.summary,
+          presentation.description,
+          [nodeId],
+          [],
+          nodeLocations(after),
+          beforePorts,
+          afterPorts
+        ));
+      }
     }
     if (removedPorts.length) {
       impacts.push(impact(

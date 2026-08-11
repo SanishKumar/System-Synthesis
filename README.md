@@ -190,6 +190,7 @@ These statements are limited to checked behavior in this repository.
 | Protected boards can only be mutated by owner/editor | Adversarial socket tests and authenticated integration |
 | Granular Yjs graph operations converge in the tested model | Seeded randomized convergence harness |
 | A verdict produced by an earlier rule set is reported as outdated, never as current | Pinned rule-set and analyzer-provenance tests |
+| A port reachable only from the machine raises no exposure finding, and one exposure raises exactly one finding | Exposure rule matrix across reach and service type |
 | Re-analysis that reproduces the same verdict does not revoke an existing decision | Recompute repository tests |
 | An inferred environment dependency requires an exact service-name match and never overrides a declared one | Compose environment-reference tests |
 | Environment values are never carried into the stored graph | Compose environment-reference tests |
@@ -201,7 +202,7 @@ These statements are limited to checked behavior in this repository.
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
 | A GitHub outage cannot fail a decision that is already recorded | Best-effort publishing with skip/error outcomes |
 
-Current automated count: 69 architecture-core tests, 7 CLI tests, 24 Action tests, and 121 backend tests (221 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 85 architecture-core tests, 7 CLI tests, 24 Action tests, and 121 backend tests (237 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

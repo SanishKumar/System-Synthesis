@@ -11,7 +11,12 @@ import {
   type Document,
   type ParsedNode,
 } from "yaml";
-import { isPubliclyReachable } from "../portExposure.js";
+import {
+  formatPublishedPort,
+  isPubliclyReachable,
+  parsePublishedPort,
+  type PublishedPortBinding,
+} from "../portExposure.js";
 import {
   canonicalizeGraph,
   stableEdgeId,
@@ -212,68 +217,6 @@ function environmentReferences(
   );
 }
 
-/**
- * One published port, parsed once.
- *
- * Ports and addresses stay strings so a range such as `8000-8010` survives
- * without being coerced to a number. An absent `hostIp` means every interface;
- * an absent `published` means Docker allocates a host port, which is still host
- * publication rather than an internal-only port.
- *
- * How the binding was written is deliberately not recorded. `sourceProperties`
- * is inside the content fingerprint, so keeping the syntax would make rewriting
- * a short entry as an equivalent long one register as an architecture change.
- */
-export interface PublishedPortBinding {
-  target: string;
-  published?: string;
-  hostIp?: string;
-  protocol: "tcp" | "udp";
-}
-
-function normalizeProtocol(value: unknown): "tcp" | "udp" {
-  return typeof value === "string" && value.trim().toLowerCase() === "udp"
-    ? "udp"
-    : "tcp";
-}
-
-/**
- * Short syntax is `[HOST_IP:][HOST_PORT:]CONTAINER_PORT[/PROTOCOL]`. An IPv6
- * host address is bracketed, which is what makes a plain colon split wrong.
- */
-function parseShortPort(raw: string): PublishedPortBinding | null {
-  const trimmed = raw.trim();
-  if (!trimmed) return null;
-  const slash = trimmed.lastIndexOf("/");
-  const protocol = normalizeProtocol(slash === -1 ? undefined : trimmed.slice(slash + 1));
-  const withoutProtocol = slash === -1 ? trimmed : trimmed.slice(0, slash);
-
-  const bracketed = /^\[([^\]]+)\]:(.*)$/.exec(withoutProtocol);
-  const hostIp = bracketed ? bracketed[1] : undefined;
-  const remainder = bracketed ? bracketed[2] : withoutProtocol;
-  const parts = remainder.split(":");
-
-  if (hostIp !== undefined) {
-    if (parts.length === 2) return { hostIp, published: parts[0], target: parts[1], protocol };
-    if (parts.length === 1) return { hostIp, target: parts[0], protocol };
-    // Brackets already delimited the address, so anything further is unmodelled.
-    return { hostIp, target: parts.join(":"), protocol };
-  }
-  if (parts.length === 1) return { target: parts[0], protocol };
-  if (parts.length === 2) return { published: parts[0], target: parts[1], protocol };
-  // The host port and container port are always the final two segments, so
-  // everything before them is the address. This is what makes an unbracketed
-  // IPv6 address work as well as an IPv4 one: `::1:6000:6000` splits into more
-  // pieces than an address plus two ports, and taking the ports from the end
-  // reassembles the rest correctly.
-  return {
-    hostIp: parts.slice(0, -2).join(":"),
-    published: parts[parts.length - 2],
-    target: parts[parts.length - 1],
-    protocol,
-  };
-}
-
 function parseLongPort(entry: Record<string, unknown>): PublishedPortBinding | null {
   if (entry.target === undefined) return null;
   const hostIp = typeof entry.host_ip === "string" ? entry.host_ip.trim() : undefined;
@@ -281,7 +224,7 @@ function parseLongPort(entry: Record<string, unknown>): PublishedPortBinding | n
     target: String(entry.target),
     ...(entry.published !== undefined ? { published: String(entry.published) } : {}),
     ...(hostIp ? { hostIp } : {}),
-    protocol: normalizeProtocol(entry.protocol),
+    protocol: String(entry.protocol || "").toLowerCase() === "udp" ? "udp" : "tcp",
   };
 }
 
@@ -289,26 +232,13 @@ function portBindings(value: unknown): PublishedPortBinding[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
     if (typeof entry === "string" || typeof entry === "number") {
-      const parsed = parseShortPort(String(entry));
+      const parsed = parsePublishedPort(String(entry));
       return parsed ? [parsed] : [];
     }
     if (!isRecord(entry)) return [];
     const parsed = parseLongPort(entry);
     return parsed ? [parsed] : [];
   });
-}
-
-/**
- * The long-standing string form, now rendered from the parsed binding so the two
- * representations cannot disagree. This also makes the short and long syntaxes
- * agree with each other: previously a long entry silently dropped `host_ip`, so
- * rewriting an equivalent short entry as a long one changed the extracted graph.
- */
-function formatBinding(binding: PublishedPortBinding): string {
-  const address = [binding.hostIp, binding.published, binding.target]
-    .filter((part) => part !== undefined)
-    .join(":");
-  return binding.protocol === "udp" ? `${address}/udp` : address;
 }
 
 function exposedPortStrings(value: unknown): string[] {
@@ -348,7 +278,7 @@ function makeNode(
   const address = `services.${serviceName}`;
   const image = imageName(service);
   const publishedPortBindings = portBindings(service.ports);
-  const publishedPorts = publishedPortBindings.map(formatBinding);
+  const publishedPorts = publishedPortBindings.map(formatPublishedPort);
   const exposedPorts = exposedPortStrings(service.expose);
   const networks = namedKeys(service.networks).sort();
   const volumes = stringList(service.volumes).sort();

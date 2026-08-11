@@ -11,8 +11,12 @@ import { DEFAULT_RULES, type ArchitectureRule } from "./validation.js";
  * `architecture-core/src/__tests__/analyzer.test.ts` pins the current rule set,
  * so a rule change cannot reach main without someone deciding what this
  * identity should become.
+ *
+ * Version 2 made exposure findings read the bind address instead of the mere
+ * presence of a port. That also covers the impact wording, which the rule-set
+ * fingerprint cannot see because no rule identity or severity changed.
  */
-export const ANALYZER_VERSION = 1;
+export const ANALYZER_VERSION = 2;
 
 /**
  * Stable digest of the rule identities and default severities that decide a

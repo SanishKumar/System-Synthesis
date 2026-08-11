@@ -7,6 +7,13 @@ import type {
   ValidationSeverity,
 } from "@system-synthesis/shared";
 import { ArchitectureGraph } from "./graphAnalysis.js";
+import {
+  formatPublishedPort,
+  isPubliclyReachable,
+  nodePortBindings,
+  portExposure,
+  type PortExposure,
+} from "./portExposure.js";
 
 export interface ArchitectureRule {
   id: string;
@@ -224,26 +231,88 @@ function sourceStringArray(node: SerializedNode, key: string): string[] {
     : [];
 }
 
+/** Durable stores. Kept separate from caches and brokers so that widening one
+ * rule's coverage cannot silently widen another's. */
+const PERSISTENCE_TYPES = ["database", "storage", "warehouse"];
+/** Services that routinely hold credentials, sessions, messages, or indexed
+ * copies of production data, and should not be reachable from outside. */
+const SENSITIVE_TYPES = [...PERSISTENCE_TYPES, "cache", "broker", "search"];
+
+function isComposeGraph(graph: ArchitectureGraph): boolean {
+  return graph.nodes.some((node) => node.data.provenance?.adapter === "docker-compose");
+}
+
+function exposedPorts(node: SerializedNode, reach: PortExposure[]): string[] {
+  return nodePortBindings(node)
+    .filter((binding) => reach.includes(portExposure(binding)))
+    .map(formatPublishedPort);
+}
+
 const publishedPersistencePort: ArchitectureRule = {
   id: "compose-published-persistence-port",
   title: "Persistence port is publicly published",
   severity: "critical",
   rationale: "Databases and durable stores should not publish a host port unless external access is explicitly required and protected.",
   references: ["CWE-284"],
-  appliesTo: (graph) => graph.nodes.some(
-    (node) => node.data.provenance?.adapter === "docker-compose"
-  ),
+  appliesTo: isComposeGraph,
   evaluate(graph) {
     return graph.nodes.flatMap((node) => {
-      if (!["database", "storage", "warehouse"].includes(node.data.nodeType)) {
-        return [];
-      }
-      const ports = sourceStringArray(node, "publishedPorts");
+      if (!PERSISTENCE_TYPES.includes(node.data.nodeType)) return [];
+      // Only a binding that reaches beyond the machine. A port restricted to
+      // loopback is the recommended way to reach a database locally.
+      const ports = exposedPorts(node, ["external"]);
       if (!ports.length) return [];
       return [issue(
         this,
         node.id,
-        `The ${node.data.label} persistence service publishes host port(s): ${ports.join(", ")}.`,
+        `The ${node.data.label} persistence service publishes host port(s) on every interface: ${ports.join(", ")}.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const publishedSensitiveServicePort: ArchitectureRule = {
+  id: "compose-published-sensitive-service-port",
+  title: "Sensitive service port is publicly published",
+  severity: "critical",
+  rationale: "Caches, brokers, and search engines hold sessions, credentials, queued messages, and indexed copies of production data, and are frequently deployed without authentication because they are assumed to be internal.",
+  references: ["CWE-284"],
+  appliesTo: isComposeGraph,
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      // Deliberately disjoint from the persistence rule so one exposure cannot
+      // produce two findings.
+      if (!["cache", "broker", "search"].includes(node.data.nodeType)) return [];
+      const ports = exposedPorts(node, ["external"]);
+      if (!ports.length) return [];
+      return [issue(
+        this,
+        node.id,
+        `The ${node.data.label} ${node.data.nodeType} publishes host port(s) on every interface: ${ports.join(", ")}.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const restrictedSensitivePort: ArchitectureRule = {
+  id: "compose-restricted-sensitive-service-port",
+  title: "Sensitive service port is bound to a reachable address",
+  severity: "warning",
+  rationale: "A port bound to a specific non-loopback address is reachable from that network, and one whose address cannot be resolved may be reachable from anywhere. Neither is contained, and neither is as clear-cut as publishing on every interface.",
+  appliesTo: isComposeGraph,
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      if (!SENSITIVE_TYPES.includes(node.data.nodeType)) return [];
+      // A separate rule because a rule carries one severity, and these are not
+      // as certain as an external binding.
+      const ports = exposedPorts(node, ["host", "unknown"]);
+      if (!ports.length) return [];
+      return [issue(
+        this,
+        node.id,
+        `The ${node.data.label} ${node.data.nodeType} binds host port(s) to an address that is not loopback: ${ports.join(", ")}.`,
         [node.id]
       )];
     });
@@ -263,10 +332,9 @@ const publicServiceToPersistence: ArchitectureRule = {
       const source = graph.nodesById.get(edge.source);
       const target = graph.nodesById.get(edge.target);
       if (!source || !target) return [];
-      const sourceIsPublic = sourceStringArray(source, "publishedPorts").length > 0;
-      const targetIsPersistence = ["database", "storage", "warehouse"].includes(
-        target.data.nodeType
-      );
+      // Reachable from beyond the machine, rather than merely having a port.
+      const sourceIsPublic = nodePortBindings(source).some(isPubliclyReachable);
+      const targetIsPersistence = PERSISTENCE_TYPES.includes(target.data.nodeType);
       if (!sourceIsPublic || !targetIsPersistence) return [];
       return [issue(
         this,
@@ -313,6 +381,8 @@ export const DEFAULT_RULES: ArchitectureRule[] = [
   disconnectedComponent,
   highSlaNoRedundancy,
   publishedPersistencePort,
+  publishedSensitiveServicePort,
+  restrictedSensitivePort,
   publicServiceToPersistence,
 ];
 

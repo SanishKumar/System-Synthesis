@@ -16,6 +16,8 @@ const PINNED_RULE_SET = [
   "compose-dependency-without-healthcheck:info",
   "compose-public-service-to-persistence:warning",
   "compose-published-persistence-port:critical",
+  "compose-published-sensitive-service-port:critical",
+  "compose-restricted-sensitive-service-port:warning",
   "dependency-cycle:warning",
   "disconnected-component:info",
   "high-sla-single-instance:info",
