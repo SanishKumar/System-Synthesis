@@ -62,8 +62,17 @@ export async function writeDecisionCheck(
     env: options.env,
     transport: options.transport,
   });
-  if (credential.status !== "ok") {
+  // An App that is unconfigured or uninstalled is a setup state: nothing is
+  // wrong, there is simply nothing to publish with until someone acts. A
+  // credential that failed for any other reason is a fault, and reporting it as
+  // a skip would tell a reviewer their pull request needs no update while the
+  // gate sits unpublished. Its own explanation is kept, because "GitHub is
+  // unreachable" and "the App lost access" call for different responses.
+  if (credential.status === "not_configured" || credential.status === "not_installed") {
     return { status: "skipped", reason: credential.status };
+  }
+  if (credential.status === "error") {
+    return { status: "error", reason: credential.reason };
   }
 
   const transport = options.transport ?? defaultTransport();

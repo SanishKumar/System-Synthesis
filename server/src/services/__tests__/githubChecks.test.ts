@@ -186,6 +186,31 @@ describe("publishing the decision check", () => {
     ).resolves.toEqual({ status: "skipped", reason: "not_configured" });
   });
 
+  it("reports an unreachable GitHub as a failure rather than as nothing to do", async () => {
+    // A lookup that fails is a transient fault, not a setup state. Reporting it
+    // as a skip tells a reviewer their pull request needs no update, which is
+    // the opposite of true: the gate is stuck and someone has to retry it.
+    const unreachable: HttpTransport = async (url) => {
+      if (url.endsWith("/installation")) throw new TypeError("fetch failed");
+      return { status: 200, json: async () => ({}) };
+    };
+    await expect(writeDecisionCheck(review(), { transport: unreachable, env })).resolves.toEqual({
+      status: "error",
+      reason: "fetch failed",
+    });
+  });
+
+  it("keeps the detail of a credential failure instead of collapsing it", async () => {
+    const refused: HttpTransport = async (url) =>
+      url.endsWith("/installation")
+        ? { status: 500, json: async () => ({ message: "Server Error" }) }
+        : { status: 200, json: async () => ({}) };
+    await expect(writeDecisionCheck(review(), { transport: refused, env })).resolves.toEqual({
+      status: "error",
+      reason: "installation lookup returned 500",
+    });
+  });
+
   it("reports a refused write rather than pretending it published", async () => {
     const transport: HttpTransport = async (url, init) => {
       if (url.endsWith("/installation")) return { status: 200, json: async () => ({ id: 42 }) };

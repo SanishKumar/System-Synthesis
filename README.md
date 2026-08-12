@@ -201,8 +201,9 @@ These statements are limited to checked behavior in this repository.
 | GitHub App access is short-lived, repository-scoped, and never served near expiry | GitHub App credential tests |
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
 | A GitHub outage cannot fail a decision that is already recorded | Best-effort publishing with skip/error outcomes |
+| An unreachable GitHub is reported as an unpublished gate to retry, never as a review with nothing to publish | Credential-failure sync tests and a rendered outage |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 130 backend tests (253 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 133 backend tests (256 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

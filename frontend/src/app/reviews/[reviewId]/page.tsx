@@ -98,13 +98,33 @@ function syncPresentation(
       retry: true,
     };
   }
+  if (reason === "not_a_commit") {
+    return {
+      title: "Not applicable",
+      detail: "This revision is not a commit, so it cannot carry a check.",
+      tone: "text-text-muted",
+      retry: false,
+    };
+  }
+  if (reason === "not_external") {
+    return {
+      title: "Not applicable",
+      detail: "A manually imported review has no pull request to update.",
+      tone: "text-text-muted",
+      retry: false,
+    };
+  }
+  // A skip this interface does not recognise is not a licence to declare there
+  // is nothing to publish. Saying so on a review that came from a pull request
+  // is the failure this panel exists to prevent, so an unnamed skip is reported
+  // as unfinished and stays retryable.
   return {
-    title: "Not applicable",
-    detail: reason === "not_a_commit"
-      ? "This revision is not a commit, so it cannot carry a check."
-      : "A manually imported review has no pull request to update.",
-    tone: "text-text-muted",
-    retry: false,
+    title: "Sync incomplete",
+    detail: reason
+      ? `GitHub sync stopped: ${reason}.`
+      : "This decision has not reached the pull request, for a reason that was not recorded.",
+    tone: "text-amber-600",
+    retry: true,
   };
 }
 

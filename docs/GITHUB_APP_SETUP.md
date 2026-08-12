@@ -105,17 +105,37 @@ Publishing is best effort by design. The decision is durable and audited before
 GitHub is contacted, so a failure here never fails the reviewer's action; it is
 logged as `Architecture decision check not published` with a reason.
 
-| Reason | Meaning |
+The review records which of two things happened, because they call for
+different responses. A **skip** means there is nothing to publish, or nothing to
+publish with until someone changes the setup:
+
+| Skipped | Meaning |
 | --- | --- |
 | `not_configured` | One or both environment variables are missing or blank |
 | `not_installed` | The App is registered but not installed on that repository |
 | `not_external` | A manually imported review; there is no pull request to gate |
 | `not_a_commit` | The head revision is a branch name, and only a commit can carry a check |
+
+A **failure** means the attempt should have worked and did not, so the gate is
+unpublished and retrying is worth doing:
+
+| Failed | Meaning |
+| --- | --- |
+| `fetch failed` | GitHub was unreachable from the server |
+| `installation lookup returned 401` | The App's private key no longer matches the registration |
+| `installation lookup returned 5xx` | GitHub was failing; retry later |
 | `check run write returned 403` | The App lacks `Checks: Read and write`, or the installation was removed |
 | `check run write returned 422` | GitHub rejected the payload — a genuine bug worth reporting |
 
-A decision that was recorded while publishing failed stays recorded. Re-running
-a decision, or a new commit on the pull request, publishes it again.
+The distinction is load-bearing. A transient fault reported as a skip would tell
+a reviewer their pull request needs no update while the gate sits unpublished,
+which is the failure the sync panel exists to prevent. Only a setup state or an
+absent pull request is a skip; everything else is a failure carrying its own
+reason.
+
+A decision that was recorded while publishing failed stays recorded. The review
+shows the failure and offers **Retry sync**, and a new commit on the pull
+request publishes it again.
 
 ## What this does not do yet
 

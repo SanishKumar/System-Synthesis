@@ -202,6 +202,24 @@ describe("GitHub synchronization state", () => {
     expect(state).toMatchObject({ status: "skipped", reason: "not_configured" });
   });
 
+  it("records an unreachable GitHub as a failure a reviewer can retry", async () => {
+    const { review } = await ingest();
+    const unreachable: HttpTransport = async (url) => {
+      if (url.endsWith("/installation")) throw new TypeError("fetch failed");
+      return { status: 200, json: async () => ({}) };
+    };
+    const state = await publishDecisionCheck(review, { transport: unreachable, env });
+    expect(state).toMatchObject({
+      status: "failed",
+      reason: "fetch failed",
+      revision: review.revision,
+      headRevision: review.headRevision,
+    });
+    // The stored state has to agree, or a refresh would hide the stuck gate.
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync).toMatchObject({ status: "failed", reason: "fetch failed" });
+  });
+
   it("distinguishes an uninstalled App from a failure", async () => {
     const { review } = await ingest();
     const uninstalled: HttpTransport = async (url) =>
