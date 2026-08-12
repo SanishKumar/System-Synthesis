@@ -184,17 +184,101 @@ describe("a graph from an importer without structured bindings", () => {
       .sort();
   }
 
-  it("still reports an external binding recorded as a string", () => {
-    // Reading the strings keeps the rules working for a repository pinned to an
-    // older Action, rather than silently reporting nothing.
-    expect(legacyFindings(["5432:5432"])).toEqual(["compose-published-persistence-port"]);
+  it("will not call an address-less string proof of external reach", () => {
+    // The old importer discarded host_ip from the long syntax, so "5432:5432"
+    // is either a short entry on every interface or a long entry that was bound
+    // to loopback. Reporting a critical external exposure would assert more
+    // than the stored evidence carries, so it is reported as unresolved.
+    expect(legacyFindings(["5432:5432"])).toEqual([
+      "compose-restricted-sensitive-service-port",
+    ]);
   });
 
   it("recovers a loopback address the string form retained", () => {
     expect(legacyFindings(["127.0.0.1:5432:5432"])).toEqual([]);
   });
 
+  it("recovers a specific reachable address the string form retained", () => {
+    expect(legacyFindings(["192.168.1.10:5432:5432"])).toEqual([
+      "compose-restricted-sensitive-service-port",
+    ]);
+  });
+
   it("reports nothing when no port was recorded at all", () => {
     expect(legacyFindings([])).toEqual([]);
+  });
+});
+
+describe("exposure impacts describe how far a binding reached", () => {
+  function impactKinds(base: string, head: string): string[] {
+    const review = reviewArchitectureChange(
+      graph(base, "base"),
+      graph(head, "head"),
+      {},
+      REVIEWED_AT
+    );
+    return review.impacts
+      .map((item) => item.kind)
+      .filter((kind) => /exposure|binding/.test(kind))
+      .sort();
+  }
+
+  const external = serviceWith("postgres", "postgres:16", "5432:5432");
+  const loopback = serviceWith("postgres", "postgres:16", "127.0.0.1:5432:5432");
+  const specific = serviceWith("postgres", "postgres:16", "192.168.1.10:5432:5432");
+  const unresolved = serviceWith("postgres", "postgres:16", "${HOST_IP}:5432:5432");
+  const none = serviceWith("postgres", "postgres:16");
+
+  it("reports adding each category as its own kind", () => {
+    expect(impactKinds(none, external)).toEqual(["public-exposure-added"]);
+    expect(impactKinds(none, specific)).toEqual(["restricted-exposure-added"]);
+    expect(impactKinds(none, unresolved)).toEqual(["unresolved-exposure-added"]);
+    // A loopback binding is not a public exposure, and must not be called one.
+    expect(impactKinds(none, loopback)).toEqual(["loopback-binding-added"]);
+  });
+
+  it("reports removing each category as its own kind", () => {
+    expect(impactKinds(external, none)).toEqual(["public-exposure-removed"]);
+    expect(impactKinds(specific, none)).toEqual(["restricted-exposure-removed"]);
+    expect(impactKinds(unresolved, none)).toEqual(["unresolved-exposure-removed"]);
+    expect(impactKinds(loopback, none)).toEqual(["loopback-binding-removed"]);
+  });
+
+  it("describes narrowing an external binding to loopback as both", () => {
+    // Reporting only the addition would read as new exposure; reporting only
+    // the removal would hide that a binding still exists.
+    expect(impactKinds(external, loopback)).toEqual([
+      "loopback-binding-added",
+      "public-exposure-removed",
+    ]);
+  });
+
+  it("describes widening a loopback binding to external as both", () => {
+    expect(impactKinds(loopback, external)).toEqual([
+      "loopback-binding-removed",
+      "public-exposure-added",
+    ]);
+  });
+
+  it("keeps the critical severity for a newly published persistence port", () => {
+    const review = reviewArchitectureChange(
+      graph(none, "base"),
+      graph(external, "head"),
+      {},
+      REVIEWED_AT
+    );
+    const added = review.impacts.find((item) => item.kind === "public-exposure-added");
+    expect(added?.severity).toBe("critical");
+  });
+
+  it("does not raise the severity of a loopback binding", () => {
+    const review = reviewArchitectureChange(
+      graph(none, "base"),
+      graph(loopback, "head"),
+      {},
+      REVIEWED_AT
+    );
+    const added = review.impacts.find((item) => item.kind === "loopback-binding-added");
+    expect(added?.severity).toBe("info");
   });
 });

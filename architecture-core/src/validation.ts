@@ -9,9 +9,8 @@ import type {
 import { ArchitectureGraph } from "./graphAnalysis.js";
 import {
   formatPublishedPort,
-  isPubliclyReachable,
-  nodePortBindings,
-  portExposure,
+  hasReachablePort,
+  nodePortExposures,
   type PortExposure,
 } from "./portExposure.js";
 
@@ -243,9 +242,9 @@ function isComposeGraph(graph: ArchitectureGraph): boolean {
 }
 
 function exposedPorts(node: SerializedNode, reach: PortExposure[]): string[] {
-  return nodePortBindings(node)
-    .filter((binding) => reach.includes(portExposure(binding)))
-    .map(formatPublishedPort);
+  return nodePortExposures(node)
+    .filter((entry) => reach.includes(entry.exposure))
+    .map((entry) => formatPublishedPort(entry.binding));
 }
 
 const publishedPersistencePort: ArchitectureRule = {
@@ -333,7 +332,7 @@ const publicServiceToPersistence: ArchitectureRule = {
       const target = graph.nodesById.get(edge.target);
       if (!source || !target) return [];
       // Reachable from beyond the machine, rather than merely having a port.
-      const sourceIsPublic = nodePortBindings(source).some(isPubliclyReachable);
+      const sourceIsPublic = hasReachablePort(source);
       const targetIsPersistence = PERSISTENCE_TYPES.includes(target.data.nodeType);
       if (!sourceIsPublic || !targetIsPersistence) return [];
       return [issue(

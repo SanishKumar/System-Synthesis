@@ -119,29 +119,53 @@ function isBinding(value: unknown): value is PublishedPortBinding {
   );
 }
 
+export interface ClassifiedPortBinding {
+  binding: PublishedPortBinding;
+  exposure: PortExposure;
+}
+
 /**
- * Published ports of a node as classified bindings.
+ * Published ports of a node, each with how far it reaches.
+ *
+ * Classification depends on where the binding came from, because the same
+ * missing address means different things.
+ *
+ * A structured binding without a host address was recorded by an importer that
+ * would have kept one, so its absence is evidence of every interface.
  *
  * A graph from an importer that predates structured bindings carries only the
- * string form, so those are parsed back. That recovers the host address for
- * every short-syntax entry, which is the common case; a long-syntax entry had
- * its address discarded at extraction and can only read as external, exactly as
- * it did before. Reading the strings keeps the exposure rules working for
- * repositories still pinned to an older Action, rather than silently reporting
- * nothing for them.
+ * string form. Those are parsed back, which recovers the address for every
+ * short-syntax entry and keeps the exposure rules working for a repository
+ * still pinned to an older Action. But a string without an address is
+ * ambiguous: it is either a short entry genuinely bound to every interface, or
+ * a long entry whose `host_ip` that importer discarded. Calling it external
+ * would state a certainty the stored evidence does not carry, so it is unknown
+ * — still reachable, still reported, but as a warning rather than a critical
+ * claim about every interface.
  */
-export function nodePortBindings(node: SerializedNode): PublishedPortBinding[] {
+export function nodePortExposures(node: SerializedNode): ClassifiedPortBinding[] {
   const properties = node.data.sourceProperties as
     | { publishedPortBindings?: unknown; publishedPorts?: unknown }
     | undefined;
   const structured = properties?.publishedPortBindings;
-  if (Array.isArray(structured)) return structured.filter(isBinding);
+  if (Array.isArray(structured)) {
+    return structured
+      .filter(isBinding)
+      .map((binding) => ({ binding, exposure: portExposure(binding) }));
+  }
 
   const strings = properties?.publishedPorts;
   if (!Array.isArray(strings)) return [];
   return strings.flatMap((entry) => {
     if (typeof entry !== "string") return [];
-    const parsed = parsePublishedPort(entry);
-    return parsed ? [parsed] : [];
+    const binding = parsePublishedPort(entry);
+    if (!binding) return [];
+    const exposure = binding.hostIp === undefined ? "unknown" : portExposure(binding);
+    return [{ binding, exposure } as ClassifiedPortBinding];
   });
+}
+
+/** Whether any published port of a node reaches beyond the machine. */
+export function hasReachablePort(node: SerializedNode): boolean {
+  return nodePortExposures(node).some((entry) => entry.exposure !== "loopback");
 }

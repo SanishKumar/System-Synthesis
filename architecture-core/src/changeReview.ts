@@ -13,8 +13,7 @@ import {
 } from "./graphDiff.js";
 import {
   formatPublishedPort,
-  nodePortBindings,
-  portExposure,
+  nodePortExposures,
   type PortExposure,
 } from "./portExposure.js";
 import type { CanonicalArchitectureGraph } from "./provenance.js";
@@ -36,8 +35,11 @@ export type ArchitectureImpactKind =
   // Distinct kinds so a consumer is not obliged to read prose to tell how far a
   // new binding actually reaches.
   | "restricted-exposure-added"
+  | "restricted-exposure-removed"
   | "unresolved-exposure-added"
+  | "unresolved-exposure-removed"
   | "loopback-binding-added"
+  | "loopback-binding-removed"
   | "trust-boundary-crossing-added"
   | "trust-boundary-crossing-removed"
   | "redundancy-increased"
@@ -162,6 +164,28 @@ function setDifference(left: string[], right: string[]): string[] {
   return left.filter((value) => !rightValues.has(value));
 }
 
+/**
+ * Groups a set of port strings by how far the node's matching bindings reach.
+ *
+ * A graph whose ports cannot be classified at all falls back to `unknown`
+ * rather than dropping the impact or asserting external reach, matching how the
+ * rules treat evidence that does not establish where a port is bound.
+ */
+function groupByReach(
+  node: SerializedNode,
+  ports: string[]
+): Array<[PortExposure, string[]]> {
+  const wanted = new Set(ports);
+  const byReach = new Map<PortExposure, string[]>();
+  for (const { binding, exposure } of nodePortExposures(node)) {
+    const rendered = formatPublishedPort(binding);
+    if (!wanted.has(rendered)) continue;
+    byReach.set(exposure, [...(byReach.get(exposure) || []), rendered]);
+  }
+  if (!byReach.size) byReach.set("unknown", ports);
+  return [...byReach].sort((left, right) => left[0].localeCompare(right[0]));
+}
+
 function trustBoundaryCrossing(
   edge: SerializedEdge,
   nodes: Map<string, SerializedNode>
@@ -220,21 +244,7 @@ export function deriveArchitectureImpacts(
       // Grouped by how far each new port reaches. Describing a loopback binding
       // as a public exposure contradicts the rules, which correctly raise
       // nothing for it, and the contradiction is visible in the same report.
-      const added = new Set(addedPorts);
-      const byReach = new Map<PortExposure, string[]>();
-      for (const binding of nodePortBindings(after)) {
-        const rendered = formatPublishedPort(binding);
-        if (!added.has(rendered)) continue;
-        const reach = portExposure(binding);
-        byReach.set(reach, [...(byReach.get(reach) || []), rendered]);
-      }
-      // A graph whose ports could not be classified at all keeps the previous
-      // wording rather than losing the impact entirely.
-      if (!byReach.size) byReach.set("external", addedPorts);
-
-      for (const [reach, ports] of [...byReach].sort(
-        (left, right) => left[0].localeCompare(right[0])
-      )) {
+      for (const [reach, ports] of groupByReach(after, addedPorts)) {
         const presentation: {
           kind: ArchitectureImpactKind;
           severity: ValidationSeverity;
@@ -281,18 +291,49 @@ export function deriveArchitectureImpacts(
       }
     }
     if (removedPorts.length) {
-      impacts.push(impact(
-        `public-exposure-removed:${nodeId}:${removedPorts.join(",")}`,
-        "public-exposure-removed",
-        "info",
-        `Reduced exposure of ${after.data.label}`,
-        `Removed host port(s): ${removedPorts.join(", ")}.`,
-        [nodeId],
-        [],
-        nodeLocations(after),
-        beforePorts,
-        afterPorts
-      ));
+      // Classified from the node as it was, since the binding no longer exists
+      // to classify. Removing a loopback binding reduced nothing public, and
+      // saying otherwise is the same overstatement in the opposite direction.
+      for (const [reach, ports] of groupByReach(before, removedPorts)) {
+        const presentation: {
+          kind: ArchitectureImpactKind;
+          summary: string;
+          description: string;
+        } = {
+          external: {
+            kind: "public-exposure-removed" as const,
+            summary: `Reduced exposure of ${after.data.label}`,
+            description: `Removed host port(s) published on every interface: ${ports.join(", ")}.`,
+          },
+          host: {
+            kind: "restricted-exposure-removed" as const,
+            summary: `Removed a reachable binding from ${after.data.label}`,
+            description: `Removed host port(s) bound to a specific non-loopback address: ${ports.join(", ")}.`,
+          },
+          unknown: {
+            kind: "unresolved-exposure-removed" as const,
+            summary: `Removed an unresolved binding from ${after.data.label}`,
+            description: `Removed host port(s) whose bind address could not be resolved: ${ports.join(", ")}.`,
+          },
+          loopback: {
+            kind: "loopback-binding-removed" as const,
+            summary: `Removed a loopback binding from ${after.data.label}`,
+            description: `Removed host port(s) that were reachable only from the machine: ${ports.join(", ")}.`,
+          },
+        }[reach];
+        impacts.push(impact(
+          `${presentation.kind}:${nodeId}:${ports.join(",")}`,
+          presentation.kind,
+          "info",
+          presentation.summary,
+          presentation.description,
+          [nodeId],
+          [],
+          nodeLocations(after),
+          beforePorts,
+          afterPorts
+        ));
+      }
     }
 
     const beforeInstances = before.data.instances || 1;

@@ -15,8 +15,13 @@ import { DEFAULT_RULES, type ArchitectureRule } from "./validation.js";
  * Version 2 made exposure findings read the bind address instead of the mere
  * presence of a port. That also covers the impact wording, which the rule-set
  * fingerprint cannot see because no rule identity or severity changed.
+ *
+ * Version 3 stopped treating a legacy port string with no recorded address as
+ * proof of external reach, since the old importer discarded the address of a
+ * long-syntax entry, and classified removal impacts the same way as additions.
+ * Both change stored findings and impacts without touching any rule identity.
  */
-export const ANALYZER_VERSION = 2;
+export const ANALYZER_VERSION = 3;
 
 /**
  * Stable digest of the rule identities and default severities that decide a
