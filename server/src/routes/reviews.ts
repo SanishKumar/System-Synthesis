@@ -10,7 +10,7 @@ import {
 } from "@system-synthesis/architecture-core";
 import { reviewCreateLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
-import { writeDecisionCheck } from "../services/githubChecks.js";
+import { publishDecisionCheck } from "../services/githubChecks.js";
 import {
   analyzerStatus,
   importStatus,
@@ -109,13 +109,13 @@ function badRequest(res: Response, error: z.ZodError): Response {
  * point; an unreachable or uninstalled App must not turn a recorded decision
  * into a failed action.
  */
-async function publishDecisionCheck(review: ArchitectureReviewRecord): Promise<void> {
+async function publishAndLog(review: ArchitectureReviewRecord): Promise<void> {
   try {
-    const result = await writeDecisionCheck(review);
-    if (result.status === "error") {
+    const state = await publishDecisionCheck(review);
+    if (state.status === "failed") {
       logger.warn("Architecture decision check not published", {
         reviewId: review.id,
-        reason: result.reason,
+        reason: state.reason,
       });
     }
   } catch (error) {
@@ -138,7 +138,7 @@ async function mutationResponse(
       error: "This review changed in another session. Refresh before retrying.",
     });
   }
-  await publishDecisionCheck(result.review);
+  await publishAndLog(result.review);
   return res.json({ ...result.review, ...analyzerStatus(result.review), ...importStatus(result.review) });
 }
 
@@ -339,13 +339,37 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
     }
     // Re-analysis can turn a blocking verdict into a passing one, or return an
     // approved review to pending, so the gate has to follow it.
-    await publishDecisionCheck(result.review);
+    await publishAndLog(result.review);
     return res.json({
       ...result.review,
       ...analyzerStatus(result.review),
       ...importStatus(result.review),
       changed: result.status === "updated",
     });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.post("/:id/github-sync/retry", reviewCreateLimiter, async (req, res) => {
+  const id = reviewIdSchema.safeParse(req.params.id);
+  if (!id.success) return res.status(400).json({ error: "Invalid review identifier" });
+  try {
+    // Owner-scoped, and every published value is derived from the stored review.
+    // A caller cannot choose the repository, the commit, or the conclusion.
+    const review = await getArchitectureReview(id.data, req.user!.userId);
+    if (!review) return res.status(404).json({ error: "Architecture review not found" });
+
+    // Republishing the current state, so the semantic revision does not move and
+    // retrying is safe to repeat.
+    const githubSync = await publishDecisionCheck(review);
+    if (githubSync.status === "failed") {
+      logger.warn("Architecture decision check retry failed", {
+        reviewId: review.id,
+        reason: githubSync.reason,
+      });
+    }
+    return res.json({ ...review, githubSync, ...analyzerStatus(review), ...importStatus(review) });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

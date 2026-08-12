@@ -1,5 +1,12 @@
 import { getInstallationToken, type HttpTransport } from "./githubApp.js";
-import type { ArchitectureReviewRecord } from "./reviewRepository.js";
+import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
+import {
+  recordGitHubSyncOutcome,
+  recordGitHubSyncSkipped,
+  skippedSyncState,
+  type ArchitectureReviewRecord,
+  type GitHubSyncState,
+} from "./reviewRepository.js";
 
 const GITHUB_API = "https://api.github.com";
 /**
@@ -17,55 +24,6 @@ export type DecisionCheckResult =
   | { status: "written"; conclusion: string }
   | { status: "skipped"; reason: string }
   | { status: "error"; reason: string };
-
-interface CheckState {
-  conclusion: "success" | "failure" | "action_required";
-  title: string;
-  summary: string;
-}
-
-/**
- * How a stored decision reads as a merge gate.
- *
- * A change with nothing blocking needs no reviewer, so it must not sit waiting
- * for one. A blocking finding that nobody has ruled on is `action_required`
- * rather than a plain failure, because the resolution is a person opening the
- * review, not a code change.
- */
-export function decisionCheckState(review: ArchitectureReviewRecord): CheckState {
-  const blocking = review.report.blockingFindings.length;
-  if (review.decision === "approved") {
-    return {
-      conclusion: "success",
-      title: blocking > 0 ? "Accepted with a justified exception" : "Approved",
-      summary: blocking > 0
-        ? `A reviewer accepted this architecture change with ${blocking} blocking finding(s) outstanding.`
-        : "A reviewer approved this architecture change.",
-    };
-  }
-  if (review.decision === "rejected") {
-    return {
-      conclusion: "failure",
-      title: "Rejected",
-      summary: review.decisionNote
-        ? `A reviewer rejected this architecture change: ${review.decisionNote}`
-        : "A reviewer rejected this architecture change.",
-    };
-  }
-  if (blocking === 0) {
-    return {
-      conclusion: "success",
-      title: "No decision required",
-      summary: "This change introduces no blocking architecture findings.",
-    };
-  }
-  return {
-    conclusion: "action_required",
-    title: `${blocking} blocking change awaiting a decision`,
-    summary:
-      "Open the architecture review to resolve the finding, accept a justified exception, or reject the change.",
-  };
-}
 
 function reviewUrl(review: ArchitectureReviewRecord): string {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
@@ -116,7 +74,7 @@ export async function writeDecisionCheck(
     "Content-Type": "application/json",
     "User-Agent": "system-synthesis",
   };
-  const state = decisionCheckState(review);
+  const state = decisionCheckState(reviewDecisionSubject(review));
   // Fields common to both writes. `head_sha` is deliberately absent: it
   // identifies the commit a run is created against and is not an update
   // parameter, so sending it on a PATCH risks a rejected request.
@@ -170,4 +128,36 @@ export async function writeDecisionCheck(
       reason: error instanceof Error ? error.message : "check run write failed",
     };
   }
+}
+
+/**
+ * Publishes the gate and records what happened against the review.
+ *
+ * The outcome is only recorded if the review still holds the state that was
+ * published, so a slow response cannot mark a newer revision synchronized. A
+ * skip is a terminal state rather than a failure — nothing is wrong, there is
+ * simply nothing to publish or nothing configured to publish with.
+ */
+export async function publishDecisionCheck(
+  review: ArchitectureReviewRecord,
+  options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv } = {}
+): Promise<GitHubSyncState> {
+  const attempted = await writeDecisionCheck(review, options);
+  if (attempted.status === "skipped") {
+    const skipped = skippedSyncState(attempted.reason);
+    await recordGitHubSyncSkipped(review.id, attempted.reason);
+    return skipped;
+  }
+
+  const conclusion = decisionCheckState(reviewDecisionSubject(review)).conclusion;
+  const recorded = await recordGitHubSyncOutcome(review.id, {
+    revision: review.revision,
+    headRevision: review.headRevision,
+    conclusion,
+    status: attempted.status === "written" ? "synced" : "failed",
+    reason: attempted.status === "error" ? attempted.reason : null,
+  });
+  // A discarded record means the review moved on while this was in flight; the
+  // newer state keeps its own pending marker and will be published for itself.
+  return recorded ?? review.githubSync;
 }

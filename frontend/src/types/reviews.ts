@@ -19,6 +19,19 @@ export interface ExternalReviewSource {
   workflowRunUrl: string | null;
 }
 
+export type GitHubSyncStatus = "pending" | "synced" | "failed" | "skipped";
+
+/** Whether the decision this review holds has reached the pull request. */
+export interface GitHubSyncState {
+  status: GitHubSyncStatus;
+  conclusion: string | null;
+  revision: number | null;
+  headRevision: string | null;
+  reason: string | null;
+  attemptedAt: string | null;
+  succeededAt: string | null;
+}
+
 export interface ReviewSummary {
   id: string;
   title: string;
@@ -33,6 +46,7 @@ export interface ReviewSummary {
   externalSource: ExternalReviewSource | null;
   analyzerVersion: string | null;
   analyzerOutdated: boolean;
+  githubSyncStatus: GitHubSyncStatus;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -144,6 +158,7 @@ export interface ReviewRecord {
   externalSource: ExternalReviewSource | null;
   /** Analyzer identity stored with the verdict; null for pre-provenance rows. */
   analyzerVersion: string | null;
+  githubSync: GitHubSyncState;
   /** Analyzer identity of the deployment serving this response. */
   currentAnalyzerVersion: string;
   analyzerOutdated: boolean;

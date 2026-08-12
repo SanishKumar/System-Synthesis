@@ -31,6 +31,7 @@ import {
   findingLocation,
   githubLink,
   type ExternalReviewSource,
+  type GitHubSyncState,
   type ReviewEvent,
   type ReviewRecord,
 } from "@/types/reviews";
@@ -46,6 +47,65 @@ const severityStyle: Record<ValidationSeverity, string> = {
 
 function shortRevision(value: string): string {
   return value.length > 14 ? value.slice(0, 10) : value;
+}
+
+/**
+ * What each synchronization state means to a reviewer, and whether retrying is
+ * worth offering. A skip that needs setup is actionable once the App is
+ * installed; a manual review can never publish and must not invite a retry.
+ */
+function syncPresentation(
+  status: string,
+  reason: string | null
+): { title: string; detail: string; tone: string; retry: boolean } {
+  if (status === "synced") {
+    return {
+      title: "Synced to GitHub",
+      detail: "The pull request carries this decision.",
+      tone: "text-emerald-600",
+      retry: false,
+    };
+  }
+  if (status === "pending") {
+    return {
+      title: "Sync pending",
+      detail: "This decision has not reached the pull request yet.",
+      tone: "text-amber-600",
+      retry: true,
+    };
+  }
+  if (status === "failed") {
+    return {
+      title: "GitHub sync failed",
+      detail: reason || "GitHub did not accept the update.",
+      tone: "text-red-600",
+      retry: true,
+    };
+  }
+  if (reason === "not_configured") {
+    return {
+      title: "GitHub App not configured",
+      detail: "Set GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY on the server, then retry.",
+      tone: "text-text-muted",
+      retry: true,
+    };
+  }
+  if (reason === "not_installed") {
+    return {
+      title: "GitHub App not installed",
+      detail: "Install the App on this repository, then retry.",
+      tone: "text-text-muted",
+      retry: true,
+    };
+  }
+  return {
+    title: "Not applicable",
+    detail: reason === "not_a_commit"
+      ? "This revision is not a commit, so it cannot carry a check."
+      : "A manually imported review has no pull request to update.",
+    tone: "text-text-muted",
+    retry: false,
+  };
 }
 
 function eventLabel(event: ReviewEvent): string {
@@ -125,7 +185,7 @@ export default function ReviewDetailPage() {
     } finally {
       if (!options.silent) setLoading(false);
     }
-  }, [authenticatedFetch, isReady, reviewId]);
+  }, [applyReview, authenticatedFetch, isReady, reviewId]);
 
   useEffect(() => {
     void loadReview();
@@ -218,6 +278,28 @@ export default function ReviewDetailPage() {
       if (eventResponse.ok) setEvents((await eventResponse.json()).events || []);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not accept this exception.");
+    } finally {
+      setMutating(false);
+    }
+  };
+
+  const retrySync = async () => {
+    if (!review || mutating) return;
+    setMutating(true);
+    try {
+      const response = await authenticatedFetch(
+        `${API_URL}/api/reviews/${review.id}/github-sync/retry`,
+        { method: "POST", headers: { "Content-Type": "application/json" } }
+      );
+      const body = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(body?.error || "Could not reach GitHub.");
+      applyReview(body);
+      const state = body.githubSync as { status: string; reason: string | null };
+      if (state.status === "synced") toast.success("Published to the pull request");
+      else if (state.status === "skipped") toast.message(syncPresentation(state.status, state.reason).title);
+      else toast.error(state.reason || "GitHub did not accept the update.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not reach GitHub.");
     } finally {
       setMutating(false);
     }
@@ -622,6 +704,9 @@ export default function ReviewDetailPage() {
                   baseRevision={review.baseRevision}
                   headRevision={review.headRevision}
                   synchronizedAt={review.updatedAt}
+                  sync={review.githubSync}
+                  busy={mutating}
+                  onRetry={() => void retrySync()}
                 />
               )}
 
@@ -736,11 +821,17 @@ function PullRequestSource({
   baseRevision,
   headRevision,
   synchronizedAt,
+  sync,
+  busy,
+  onRetry,
 }: {
   source: ExternalReviewSource;
   baseRevision: string;
   headRevision: string;
   synchronizedAt: string;
+  sync: GitHubSyncState;
+  busy: boolean;
+  onRetry: () => void;
 }) {
   const pullUrl = githubLink(source.changeUrl);
   const workflowUrl = githubLink(source.workflowRunUrl);
@@ -806,6 +897,39 @@ function PullRequestSource({
           <dd className="font-mono text-text-secondary">{source.changeVersion}</dd>
         </div>
       </dl>
+
+      <div className="mt-4 border-t border-border pt-4">
+        {(() => {
+          const view = syncPresentation(sync.status, sync.reason);
+          const stamp = sync.status === "synced" ? sync.succeededAt : sync.attemptedAt;
+          return (
+            <>
+              <div className="flex items-center justify-between gap-3">
+                <span className={`text-xs font-semibold ${view.tone}`}>{view.title}</span>
+                {sync.conclusion && sync.status === "synced" && (
+                  <span className="font-mono text-[10px] text-text-muted">{sync.conclusion}</span>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] leading-5 text-text-secondary">{view.detail}</p>
+              {stamp && (
+                <p className="mt-1 font-mono text-[10px] text-text-muted">
+                  {new Date(stamp).toLocaleString()}
+                </p>
+              )}
+              {view.retry && (
+                <button
+                  onClick={onRetry}
+                  disabled={busy}
+                  className="btn-secondary mt-3 h-8 gap-2 text-[11px]"
+                >
+                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+                  Retry sync
+                </button>
+              )}
+            </>
+          );
+        })()}
+      </div>
     </section>
   );
 }

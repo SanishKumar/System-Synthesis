@@ -1,10 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
-import {
-  DECISION_CHECK_NAME,
-  decisionCheckState,
-  writeDecisionCheck,
-} from "../githubChecks.js";
+import { DECISION_CHECK_NAME, writeDecisionCheck } from "../githubChecks.js";
+import { decisionCheckState, reviewDecisionSubject } from "../decisionState.js";
 import { resetGitHubAppCacheForTests, type HttpTransport } from "../githubApp.js";
 import type { ArchitectureReviewRecord } from "../reviewRepository.js";
 
@@ -86,29 +83,31 @@ function transportFor(existing: Array<{ id: number; external_id?: string }> = []
 }
 
 describe("decision check state", () => {
+  const stateOf = (overrides: Partial<ArchitectureReviewRecord> = {}) =>
+    decisionCheckState(reviewDecisionSubject(review(overrides)));
+
   it("asks for a person when a blocking change has not been ruled on", () => {
-    expect(decisionCheckState(review())).toMatchObject({
+    expect(stateOf()).toMatchObject({
       conclusion: "action_required",
       title: "1 blocking change awaiting a decision",
     });
   });
 
   it("does not wait for a reviewer when nothing is blocking", () => {
-    expect(
-      decisionCheckState(review({ report: { blockingFindings: [] } as never }))
-    ).toMatchObject({ conclusion: "success", title: "No decision required" });
+    expect(stateOf({ report: { blockingFindings: [] } as never })).toMatchObject({
+      conclusion: "success",
+      title: "No decision required",
+    });
   });
 
   it("passes once a reviewer accepts the exception", () => {
-    const state = decisionCheckState(review({ decision: "approved" }));
+    const state = stateOf({ decision: "approved" });
     expect(state.conclusion).toBe("success");
     expect(state.title).toBe("Accepted with a justified exception");
   });
 
   it("fails on rejection and carries the reviewer's reason", () => {
-    const state = decisionCheckState(
-      review({ decision: "rejected", decisionNote: "Use the API instead." })
-    );
+    const state = stateOf({ decision: "rejected", decisionNote: "Use the API instead." });
     expect(state.conclusion).toBe("failure");
     expect(state.summary).toContain("Use the API instead.");
   });

@@ -139,6 +139,17 @@ const MIGRATION_SQL = `
   -- Rows created before analyzer provenance keep NULL and are reported as
   -- produced by an unknown analyzer rather than silently assumed current.
   ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS analyzer_version TEXT;
+  -- Whether the decision this review holds has reached GitHub. Kept beside the
+  -- review so it can be marked pending in the same transaction that changes the
+  -- decision; a crash between the two would otherwise leave the interface
+  -- claiming a gate was published when publication was never attempted.
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_status TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_conclusion TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_revision INT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_head TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_reason TEXT;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_attempted_at TIMESTAMPTZ;
+  ALTER TABLE architecture_reviews ADD COLUMN IF NOT EXISTS github_sync_succeeded_at TIMESTAMPTZ;
 
   CREATE TABLE IF NOT EXISTS architecture_review_integrations (
     id              TEXT PRIMARY KEY,

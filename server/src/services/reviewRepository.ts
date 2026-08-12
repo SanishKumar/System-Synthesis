@@ -11,6 +11,7 @@ import {
   stableStringify,
 } from "@system-synthesis/architecture-core";
 import { getPool } from "./db.js";
+import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
 
 /**
  * Captured once per process. A stored review records the analyzer that produced
@@ -99,12 +100,33 @@ export interface ArchitectureReviewRecord {
   report: ArchitectureChangeReview;
   externalSource: ExternalReviewSource | null;
   analyzerVersion: string | null;
+  githubSync: GitHubSyncState;
   decision: ReviewDecision;
   decisionNote: string | null;
   decidedAt: string | null;
   revision: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export type GitHubSyncStatus = "pending" | "synced" | "failed" | "skipped";
+
+/**
+ * Whether the decision this review currently holds has reached GitHub.
+ *
+ * `revision`, `headRevision`, and `conclusion` describe what an attempt was
+ * made for, not what the review holds now. Comparing them on the way back is
+ * what stops a slow response for an older state from marking a newer one
+ * synchronized.
+ */
+export interface GitHubSyncState {
+  status: GitHubSyncStatus;
+  conclusion: string | null;
+  revision: number | null;
+  headRevision: string | null;
+  reason: string | null;
+  attemptedAt: string | null;
+  succeededAt: string | null;
 }
 
 export interface ArchitectureReviewSummary {
@@ -121,6 +143,7 @@ export interface ArchitectureReviewSummary {
   externalSource: ExternalReviewSource | null;
   analyzerVersion: string | null;
   analyzerOutdated: boolean;
+  githubSyncStatus: GitHubSyncStatus;
   revision: number;
   createdAt: string;
   updatedAt: string;
@@ -177,6 +200,104 @@ function timestamp(value: unknown): string {
   return String(value);
 }
 
+/**
+ * A review that cannot carry a check run is skipped rather than failed. There
+ * is nothing to publish for a manual import, and reporting that as a failure
+ * would invite a reviewer to retry something that can never succeed.
+ */
+export function skippedSyncState(reason: string): GitHubSyncState {
+  return {
+    status: "skipped",
+    conclusion: null,
+    revision: null,
+    headRevision: null,
+    reason,
+    attemptedAt: null,
+    succeededAt: null,
+  };
+}
+
+function rowToSyncState(
+  row: any,
+  externalSource: ExternalReviewSource | null
+): GitHubSyncState {
+  if (!externalSource) return skippedSyncState("not_external");
+  const status = row.github_sync_status as GitHubSyncStatus | null;
+  // A row written before synchronization was tracked has no recorded attempt,
+  // which is exactly what pending means.
+  if (!status) {
+    return {
+      status: "pending",
+      conclusion: null,
+      revision: null,
+      headRevision: null,
+      reason: null,
+      attemptedAt: null,
+      succeededAt: null,
+    };
+  }
+  return {
+    status,
+    conclusion: row.github_sync_conclusion || null,
+    revision: row.github_sync_revision === null || row.github_sync_revision === undefined
+      ? null
+      : Number(row.github_sync_revision),
+    headRevision: row.github_sync_head || null,
+    reason: row.github_sync_reason || null,
+    attemptedAt: row.github_sync_attempted_at ? timestamp(row.github_sync_attempted_at) : null,
+    succeededAt: row.github_sync_succeeded_at ? timestamp(row.github_sync_succeeded_at) : null,
+  };
+}
+
+/**
+ * The synchronization state a review takes on when its desired check changes.
+ *
+ * Marked in the same transaction as the change itself, so a crash before the
+ * publish attempt leaves a review that is visibly unsynchronized rather than
+ * one that silently claims otherwise.
+ */
+export function pendingSyncState(
+  review: Pick<ArchitectureReviewRecord, "externalSource" | "revision" | "headRevision" | "decision" | "decisionNote" | "report">
+): GitHubSyncState {
+  if (!review.externalSource) return skippedSyncState("not_external");
+  return {
+    status: "pending",
+    conclusion: decisionCheckState(reviewDecisionSubject(review)).conclusion,
+    revision: review.revision,
+    headRevision: review.headRevision,
+    reason: null,
+    attemptedAt: null,
+    succeededAt: null,
+  };
+}
+
+/**
+ * Marks a review's gate unsynchronized inside the caller's transaction.
+ *
+ * The desired conclusion depends on the state just written, so it is computed
+ * from the returned row rather than in SQL. Committing this with the change
+ * itself is what guarantees a crash before the publish attempt leaves a review
+ * that looks unsynchronized instead of one that silently claims otherwise.
+ */
+async function markSyncPending(
+  client: { query: (text: string, values?: unknown[]) => Promise<any> },
+  review: ArchitectureReviewRecord
+): Promise<ArchitectureReviewRecord> {
+  const state = pendingSyncState(review);
+  const updated = await client.query(
+    `UPDATE architecture_reviews
+     SET github_sync_status = $2,
+         github_sync_conclusion = $3,
+         github_sync_revision = $4,
+         github_sync_head = $5,
+         github_sync_reason = $6
+     WHERE id = $1
+     RETURNING *`,
+    [review.id, state.status, state.conclusion, state.revision, state.headRevision, state.reason]
+  );
+  return updated.rows[0] ? rowToReview(updated.rows[0]) : { ...review, githubSync: state };
+}
+
 function rowToReview(row: any): ArchitectureReviewRecord {
   const externalSource: ExternalReviewSource | null = row.integration_provider
     ? {
@@ -203,6 +324,7 @@ function rowToReview(row: any): ArchitectureReviewRecord {
     report: row.report,
     externalSource,
     analyzerVersion: row.analyzer_version || null,
+    githubSync: rowToSyncState(row, externalSource),
     decision: row.decision,
     decisionNote: row.decision_note,
     decidedAt: row.decided_at ? timestamp(row.decided_at) : null,
@@ -227,6 +349,7 @@ function toSummary(review: ArchitectureReviewRecord): ArchitectureReviewSummary 
     externalSource: review.externalSource,
     analyzerVersion: review.analyzerVersion,
     analyzerOutdated: analyzerStatus(review).analyzerOutdated,
+    githubSyncStatus: review.githubSync.status,
     revision: review.revision,
     createdAt: review.createdAt,
     updatedAt: review.updatedAt,
@@ -376,7 +499,7 @@ export async function ingestArchitectureReview(
             CURRENT_ANALYZER_VERSION,
           ]
         );
-        const review = rowToReview(updated.rows[0]);
+        const review = await markSyncPending(client, rowToReview(updated.rows[0]));
         await client.query(
           `INSERT INTO architecture_review_events (
              id, review_id, actor_id, event_type, review_revision, data
@@ -434,7 +557,7 @@ export async function ingestArchitectureReview(
           CURRENT_ANALYZER_VERSION,
         ]
       );
-      const review = rowToReview(inserted.rows[0]);
+      const review = await markSyncPending(client, rowToReview(inserted.rows[0]));
       await client.query(
         `INSERT INTO architecture_review_events (
            id, review_id, actor_id, event_type, review_revision, data
@@ -501,7 +624,8 @@ export async function ingestArchitectureReview(
       revision: current.revision + 1,
       updatedAt: now,
     };
-    memoryReviews.set(updated.id, structuredClone(updated));
+    const synced = { ...updated, githubSync: pendingSyncState(updated) };
+    memoryReviews.set(synced.id, structuredClone(synced));
     memoryEvents.get(updated.id)!.push({
       id: randomUUID(),
       reviewId: updated.id,
@@ -517,20 +641,27 @@ export async function ingestArchitectureReview(
       },
       createdAt: now,
     });
-    return { status: "updated", review: structuredClone(updated) };
+    return { status: "updated", review: structuredClone(synced) };
   }
 
   const now = new Date().toISOString();
-  const review: ArchitectureReviewRecord = {
+  const created: ArchitectureReviewRecord = {
     ...input,
     id: randomUUID(),
     analyzerVersion: CURRENT_ANALYZER_VERSION,
+    githubSync: skippedSyncState("not_external"),
     decision: "pending",
     decisionNote: null,
     decidedAt: null,
     revision: 1,
     createdAt: now,
     updatedAt: now,
+  };
+  // Derived after the record exists so the desired conclusion is computed from
+  // the state actually stored.
+  const review: ArchitectureReviewRecord = {
+    ...created,
+    githubSync: pendingSyncState(created),
   };
   memoryReviews.set(review.id, structuredClone(review));
   memoryEvents.set(review.id, [{
@@ -558,6 +689,7 @@ export async function createArchitectureReview(
     | "id"
     | "externalSource"
     | "analyzerVersion"
+    | "githubSync"
     | "decision"
     | "decisionNote"
     | "decidedAt"
@@ -625,6 +757,7 @@ export async function createArchitectureReview(
     id,
     externalSource: null,
     analyzerVersion: CURRENT_ANALYZER_VERSION,
+    githubSync: skippedSyncState("not_external"),
     decision: "pending",
     decisionNote: null,
     decidedAt: null,
@@ -632,7 +765,7 @@ export async function createArchitectureReview(
     createdAt: now,
     updatedAt: now,
   };
-  memoryReviews.set(id, structuredClone(review));
+  memoryReviews.set(id, structuredClone({ ...review, githubSync: pendingSyncState(review) }));
   memoryEvents.set(id, [{
     id: randomUUID(),
     reviewId: id,
@@ -749,7 +882,7 @@ export async function updateArchitectureReviewAnalysis(
         );
         return exists.rows[0] ? { status: "conflict" } : { status: "not_found" };
       }
-      const review = rowToReview(updated.rows[0]);
+      const review = await markSyncPending(client, rowToReview(updated.rows[0]));
       await client.query(
         `INSERT INTO architecture_review_events (
            id, review_id, actor_id, event_type, review_revision, data
@@ -781,7 +914,8 @@ export async function updateArchitectureReviewAnalysis(
     revision: current.revision + 1,
     updatedAt: now,
   };
-  memoryReviews.set(id, review);
+  const stored = { ...review, githubSync: pendingSyncState(review) };
+  memoryReviews.set(id, stored);
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
@@ -791,7 +925,7 @@ export async function updateArchitectureReviewAnalysis(
     data: structuredClone(eventData),
     createdAt: now,
   });
-  return { status: "updated", review: structuredClone(review) };
+  return { status: "updated", review: structuredClone(stored) };
 }
 
 /**
@@ -867,7 +1001,7 @@ export async function recomputeArchitectureReviewAnalysis(
              RETURNING *`,
             [id, ownerId, CURRENT_ANALYZER_VERSION]
           );
-      const review = rowToReview(updated.rows[0]);
+      const review = await markSyncPending(client, rowToReview(updated.rows[0]));
       await client.query(
         `INSERT INTO architecture_review_events (
            id, review_id, actor_id, event_type, review_revision, data
@@ -911,7 +1045,8 @@ export async function recomputeArchitectureReviewAnalysis(
         analyzerVersion: CURRENT_ANALYZER_VERSION,
         updatedAt: now,
       };
-  memoryReviews.set(id, review);
+  const stored = { ...review, githubSync: pendingSyncState(review) };
+  memoryReviews.set(id, stored);
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
@@ -974,7 +1109,7 @@ export async function updateArchitectureReviewDecision(
         );
         return exists.rows[0] ? { status: "conflict" } : { status: "not_found" };
       }
-      const review = rowToReview(updated.rows[0]);
+      const review = await markSyncPending(client, rowToReview(updated.rows[0]));
       await client.query(
         `INSERT INTO architecture_review_events (
            id, review_id, actor_id, event_type, review_revision, data
@@ -1009,7 +1144,8 @@ export async function updateArchitectureReviewDecision(
     revision: current.revision + 1,
     updatedAt: now,
   };
-  memoryReviews.set(id, review);
+  const stored = { ...review, githubSync: pendingSyncState(review) };
+  memoryReviews.set(id, stored);
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
@@ -1019,10 +1155,98 @@ export async function updateArchitectureReviewDecision(
     data: { decision, note },
     createdAt: now,
   });
-  return { status: "updated", review: structuredClone(review) };
+  return { status: "updated", review: structuredClone(stored) };
 }
 
 export function resetMemoryReviewsForTests(): void {
   memoryReviews.clear();
   memoryEvents.clear();
+}
+
+/**
+ * Records the outcome of a publish attempt, but only if the review still holds
+ * the state that attempt was made for.
+ *
+ * A slow or retried response can arrive after a new commit or a fresh decision
+ * has already moved the review on. Marking that synchronized would claim the
+ * pull request carries a gate it does not, so a mismatch is discarded and the
+ * newer state stays pending for its own attempt.
+ */
+export async function recordGitHubSyncOutcome(
+  reviewId: string,
+  attempt: {
+    revision: number;
+    headRevision: string;
+    conclusion: string;
+    status: Extract<GitHubSyncStatus, "synced" | "failed">;
+    reason: string | null;
+  }
+): Promise<GitHubSyncState | null> {
+  const now = new Date().toISOString();
+  const pool = getPool();
+  if (pool) {
+    const updated = await pool.query(
+      `UPDATE architecture_reviews
+       SET github_sync_status = $4,
+           github_sync_reason = $5,
+           github_sync_attempted_at = NOW(),
+           github_sync_succeeded_at = CASE WHEN $4 = 'synced' THEN NOW() ELSE github_sync_succeeded_at END
+       WHERE id = $1
+         AND revision = $2
+         AND head_revision = $3
+         AND github_sync_conclusion IS NOT DISTINCT FROM $6
+       RETURNING *`,
+      [reviewId, attempt.revision, attempt.headRevision, attempt.status, attempt.reason, attempt.conclusion]
+    );
+    if (!updated.rows[0]) return null;
+    return rowToReview(updated.rows[0]).githubSync;
+  }
+
+  const current = memoryReviews.get(reviewId);
+  if (
+    !current ||
+    current.revision !== attempt.revision ||
+    current.headRevision !== attempt.headRevision ||
+    current.githubSync.conclusion !== attempt.conclusion
+  ) {
+    return null;
+  }
+  const githubSync: GitHubSyncState = {
+    ...current.githubSync,
+    status: attempt.status,
+    reason: attempt.reason,
+    attemptedAt: now,
+    succeededAt: attempt.status === "synced" ? now : current.githubSync.succeededAt,
+  };
+  memoryReviews.set(reviewId, { ...current, githubSync });
+  return githubSync;
+}
+
+/** Records a terminal skip, which needs no compare-and-set: nothing was published. */
+export async function recordGitHubSyncSkipped(
+  reviewId: string,
+  reason: string
+): Promise<void> {
+  const pool = getPool();
+  if (pool) {
+    await pool.query(
+      `UPDATE architecture_reviews
+       SET github_sync_status = 'skipped',
+           github_sync_reason = $2,
+           github_sync_attempted_at = NOW()
+       WHERE id = $1`,
+      [reviewId, reason]
+    );
+    return;
+  }
+  const current = memoryReviews.get(reviewId);
+  if (!current) return;
+  memoryReviews.set(reviewId, {
+    ...current,
+    githubSync: {
+      ...skippedSyncState(reason),
+      attemptedAt: new Date().toISOString(),
+      succeededAt: current.githubSync.succeededAt,
+    },
+  });
 }
