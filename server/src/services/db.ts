@@ -197,6 +197,15 @@ const MIGRATION_SQL = `
     ON architecture_review_integrations(owner_id, updated_at DESC);
 `;
 
+/** Whether the connection string asks for TLS to be off, as libpq spells it. */
+export function sslDisabled(databaseUrl: string): boolean {
+  try {
+    return new URL(databaseUrl).searchParams.get("sslmode") === "disable";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Why persistence is or is not active.
  *
@@ -255,10 +264,19 @@ export async function initDatabase(): Promise<boolean> {
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 20000, // 20s to allow Serverless DBs (like Neon) to wake up from cold starts
-      // Support SSL for cloud-hosted Postgres (Neon, Supabase, etc.)
-      ssl: databaseUrl.includes("sslmode=require") || databaseUrl.startsWith("postgresql://") 
-        ? { rejectUnauthorized: false }
-        : undefined,
+      // Support SSL for cloud-hosted Postgres (Neon, Supabase, etc.). An
+      // explicit `sslmode=disable` is honoured rather than overridden, because
+      // a database reached over a loopback interface — a test service in CI, a
+      // local instance — has no TLS to negotiate, and forcing it there fails
+      // the connection outright.
+      //
+      // Whether a verified certificate should be required for the rest is a
+      // separate question, and still open: see docs/KNOWN_LIMITATIONS.md.
+      ssl: sslDisabled(databaseUrl)
+        ? undefined
+        : databaseUrl.includes("sslmode=require") || databaseUrl.startsWith("postgresql://")
+          ? { rejectUnauthorized: false }
+          : undefined,
     });
 
     // Test connection

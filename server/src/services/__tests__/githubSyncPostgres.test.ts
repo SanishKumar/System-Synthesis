@@ -21,7 +21,10 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 const TEST_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL", () => {
-  process.env.DATABASE_URL = TEST_DATABASE_URL;
+  // Only when the suite is actually going to run: the describe body is still
+  // evaluated when skipped, and assigning an absent value would leave
+  // DATABASE_URL set to the string "undefined".
+  if (TEST_DATABASE_URL) process.env.DATABASE_URL = TEST_DATABASE_URL;
 
   // Imported lazily so the module graph resolves `getPool()` to the real pool
   // this suite initializes, rather than to the mocked one other suites install.
@@ -74,9 +77,20 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
 
   beforeEach(async () => {
     const { db } = await load();
-    await db.initDatabase();
+    // Once per suite: initDatabase builds a fresh pool every call, and the old
+    // one would be left open.
+    if (!db.getPool()) {
+      await db.initDatabase();
+    }
     const pool = db.getPool();
-    if (!pool) throw new Error("TEST_DATABASE_URL did not yield a usable pool");
+    if (!pool) {
+      const state = db.getPersistenceState();
+      throw new Error(
+        `TEST_DATABASE_URL did not yield a usable pool: ${
+          state.mode === "failed" ? state.reason : state.mode
+        }`
+      );
+    }
     await pool.query("DELETE FROM architecture_reviews WHERE owner_id = $1", [OWNER]);
   });
 
