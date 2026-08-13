@@ -133,9 +133,18 @@ which is the failure the sync panel exists to prevent. Only a setup state or an
 absent pull request is a skip; everything else is a failure carrying its own
 reason.
 
+Every review states which of these applies, including a manual one, which
+reports that no pull request exists to gate rather than showing nothing at all.
+
 A decision that was recorded while publishing failed stays recorded. The review
 shows the failure and offers **Retry sync**, and a new commit on the pull
 request publishes it again.
+
+An attempt is recorded against the revision, commit and conclusion it was made
+for. If the pull request moves on while an attempt is in flight, the answer is
+discarded rather than applied to the newer state — for a skip as much as for a
+success, because "nothing was published" is true only of the generation it was
+attempted for.
 
 ## What this does not do yet
 

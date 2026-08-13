@@ -202,8 +202,10 @@ These statements are limited to checked behavior in this repository.
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
 | A GitHub outage cannot fail a decision that is already recorded | Best-effort publishing with skip/error outcomes |
 | An unreachable GitHub is reported as an unpublished gate to retry, never as a review with nothing to publish | Credential-failure sync tests and a rendered outage |
+| Every path that changes a decision records what publishing it achieved, and answers with that rather than with the state from before | Route tests for ingestion, decision, re-analysis and retry |
+| An attempt made for a superseded revision cannot overwrite the state of a newer one, whether it published or not | Compare-and-set tests for both outcomes and skips |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 133 backend tests (256 total). The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 146 backend tests (269 total). A further 5 backend tests run the synchronization contract against a real PostgreSQL and are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

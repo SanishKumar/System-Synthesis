@@ -121,7 +121,11 @@ async function startApp(): Promise<string> {
   return `http://127.0.0.1:${address.port}`;
 }
 
-async function ingest(baseUrl: string, headRevision = HEAD_SHA, changeVersion = 1_000) {
+async function ingest(
+  baseUrl: string,
+  headRevision = HEAD_SHA,
+  changeVersion = 1_000
+): Promise<{ reviewId: string; status: string; revision: number }> {
   const token = (await createOrRotateReviewIntegration({
     ownerId: OWNER.userId,
     provider: "github",
@@ -132,7 +136,7 @@ async function ingest(baseUrl: string, headRevision = HEAD_SHA, changeVersion = 
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(ingestionPayload(headRevision, changeVersion)),
   });
-  return response.json();
+  return response.json() as Promise<{ reviewId: string; status: string; revision: number }>;
 }
 
 async function asOwner(

@@ -718,7 +718,7 @@ export default function ReviewDetailPage() {
                 )}
               </section>
 
-              {review.externalSource && (
+              {review.externalSource ? (
                 <PullRequestSource
                   source={review.externalSource}
                   baseRevision={review.baseRevision}
@@ -728,6 +728,20 @@ export default function ReviewDetailPage() {
                   busy={mutating}
                   onRetry={() => void retrySync()}
                 />
+              ) : (
+                <section className="rounded-2xl border border-border bg-surface p-5">
+                  <div className="flex items-center gap-2">
+                    <Github className="h-4 w-4 text-accent-cyan" />
+                    <h2 className="font-display text-sm font-bold text-text-primary">Merge gate</h2>
+                  </div>
+                  <div className="mt-4">
+                    <SyncState
+                      sync={review.githubSync}
+                      busy={mutating}
+                      onRetry={() => void retrySync()}
+                    />
+                  </div>
+                </section>
               )}
 
               <section className="rounded-2xl border border-border bg-surface p-5">
@@ -919,38 +933,56 @@ function PullRequestSource({
       </dl>
 
       <div className="mt-4 border-t border-border pt-4">
-        {(() => {
-          const view = syncPresentation(sync.status, sync.reason);
-          const stamp = sync.status === "synced" ? sync.succeededAt : sync.attemptedAt;
-          return (
-            <>
-              <div className="flex items-center justify-between gap-3">
-                <span className={`text-xs font-semibold ${view.tone}`}>{view.title}</span>
-                {sync.conclusion && sync.status === "synced" && (
-                  <span className="font-mono text-[10px] text-text-muted">{sync.conclusion}</span>
-                )}
-              </div>
-              <p className="mt-1 text-[11px] leading-5 text-text-secondary">{view.detail}</p>
-              {stamp && (
-                <p className="mt-1 font-mono text-[10px] text-text-muted">
-                  {new Date(stamp).toLocaleString()}
-                </p>
-              )}
-              {view.retry && (
-                <button
-                  onClick={onRetry}
-                  disabled={busy}
-                  className="btn-secondary mt-3 h-8 gap-2 text-[11px]"
-                >
-                  {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
-                  Retry sync
-                </button>
-              )}
-            </>
-          );
-        })()}
+        <SyncState sync={sync} busy={busy} onRetry={onRetry} />
       </div>
     </section>
+  );
+}
+
+/**
+ * Whether the decision this review holds has reached GitHub.
+ *
+ * Rendered for every review, not only those that came from a pull request. A
+ * manual review can never publish, and saying so plainly is the point: the
+ * reader learns that no gate is coming, rather than being left to infer it from
+ * an absence.
+ */
+function SyncState({
+  sync,
+  busy,
+  onRetry,
+}: {
+  sync: GitHubSyncState;
+  busy: boolean;
+  onRetry: () => void;
+}) {
+  const view = syncPresentation(sync.status, sync.reason);
+  const stamp = sync.status === "synced" ? sync.succeededAt : sync.attemptedAt;
+  return (
+    <>
+      <div className="flex items-center justify-between gap-3">
+        <span className={`text-xs font-semibold ${view.tone}`}>{view.title}</span>
+        {sync.conclusion && sync.status === "synced" && (
+          <span className="font-mono text-[10px] text-text-muted">{sync.conclusion}</span>
+        )}
+      </div>
+      <p className="mt-1 text-[11px] leading-5 text-text-secondary">{view.detail}</p>
+      {stamp && (
+        <p className="mt-1 font-mono text-[10px] text-text-muted">
+          {new Date(stamp).toLocaleString()}
+        </p>
+      )}
+      {view.retry && (
+        <button
+          onClick={onRetry}
+          disabled={busy}
+          className="btn-secondary mt-3 h-8 gap-2 text-[11px]"
+        >
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
+          Retry sync
+        </button>
+      )}
+    </>
   );
 }
 
