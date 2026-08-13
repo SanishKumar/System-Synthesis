@@ -126,9 +126,34 @@ async function publishAndLog(review: ArchitectureReviewRecord): Promise<void> {
   }
 }
 
+/**
+ * The review as it stands once an attempt has finished, for the response.
+ *
+ * A publish attempt mutates the review it was made for, so the record the
+ * caller is holding is out of date the moment the attempt completes. Answering
+ * with it hands the browser the state from before publication — for a decision,
+ * a gate reported as pending that has in fact already reached the pull request.
+ * The interface then stops polling, because the decision is no longer pending,
+ * and keeps showing that until the reader refreshes.
+ *
+ * Re-reading is owner-scoped, so a review that vanished under the caller falls
+ * back to what was already resolved rather than widening what they can see.
+ */
+async function afterPublishing(
+  review: ArchitectureReviewRecord,
+  ownerId: string
+): Promise<ArchitectureReviewRecord> {
+  try {
+    return (await getArchitectureReview(review.id, ownerId)) ?? review;
+  } catch {
+    return review;
+  }
+}
+
 async function mutationResponse(
   res: Response,
-  result: ReviewMutationResult
+  result: ReviewMutationResult,
+  ownerId: string
 ): Promise<Response> {
   if (result.status === "not_found") {
     return res.status(404).json({ error: "Architecture review not found" });
@@ -139,7 +164,8 @@ async function mutationResponse(
     });
   }
   await publishAndLog(result.review);
-  return res.json({ ...result.review, ...analyzerStatus(result.review), ...importStatus(result.review) });
+  const review = await afterPublishing(result.review, ownerId);
+  return res.json({ ...review, ...analyzerStatus(review), ...importStatus(review) });
 }
 
 router.get("/", async (req, res) => {
@@ -297,7 +323,7 @@ router.post("/:id/suppressions", async (req, res) => {
         expiresAt: suppression.expiresAt,
       }
     );
-    return await mutationResponse(res, result);
+    return await mutationResponse(res, result, req.user!.userId);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -340,10 +366,11 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
     // Re-analysis can turn a blocking verdict into a passing one, or return an
     // approved review to pending, so the gate has to follow it.
     await publishAndLog(result.review);
+    const published = await afterPublishing(result.review, req.user!.userId);
     return res.json({
-      ...result.review,
-      ...analyzerStatus(result.review),
-      ...importStatus(result.review),
+      ...published,
+      ...analyzerStatus(published),
+      ...importStatus(published),
       changed: result.status === "updated",
     });
   } catch (error: any) {
@@ -369,7 +396,16 @@ router.post("/:id/github-sync/retry", reviewCreateLimiter, async (req, res) => {
         reason: githubSync.reason,
       });
     }
-    return res.json({ ...review, githubSync, ...analyzerStatus(review), ...importStatus(review) });
+    // A refresh from the Action can land while this attempt is in flight. The
+    // review resolved at the start of the request then describes the previous
+    // head, revision and report, and returning it would walk the reader's page
+    // backwards onto a commit that is no longer under review.
+    const current = await afterPublishing(review, req.user!.userId);
+    return res.json({
+      ...current,
+      ...analyzerStatus(current),
+      ...importStatus(current),
+    });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -395,7 +431,7 @@ router.patch("/:id/decision", async (req, res) => {
       parsed.data.decision,
       parsed.data.note || null
     );
-    return await mutationResponse(res, result);
+    return await mutationResponse(res, result, req.user!.userId);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

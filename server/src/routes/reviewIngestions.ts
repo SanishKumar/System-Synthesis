@@ -10,7 +10,7 @@ import type { SourceProvenance } from "@system-synthesis/shared";
 import { requireReviewIntegration } from "../middleware/reviewIntegrationAuth.js";
 import { reviewIngestionLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
-import { writeDecisionCheck } from "../services/githubChecks.js";
+import { publishDecisionCheck } from "../services/githubChecks.js";
 import {
   ingestArchitectureReview,
   type IngestReviewResult,
@@ -399,8 +399,12 @@ router.post("/github", async (req, res) => {
     // delivery is ignored so a late workflow cannot reopen a settled gate.
     if (result.status !== "stale") {
       try {
-        const published = await writeDecisionCheck(result.review);
-        if (published.status === "error") {
+        // Records the outcome as well as writing it. Writing the check without
+        // recording left every freshly ingested review pending for good: the
+        // gate existed on the pull request while the review said it had never
+        // reached one, and nothing but a decision would ever correct it.
+        const published = await publishDecisionCheck(result.review);
+        if (published.status === "failed") {
           logger.warn("Architecture decision check not published", {
             reviewId: result.review.id,
             reason: published.reason,
