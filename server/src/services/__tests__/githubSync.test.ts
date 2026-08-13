@@ -14,6 +14,7 @@ import {
   ingestArchitectureReview,
   createArchitectureReview,
   recordGitHubSyncOutcome,
+  recordGitHubSyncSkipped,
   resetMemoryReviewsForTests,
   updateArchitectureReviewDecision,
 } from "../reviewRepository.js";
@@ -173,6 +174,79 @@ describe("GitHub synchronization state", () => {
     expect(discarded).toBeNull();
     const stored = await getArchitectureReview(review.id, OWNER);
     expect(stored?.githubSync.status).toBe("pending");
+  });
+
+  it("refuses to overwrite a newer generation with a stale skip", async () => {
+    const { review } = await ingest();
+    // The App was not installed when this attempt started. Before its answer
+    // lands, a new commit refreshes the review and the App is installed.
+    const refreshed = await ingest("c".repeat(40), 2_000);
+    expect(refreshed.review.revision).toBeGreaterThan(review.revision);
+
+    const discarded = await recordGitHubSyncSkipped(review.id, {
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion,
+      reason: "not_installed",
+    });
+
+    expect(discarded).toBeNull();
+    // The newer commit still owes an attempt of its own; a stale "nothing was
+    // published" must not make its gate look settled.
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync).toMatchObject({
+      status: "pending",
+      headRevision: refreshed.review.headRevision,
+    });
+  });
+
+  it("answers with the current state when an attempt is refused, not the stale one", async () => {
+    const { review } = await ingest();
+    const refreshed = await ingest("c".repeat(40), 2_000);
+
+    // Published for the old generation; the record is refused by the guard.
+    const state = await publishDecisionCheck(review, { transport: transport(), env });
+
+    expect(state).toMatchObject({
+      status: "pending",
+      headRevision: refreshed.review.headRevision,
+      revision: refreshed.review.revision,
+    });
+    expect(state.status).not.toBe("synced");
+  });
+
+  it("records a skip against the generation it was attempted for", async () => {
+    const { review } = await ingest();
+    const state = await publishDecisionCheck(review, { transport: transport(), env: {} });
+
+    // A skip says nothing was published *for this revision and commit*, so it
+    // has to carry them rather than presenting itself as timeless.
+    expect(state).toMatchObject({
+      status: "skipped",
+      reason: "not_configured",
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion,
+    });
+    expect(state.attemptedAt).not.toBeNull();
+
+    // What the caller was handed is what storage holds.
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync).toEqual(state);
+  });
+
+  it("clears the previous attempt's timestamps when a new generation goes pending", async () => {
+    const { review } = await ingest();
+    const synced = await publishDecisionCheck(review, { transport: transport(), env });
+    expect(synced.succeededAt).not.toBeNull();
+
+    // A new commit refreshes the review: nothing has been attempted for it yet.
+    const refreshed = await ingest("c".repeat(40), 2_000);
+    expect(refreshed.review.githubSync).toMatchObject({
+      status: "pending",
+      attemptedAt: null,
+      succeededAt: null,
+    });
   });
 
   it("treats a manual review as skipped rather than failed", async () => {

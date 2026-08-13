@@ -284,13 +284,20 @@ async function markSyncPending(
   review: ArchitectureReviewRecord
 ): Promise<ArchitectureReviewRecord> {
   const state = pendingSyncState(review);
+  // The attempt timestamps belong to the generation that recorded them. Leaving
+  // them behind would date a revision that has never been attempted with the
+  // previous one's clock, so the panel would show an attempt time under a state
+  // that says no attempt has happened. Memory storage clears them; SQL has to
+  // agree, or the two backends describe the same review differently.
   const updated = await client.query(
     `UPDATE architecture_reviews
      SET github_sync_status = $2,
          github_sync_conclusion = $3,
          github_sync_revision = $4,
          github_sync_head = $5,
-         github_sync_reason = $6
+         github_sync_reason = $6,
+         github_sync_attempted_at = NULL,
+         github_sync_succeeded_at = NULL
      WHERE id = $1
      RETURNING *`,
     [review.id, state.status, state.conclusion, state.revision, state.headRevision, state.reason]
@@ -1222,31 +1229,77 @@ export async function recordGitHubSyncOutcome(
   return githubSync;
 }
 
-/** Records a terminal skip, which needs no compare-and-set: nothing was published. */
+/**
+ * Records that an attempt published nothing, under the same compare-and-set as
+ * an outcome.
+ *
+ * "Nothing was published" is a statement about one generation of the review, not
+ * a timeless fact. A slow `not_installed` answer arriving after the App was
+ * installed and a newer commit went pending would otherwise overwrite that newer
+ * state with a stale skip, and the gate would look settled while nothing had been
+ * published for the commit under review.
+ *
+ * The generation fields are left as they are rather than cleared, so the record
+ * says which revision, commit and conclusion the skip applies to.
+ */
 export async function recordGitHubSyncSkipped(
   reviewId: string,
-  reason: string
-): Promise<void> {
+  attempt: {
+    revision: number;
+    headRevision: string;
+    conclusion: string | null;
+    reason: string;
+  }
+): Promise<GitHubSyncState | null> {
   const pool = getPool();
   if (pool) {
-    await pool.query(
+    const updated = await pool.query(
       `UPDATE architecture_reviews
        SET github_sync_status = 'skipped',
-           github_sync_reason = $2,
+           github_sync_reason = $4,
            github_sync_attempted_at = NOW()
-       WHERE id = $1`,
-      [reviewId, reason]
+       WHERE id = $1
+         AND revision = $2
+         AND head_revision = $3
+         AND github_sync_conclusion IS NOT DISTINCT FROM $5
+       RETURNING *`,
+      [reviewId, attempt.revision, attempt.headRevision, attempt.reason, attempt.conclusion]
     );
-    return;
+    if (!updated.rows[0]) return null;
+    return rowToReview(updated.rows[0]).githubSync;
   }
+
   const current = memoryReviews.get(reviewId);
-  if (!current) return;
-  memoryReviews.set(reviewId, {
-    ...current,
-    githubSync: {
-      ...skippedSyncState(reason),
-      attemptedAt: new Date().toISOString(),
-      succeededAt: current.githubSync.succeededAt,
-    },
-  });
+  if (
+    !current ||
+    current.revision !== attempt.revision ||
+    current.headRevision !== attempt.headRevision ||
+    current.githubSync.conclusion !== attempt.conclusion
+  ) {
+    return null;
+  }
+  const githubSync: GitHubSyncState = {
+    ...current.githubSync,
+    status: "skipped",
+    reason: attempt.reason,
+    attemptedAt: new Date().toISOString(),
+  };
+  memoryReviews.set(reviewId, { ...current, githubSync });
+  return githubSync;
+}
+
+/**
+ * The synchronization state storage currently holds, regardless of owner.
+ *
+ * Used to answer with what is true after an attempt whose record was refused,
+ * rather than with the snapshot the caller started from. Not owner-scoped: it
+ * reports no review content, and every caller has already resolved the review.
+ */
+export async function getGitHubSyncState(reviewId: string): Promise<GitHubSyncState | null> {
+  const pool = getPool();
+  if (pool) {
+    const found = await pool.query("SELECT * FROM architecture_reviews WHERE id = $1", [reviewId]);
+    return found.rows[0] ? rowToReview(found.rows[0]).githubSync : null;
+  }
+  return memoryReviews.get(reviewId)?.githubSync ?? null;
 }

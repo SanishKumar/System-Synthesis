@@ -1,9 +1,9 @@
 import { getInstallationToken, type HttpTransport } from "./githubApp.js";
 import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
 import {
+  getGitHubSyncState,
   recordGitHubSyncOutcome,
   recordGitHubSyncSkipped,
-  skippedSyncState,
   type ArchitectureReviewRecord,
   type GitHubSyncState,
 } from "./reviewRepository.js";
@@ -152,21 +152,40 @@ export async function publishDecisionCheck(
   options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv } = {}
 ): Promise<GitHubSyncState> {
   const attempted = await writeDecisionCheck(review, options);
+  const generation = {
+    revision: review.revision,
+    headRevision: review.headRevision,
+  };
+
   if (attempted.status === "skipped") {
-    const skipped = skippedSyncState(attempted.reason);
-    await recordGitHubSyncSkipped(review.id, attempted.reason);
-    return skipped;
+    const recorded = await recordGitHubSyncSkipped(review.id, {
+      ...generation,
+      // The conclusion this generation was marked pending with, which is what
+      // the guard compares. A manual review carries none, and must still match.
+      conclusion: review.githubSync.conclusion,
+      reason: attempted.reason,
+    });
+    return recorded ?? (await currentState(review));
   }
 
   const conclusion = decisionCheckState(reviewDecisionSubject(review)).conclusion;
   const recorded = await recordGitHubSyncOutcome(review.id, {
-    revision: review.revision,
-    headRevision: review.headRevision,
+    ...generation,
     conclusion,
     status: attempted.status === "written" ? "synced" : "failed",
     reason: attempted.status === "error" ? attempted.reason : null,
   });
-  // A discarded record means the review moved on while this was in flight; the
-  // newer state keeps its own pending marker and will be published for itself.
-  return recorded ?? review.githubSync;
+  return recorded ?? (await currentState(review));
+}
+
+/**
+ * What the review holds now, for an attempt whose record was refused.
+ *
+ * A refusal means the review moved on while the attempt was in flight, so the
+ * snapshot this call started from is already history. Answering with it would
+ * hand a caller — and through them a browser — the previous generation's state
+ * as though it were current.
+ */
+async function currentState(review: ArchitectureReviewRecord): Promise<GitHubSyncState> {
+  return (await getGitHubSyncState(review.id)) ?? review.githubSync;
 }
