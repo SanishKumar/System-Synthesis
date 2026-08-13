@@ -1171,6 +1171,17 @@ export function resetMemoryReviewsForTests(): void {
 }
 
 /**
+ * Places a review into memory storage exactly as given.
+ *
+ * Only for reproducing states no current write path produces — a row from
+ * before synchronization was tracked, whose sync generation is empty. Every
+ * other test should go through the real functions.
+ */
+export function setMemoryReviewForTests(review: ArchitectureReviewRecord): void {
+  memoryReviews.set(review.id, structuredClone(review));
+}
+
+/**
  * Records the outcome of a publish attempt, but only if the review still holds
  * the state that attempt was made for.
  *
@@ -1196,12 +1207,16 @@ export async function recordGitHubSyncOutcome(
       `UPDATE architecture_reviews
        SET github_sync_status = $4,
            github_sync_reason = $5,
+           github_sync_conclusion = $6,
+           github_sync_revision = $2,
+           github_sync_head = $3,
            github_sync_attempted_at = NOW(),
            github_sync_succeeded_at = CASE WHEN $4 = 'synced' THEN NOW() ELSE github_sync_succeeded_at END
        WHERE id = $1
          AND revision = $2
          AND head_revision = $3
-         AND github_sync_conclusion IS NOT DISTINCT FROM $6
+         AND (github_sync_conclusion IS NOT DISTINCT FROM $6 OR github_sync_conclusion IS NULL)
+         AND (github_sync_status IS DISTINCT FROM 'synced' OR $4 = 'synced')
        RETURNING *`,
       [reviewId, attempt.revision, attempt.headRevision, attempt.status, attempt.reason, attempt.conclusion]
     );
@@ -1210,23 +1225,58 @@ export async function recordGitHubSyncOutcome(
   }
 
   const current = memoryReviews.get(reviewId);
-  if (
-    !current ||
-    current.revision !== attempt.revision ||
-    current.headRevision !== attempt.headRevision ||
-    current.githubSync.conclusion !== attempt.conclusion
-  ) {
+  if (!current || !generationMatches(current, attempt) || downgradesSynced(current, attempt.status)) {
     return null;
   }
   const githubSync: GitHubSyncState = {
     ...current.githubSync,
     status: attempt.status,
     reason: attempt.reason,
+    conclusion: attempt.conclusion,
+    revision: attempt.revision,
+    headRevision: attempt.headRevision,
     attemptedAt: now,
     succeededAt: attempt.status === "synced" ? now : current.githubSync.succeededAt,
   };
   memoryReviews.set(reviewId, { ...current, githubSync });
   return githubSync;
+}
+
+/**
+ * Whether an attempt was made for the review as it stands.
+ *
+ * The revision and commit must match exactly. The conclusion must match too,
+ * except where the review has none recorded: rows created before
+ * synchronization was tracked hold a null conclusion, and requiring a computed
+ * conclusion to equal null would refuse every attempt they ever make. Such a
+ * review would publish its gate to GitHub successfully and go on claiming
+ * forever that it had never reached one. An attempt adopts that empty slot
+ * instead, and writes the generation it published for.
+ */
+function generationMatches(
+  review: ArchitectureReviewRecord,
+  attempt: { revision: number; headRevision: string; conclusion: string | null }
+): boolean {
+  return (
+    review.revision === attempt.revision &&
+    review.headRevision === attempt.headRevision &&
+    (review.githubSync.conclusion === attempt.conclusion ||
+      review.githubSync.conclusion === null)
+  );
+}
+
+/**
+ * Whether recording this would replace a success with something worse.
+ *
+ * Two attempts can be in flight for the same generation — a retry alongside the
+ * publish a decision triggered, say. If one succeeds and a slower one fails,
+ * the pull request still carries the gate the successful attempt wrote, because
+ * nothing about the review changed between them. Recording the failure would
+ * describe a gate that is present as missing, and invite a retry that has
+ * nothing to fix.
+ */
+function downgradesSynced(review: ArchitectureReviewRecord, status: GitHubSyncStatus): boolean {
+  return review.githubSync.status === "synced" && status !== "synced";
 }
 
 /**
@@ -1257,11 +1307,14 @@ export async function recordGitHubSyncSkipped(
       `UPDATE architecture_reviews
        SET github_sync_status = 'skipped',
            github_sync_reason = $4,
+           github_sync_revision = $2,
+           github_sync_head = $3,
            github_sync_attempted_at = NOW()
        WHERE id = $1
          AND revision = $2
          AND head_revision = $3
-         AND github_sync_conclusion IS NOT DISTINCT FROM $5
+         AND (github_sync_conclusion IS NOT DISTINCT FROM $5 OR github_sync_conclusion IS NULL)
+         AND github_sync_status IS DISTINCT FROM 'synced'
        RETURNING *`,
       [reviewId, attempt.revision, attempt.headRevision, attempt.reason, attempt.conclusion]
     );
@@ -1270,18 +1323,15 @@ export async function recordGitHubSyncSkipped(
   }
 
   const current = memoryReviews.get(reviewId);
-  if (
-    !current ||
-    current.revision !== attempt.revision ||
-    current.headRevision !== attempt.headRevision ||
-    current.githubSync.conclusion !== attempt.conclusion
-  ) {
+  if (!current || !generationMatches(current, attempt) || downgradesSynced(current, "skipped")) {
     return null;
   }
   const githubSync: GitHubSyncState = {
     ...current.githubSync,
     status: "skipped",
     reason: attempt.reason,
+    revision: attempt.revision,
+    headRevision: attempt.headRevision,
     attemptedAt: new Date().toISOString(),
   };
   memoryReviews.set(reviewId, { ...current, githubSync });

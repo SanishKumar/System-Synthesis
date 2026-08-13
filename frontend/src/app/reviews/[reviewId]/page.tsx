@@ -50,6 +50,31 @@ function shortRevision(value: string): string {
 }
 
 /**
+ * What a stored failure code means, in words.
+ *
+ * The server records a fixed code rather than whatever an exception happened to
+ * say, so the wording lives here and an unrecognised code still reads as a
+ * failure worth retrying rather than as an internal string on the page.
+ */
+const FAILURE_DETAIL: Record<string, string> = {
+  github_unreachable: "GitHub could not be reached. The decision is recorded; retry when it is back.",
+  credential_unusable: "The App's private key could not be used to sign a request. It needs replacing on the server.",
+  credential_rejected: "GitHub rejected the App's credential. Check the App's key and its installation.",
+  installation_lookup_failed: "GitHub could not confirm the App's installation on this repository.",
+  token_request_failed: "GitHub would not issue an access token for this repository.",
+  check_write_forbidden: "The App is not allowed to write checks here. Grant it Checks: Read and write.",
+  check_write_invalid: "GitHub rejected the check this service sent, which is a bug worth reporting.",
+  check_write_failed: "GitHub did not accept the check run.",
+  configuration_invalid: "The server's FRONTEND_URL is not a valid URL, so the check could not be addressed.",
+  unexpected_error: "The publish attempt failed unexpectedly. The reason is in the server log.",
+};
+
+function failureDetail(reason: string | null): string {
+  if (!reason) return "GitHub did not accept the update.";
+  return FAILURE_DETAIL[reason] || "GitHub did not accept the update.";
+}
+
+/**
  * What each synchronization state means to a reviewer, and whether retrying is
  * worth offering. A skip that needs setup is actionable once the App is
  * installed; a manual review can never publish and must not invite a retry.
@@ -77,7 +102,7 @@ function syncPresentation(
   if (status === "failed") {
     return {
       title: "GitHub sync failed",
-      detail: reason || "GitHub did not accept the update.",
+      detail: failureDetail(reason),
       tone: "text-red-600",
       retry: true,
     };
@@ -120,9 +145,7 @@ function syncPresentation(
   // as unfinished and stays retryable.
   return {
     title: "Sync incomplete",
-    detail: reason
-      ? `GitHub sync stopped: ${reason}.`
-      : "This decision has not reached the pull request, for a reason that was not recorded.",
+    detail: "This decision has not reached the pull request. The server log records why.",
     tone: "text-amber-600",
     retry: true,
   };

@@ -16,6 +16,7 @@ import {
   recordGitHubSyncOutcome,
   recordGitHubSyncSkipped,
   resetMemoryReviewsForTests,
+  setMemoryReviewForTests,
   updateArchitectureReviewDecision,
 } from "../reviewRepository.js";
 
@@ -127,7 +128,7 @@ describe("GitHub synchronization state", () => {
       { transport: transport({ writeStatus: 403 }), env }
     );
     expect(state).toMatchObject({ status: "failed" });
-    expect(state.reason).toContain("403");
+    expect(state.reason).toBe("check_write_forbidden");
 
     // The decision itself is unaffected by GitHub being unreachable.
     const stored = await getArchitectureReview(review.id, OWNER);
@@ -141,7 +142,7 @@ describe("GitHub synchronization state", () => {
       env,
     });
     expect(state).toMatchObject({ status: "failed" });
-    expect(state.reason).toContain("socket hang up");
+    expect(state.reason).toBe("github_unreachable");
   });
 
   it("recovers on retry without moving the review revision", async () => {
@@ -249,6 +250,87 @@ describe("GitHub synchronization state", () => {
     });
   });
 
+  it("does not let a slower failure undo a success for the same generation", async () => {
+    const { review } = await ingest();
+    const synced = await publishDecisionCheck(review, { transport: transport(), env });
+    expect(synced.status).toBe("synced");
+
+    // A second attempt for the same generation — a retry racing the publish a
+    // decision triggered — that reaches GitHub after the successful one.
+    const late = await recordGitHubSyncOutcome(review.id, {
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion!,
+      status: "failed",
+      reason: "github_unreachable",
+    });
+
+    expect(late).toBeNull();
+    // Nothing about the review changed between the two attempts, so the gate
+    // the successful one wrote is still on the pull request and still correct.
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync).toMatchObject({ status: "synced", reason: null });
+  });
+
+  it("does not let a slower skip undo a success for the same generation", async () => {
+    const { review } = await ingest();
+    await publishDecisionCheck(review, { transport: transport(), env });
+
+    const late = await recordGitHubSyncSkipped(review.id, {
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion,
+      reason: "not_installed",
+    });
+
+    expect(late).toBeNull();
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync.status).toBe("synced");
+  });
+
+  it("still records a later success for the same generation", async () => {
+    const { review } = await ingest();
+    await publishDecisionCheck(review, { transport: transport({ writeStatus: 403 }), env });
+
+    // Monotonic means a success is never downgraded, not that a failure is
+    // permanent: retrying after fixing the permission must still land.
+    const recovered = await publishDecisionCheck(review, { transport: transport(), env });
+    expect(recovered).toMatchObject({ status: "synced", reason: null });
+  });
+
+  it("adopts a review that predates synchronization tracking", async () => {
+    const { review } = await ingest();
+    // What a row written before the sync columns existed reads as: pending,
+    // with no generation recorded against it.
+    const legacy = {
+      ...review,
+      githubSync: {
+        status: "pending" as const,
+        conclusion: null,
+        revision: null,
+        headRevision: null,
+        reason: null,
+        attemptedAt: null,
+        succeededAt: null,
+      },
+    };
+    setMemoryReviewForTests(legacy);
+
+    const state = await publishDecisionCheck(legacy, { transport: transport(), env });
+
+    // Requiring the computed conclusion to equal the stored null would refuse
+    // this attempt and every one after it: GitHub would carry the check while
+    // the review claimed forever that it had never reached a pull request.
+    expect(state).toMatchObject({
+      status: "synced",
+      conclusion: "action_required",
+      revision: review.revision,
+      headRevision: review.headRevision,
+    });
+    const stored = await getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync.status).toBe("synced");
+  });
+
   it("treats a manual review as skipped rather than failed", async () => {
     const built = graph("head");
     const review = await createArchitectureReview({
@@ -285,13 +367,16 @@ describe("GitHub synchronization state", () => {
     const state = await publishDecisionCheck(review, { transport: unreachable, env });
     expect(state).toMatchObject({
       status: "failed",
-      reason: "fetch failed",
+      reason: "github_unreachable",
       revision: review.revision,
       headRevision: review.headRevision,
     });
     // The stored state has to agree, or a refresh would hide the stuck gate.
     const stored = await getArchitectureReview(review.id, OWNER);
-    expect(stored?.githubSync).toMatchObject({ status: "failed", reason: "fetch failed" });
+    expect(stored?.githubSync).toMatchObject({
+      status: "failed",
+      reason: "github_unreachable",
+    });
   });
 
   it("distinguishes an uninstalled App from a failure", async () => {

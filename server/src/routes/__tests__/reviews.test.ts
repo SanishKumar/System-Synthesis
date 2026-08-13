@@ -218,7 +218,7 @@ describe("architecture review routes and the decision gate", () => {
 
     const stored = await getArchitectureReview(ingested.reviewId, OWNER.userId);
     expect(stored?.githubSync).toMatchObject({ status: "failed" });
-    expect(stored?.githubSync.reason).toContain("500");
+    expect(stored?.githubSync.reason).toBe("check_write_failed");
   });
 
   it("records a skip at ingestion when the App is not installed", async () => {

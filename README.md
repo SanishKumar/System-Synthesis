@@ -204,8 +204,10 @@ These statements are limited to checked behavior in this repository.
 | An unreachable GitHub is reported as an unpublished gate to retry, never as a review with nothing to publish | Credential-failure sync tests and a rendered outage |
 | Every path that changes a decision records what publishing it achieved, and answers with that rather than with the state from before | Route tests for ingestion, decision, re-analysis and retry |
 | An attempt made for a superseded revision cannot overwrite the state of a newer one, whether it published or not | Compare-and-set tests for both outcomes and skips |
+| A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
+| Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 146 backend tests (269 total). A further 5 backend tests run the synchronization contract against a real PostgreSQL and are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 154 backend tests (277 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 

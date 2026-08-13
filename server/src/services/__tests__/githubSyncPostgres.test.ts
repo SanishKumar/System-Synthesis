@@ -169,6 +169,98 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
     expect(stored?.githubSync).toEqual(recorded);
   });
 
+  it("adopts a row written before synchronization was tracked", async () => {
+    const { db, repository } = await load();
+    const { review } = await ingest();
+    const pool = db.getPool()!;
+    // Exactly what an existing production row looks like: no sync columns at
+    // all. Reading it back reports pending with no generation.
+    await pool.query(
+      `UPDATE architecture_reviews
+       SET github_sync_status = NULL,
+           github_sync_conclusion = NULL,
+           github_sync_revision = NULL,
+           github_sync_head = NULL,
+           github_sync_reason = NULL,
+           github_sync_attempted_at = NULL,
+           github_sync_succeeded_at = NULL
+       WHERE id = $1`,
+      [review.id]
+    );
+    const legacy = (await repository.getArchitectureReview(review.id, OWNER))!;
+    expect(legacy.githubSync).toMatchObject({ status: "pending", conclusion: null });
+
+    const recorded = await repository.recordGitHubSyncOutcome(review.id, {
+      revision: legacy.revision,
+      headRevision: legacy.headRevision,
+      conclusion: "action_required",
+      status: "synced",
+      reason: null,
+    });
+
+    // Requiring the computed conclusion to equal the stored null refused every
+    // attempt such a row could ever make: GitHub carried the check while the
+    // review claimed forever that it had never reached a pull request.
+    expect(recorded).toMatchObject({
+      status: "synced",
+      conclusion: "action_required",
+      revision: legacy.revision,
+      headRevision: legacy.headRevision,
+    });
+  });
+
+  it("does not let a slower failure or skip undo a success", async () => {
+    const { repository } = await load();
+    const { review } = await ingest();
+    const generation = {
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion!,
+    };
+    await repository.recordGitHubSyncOutcome(review.id, {
+      ...generation,
+      status: "synced",
+      reason: null,
+    });
+
+    const lateFailure = await repository.recordGitHubSyncOutcome(review.id, {
+      ...generation,
+      status: "failed",
+      reason: "github_unreachable",
+    });
+    expect(lateFailure).toBeNull();
+
+    const lateSkip = await repository.recordGitHubSyncSkipped(review.id, {
+      ...generation,
+      reason: "not_installed",
+    });
+    expect(lateSkip).toBeNull();
+
+    const stored = await repository.getArchitectureReview(review.id, OWNER);
+    expect(stored?.githubSync).toMatchObject({ status: "synced", reason: null });
+  });
+
+  it("still records a later success for the same generation", async () => {
+    const { repository } = await load();
+    const { review } = await ingest();
+    const generation = {
+      revision: review.revision,
+      headRevision: review.headRevision,
+      conclusion: review.githubSync.conclusion!,
+    };
+    await repository.recordGitHubSyncOutcome(review.id, {
+      ...generation,
+      status: "failed",
+      reason: "check_write_forbidden",
+    });
+    const recovered = await repository.recordGitHubSyncOutcome(review.id, {
+      ...generation,
+      status: "synced",
+      reason: null,
+    });
+    expect(recovered).toMatchObject({ status: "synced", reason: null });
+  });
+
   it("matches a null conclusion rather than failing the guard on it", async () => {
     const { db, repository } = await load();
     const { review } = await ingest();

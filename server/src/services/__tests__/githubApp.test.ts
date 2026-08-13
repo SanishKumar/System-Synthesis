@@ -182,6 +182,10 @@ describe("installation tokens", () => {
     }) as unknown as HttpTransport;
     await expect(
       getInstallationToken("acme/shop", { env, transport, now: NOW })
-    ).resolves.toEqual({ status: "error", reason: "socket hang up" });
+    ).resolves.toEqual({
+      status: "error",
+      code: "github_unreachable",
+      detail: "socket hang up",
+    });
   });
 });

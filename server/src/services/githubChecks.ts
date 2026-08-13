@@ -1,4 +1,9 @@
-import { getInstallationToken, type HttpTransport } from "./githubApp.js";
+import {
+  getInstallationToken,
+  type CredentialFailureCode,
+  type HttpTransport,
+} from "./githubApp.js";
+import { logger } from "../middleware/logger.js";
 import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
 import {
   getGitHubSyncState,
@@ -20,10 +25,25 @@ const GITHUB_API = "https://api.github.com";
 export const DECISION_CHECK_NAME = "Architecture Decision";
 const COMMIT_SHA = /^[a-f0-9]{40}$/i;
 
+/**
+ * Why a publish attempt failed, as a fixed vocabulary a reviewer can be shown.
+ *
+ * Stored on the review and rendered, so it must mean the same thing every time
+ * and reveal nothing about the server's insides. The originating message is
+ * logged instead.
+ */
+export type DecisionCheckFailureCode =
+  | CredentialFailureCode
+  | "check_write_forbidden"
+  | "check_write_invalid"
+  | "check_write_failed"
+  | "configuration_invalid"
+  | "unexpected_error";
+
 export type DecisionCheckResult =
   | { status: "written"; conclusion: string }
   | { status: "skipped"; reason: string }
-  | { status: "error"; reason: string };
+  | { status: "error"; code: DecisionCheckFailureCode; detail: string };
 
 function reviewUrl(review: ArchitectureReviewRecord): string {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
@@ -51,6 +71,24 @@ export async function writeDecisionCheck(
   review: ArchitectureReviewRecord,
   options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv } = {}
 ): Promise<DecisionCheckResult> {
+  // Nothing in this function may throw. The caller records what it returns, so
+  // an escaping exception is the one outcome that leaves a review claiming it
+  // was never attempted while GitHub may well have been written to.
+  try {
+    return await attemptDecisionCheck(review, options);
+  } catch (error) {
+    return {
+      status: "error",
+      code: "unexpected_error",
+      detail: error instanceof Error ? error.message : "decision check attempt failed",
+    };
+  }
+}
+
+async function attemptDecisionCheck(
+  review: ArchitectureReviewRecord,
+  options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv }
+): Promise<DecisionCheckResult> {
   const source = review.externalSource;
   if (!source) return { status: "skipped", reason: "not_external" };
   // Only a real commit can carry a check run; a manual review has a branch name.
@@ -72,7 +110,7 @@ export async function writeDecisionCheck(
     return { status: "skipped", reason: credential.status };
   }
   if (credential.status === "error") {
-    return { status: "error", reason: credential.reason };
+    return { status: "error", code: credential.code, detail: credential.detail };
   }
 
   const transport = options.transport ?? defaultTransport();
@@ -84,6 +122,18 @@ export async function writeDecisionCheck(
     "User-Agent": "system-synthesis",
   };
   const state = decisionCheckState(reviewDecisionSubject(review));
+  let detailsUrl: string;
+  try {
+    detailsUrl = reviewUrl(review);
+  } catch {
+    // A misconfigured FRONTEND_URL is the operator's mistake, not GitHub's, and
+    // must be reported as such rather than thrown past the recording caller.
+    return {
+      status: "error",
+      code: "configuration_invalid",
+      detail: "FRONTEND_URL is not a valid URL",
+    };
+  }
   // Fields common to both writes. `head_sha` is deliberately absent: it
   // identifies the commit a run is created against and is not an update
   // parameter, so sending it on a PATCH risks a rejected request.
@@ -91,52 +141,99 @@ export async function writeDecisionCheck(
     name: DECISION_CHECK_NAME,
     status: "completed",
     conclusion: state.conclusion,
-    details_url: reviewUrl(review),
+    details_url: detailsUrl,
     external_id: review.id,
     output: { title: state.title, summary: state.summary },
   };
 
   try {
-    const existing = await transport(
-      `${GITHUB_API}/repos/${source.repository}/commits/${review.headRevision}/check-runs?check_name=${encodeURIComponent(DECISION_CHECK_NAME)}`,
-      { method: "GET", headers }
-    );
-    let existingId: number | undefined;
-    if (existing.status === 200) {
-      const payload = (await existing.json().catch(() => null)) as
-        | { check_runs?: Array<{ id?: unknown; external_id?: unknown }> }
-        | null;
-      // Match on the identifier this service set, not on position. Another
-      // application may publish a check of the same name against the same
-      // commit, and updating someone else's run would be worse than adding one.
-      const mine = (payload?.check_runs || [])
-        .filter((run) => run.external_id === review.id && typeof run.id === "number")
-        .map((run) => run.id as number)
-        .sort((left, right) => right - left);
-      existingId = mine[0];
-    }
+    // Serialized on the run this writes to, because two attempts that interleave
+    // here would both find no existing run and both create one, leaving the pull
+    // request with two gates for the same decision. Concurrent duplicate
+    // deliveries do happen.
+    //
+    // The key is the commit the run hangs off rather than the review, since that
+    // is what can be duplicated — and keying it by review would make an attempt
+    // for a newer commit wait behind one for a commit nobody is looking at.
+    return await inSequenceFor(`${source.repository}@${review.headRevision}`, async () => {
+      const existing = await transport(
+        `${GITHUB_API}/repos/${source.repository}/commits/${review.headRevision}/check-runs?check_name=${encodeURIComponent(DECISION_CHECK_NAME)}`,
+        { method: "GET", headers }
+      );
+      let existingId: number | undefined;
+      if (existing.status === 200) {
+        const payload = (await existing.json().catch(() => null)) as
+          | { check_runs?: Array<{ id?: unknown; external_id?: unknown }> }
+          | null;
+        // Match on the identifier this service set, not on position. Another
+        // application may publish a check of the same name against the same
+        // commit, and updating someone else's run would be worse than adding one.
+        const mine = (payload?.check_runs || [])
+          .filter((run) => run.external_id === review.id && typeof run.id === "number")
+          .map((run) => run.id as number)
+          .sort((left, right) => right - left);
+        existingId = mine[0];
+      }
 
-    const written = existingId
-      ? await transport(
-          `${GITHUB_API}/repos/${source.repository}/check-runs/${existingId}`,
-          { method: "PATCH", headers, body: JSON.stringify(common) }
-        )
-      : await transport(`${GITHUB_API}/repos/${source.repository}/check-runs`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ ...common, head_sha: review.headRevision }),
-        });
+      const written = existingId
+        ? await transport(
+            `${GITHUB_API}/repos/${source.repository}/check-runs/${existingId}`,
+            { method: "PATCH", headers, body: JSON.stringify(common) }
+          )
+        : await transport(`${GITHUB_API}/repos/${source.repository}/check-runs`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({ ...common, head_sha: review.headRevision }),
+          });
 
-    if (written.status !== 200 && written.status !== 201) {
-      return { status: "error", reason: `check run write returned ${written.status}` };
-    }
-    return { status: "written", conclusion: state.conclusion };
+      if (written.status !== 200 && written.status !== 201) {
+        return {
+          status: "error",
+          code: writeFailureCode(written.status),
+          detail: `check run write returned ${written.status}`,
+        };
+      }
+      return { status: "written", conclusion: state.conclusion };
+    });
   } catch (error) {
     return {
       status: "error",
-      reason: error instanceof Error ? error.message : "check run write failed",
+      code: "github_unreachable",
+      detail: error instanceof Error ? error.message : "check run write failed",
     };
   }
+}
+
+function writeFailureCode(status: number): DecisionCheckFailureCode {
+  if (status === 401 || status === 403) return "check_write_forbidden";
+  if (status === 422) return "check_write_invalid";
+  return "check_write_failed";
+}
+
+/**
+ * Runs work for one review at a time, in the order it arrives.
+ *
+ * Only serializes within this process, which is what the single-instance
+ * deployment needs. Running several instances would need the lock to live in
+ * the database instead; the duplicate it prevents is a second check run on the
+ * same commit, not a corrupted record.
+ */
+const sequences = new Map<string, Promise<void>>();
+
+function inSequenceFor<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const previous = sequences.get(key) ?? Promise.resolve();
+  // Runs after whatever is already queued, whether that settled or threw.
+  const result = previous.then(work, work);
+  // The queue marker never rejects, so one failed attempt cannot poison the
+  // attempts behind it.
+  const marker = result.then(() => undefined, () => undefined);
+  sequences.set(key, marker);
+  void marker.then(() => {
+    // Forget the review once nothing is queued behind it, so the map does not
+    // grow with every review this process ever publishes for.
+    if (sequences.get(key) === marker) sequences.delete(key);
+  });
+  return result;
 }
 
 /**
@@ -169,11 +266,20 @@ export async function publishDecisionCheck(
   }
 
   const conclusion = decisionCheckState(reviewDecisionSubject(review)).conclusion;
+  if (attempted.status === "error") {
+    // The stable code is what the review stores and a reviewer reads; the
+    // originating message stays with the operator.
+    logger.warn("Architecture decision check attempt failed", {
+      reviewId: review.id,
+      code: attempted.code,
+      detail: attempted.detail,
+    });
+  }
   const recorded = await recordGitHubSyncOutcome(review.id, {
     ...generation,
     conclusion,
     status: attempted.status === "written" ? "synced" : "failed",
-    reason: attempted.status === "error" ? attempted.reason : null,
+    reason: attempted.status === "error" ? attempted.code : null,
   });
   return recorded ?? (await currentState(review));
 }

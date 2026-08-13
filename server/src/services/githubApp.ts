@@ -18,11 +18,27 @@ export interface GitHubAppConfig {
   privateKey: string;
 }
 
+/**
+ * Why a credential could not be obtained, as a fixed vocabulary.
+ *
+ * These are stored on the review and shown to a reviewer, so they must be
+ * stable enough to write an explanation against and safe to display. An
+ * exception message is neither: it varies with the runtime, and it can carry a
+ * path, a hostname or a fragment of a request that nobody outside the server
+ * should read. The message itself is logged for whoever operates the service.
+ */
+export type CredentialFailureCode =
+  | "credential_unusable"
+  | "credential_rejected"
+  | "installation_lookup_failed"
+  | "token_request_failed"
+  | "github_unreachable";
+
 export type InstallationTokenResult =
   | { status: "ok"; token: string; expiresAt: string }
   | { status: "not_configured" }
   | { status: "not_installed" }
-  | { status: "error"; reason: string };
+  | { status: "error"; code: CredentialFailureCode; detail: string };
 
 /** Injectable so tests never reach the network. */
 export type HttpTransport = (
@@ -126,26 +142,44 @@ export async function getInstallationToken(
       return { status: response.status, json: () => response.json() };
     });
 
-  const appJwt = createAppJwt(config, now);
-  const headers = {
-    Authorization: `Bearer ${appJwt}`,
-    Accept: "application/vnd.github+json",
-    "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "system-synthesis",
-  };
-
   try {
+    // Inside the guard: a private key that cannot be parsed makes signing throw,
+    // and an exception escaping here would leave the caller unable to record
+    // that publishing failed at all.
+    const appJwt = createAppJwt(config, now);
+    const headers = {
+      Authorization: `Bearer ${appJwt}`,
+      Accept: "application/vnd.github+json",
+      "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "system-synthesis",
+    };
+
     const installation = await transport(
       `${GITHUB_API}/repos/${repository}/installation`,
       { method: "GET", headers }
     );
     if (installation.status === 404) return { status: "not_installed" };
+    if (installation.status === 401 || installation.status === 403) {
+      return {
+        status: "error",
+        code: "credential_rejected",
+        detail: `installation lookup returned ${installation.status}`,
+      };
+    }
     if (installation.status !== 200) {
-      return { status: "error", reason: `installation lookup returned ${installation.status}` };
+      return {
+        status: "error",
+        code: "installation_lookup_failed",
+        detail: `installation lookup returned ${installation.status}`,
+      };
     }
     const installationId = (await readJson(installation)).id;
     if (typeof installationId !== "number") {
-      return { status: "error", reason: "installation response omitted an id" };
+      return {
+        status: "error",
+        code: "installation_lookup_failed",
+        detail: "installation response omitted an id",
+      };
     }
 
     const minted = await transport(
@@ -153,26 +187,56 @@ export async function getInstallationToken(
       { method: "POST", headers }
     );
     if (minted.status !== 201) {
-      return { status: "error", reason: `token request returned ${minted.status}` };
+      return {
+        status: "error",
+        code: minted.status === 401 || minted.status === 403
+          ? "credential_rejected"
+          : "token_request_failed",
+        detail: `token request returned ${minted.status}`,
+      };
     }
     const body = await readJson(minted);
     const token = body.token;
     const expiresAt = body.expires_at;
     if (typeof token !== "string" || typeof expiresAt !== "string") {
-      return { status: "error", reason: "token response was incomplete" };
+      return {
+        status: "error",
+        code: "token_request_failed",
+        detail: "token response was incomplete",
+      };
     }
     const expiresAtMs = Date.parse(expiresAt);
     if (!Number.isFinite(expiresAtMs)) {
-      return { status: "error", reason: "token expiry was not a valid time" };
+      return {
+        status: "error",
+        code: "token_request_failed",
+        detail: "token expiry was not a valid time",
+      };
     }
 
     tokenCache.set(repository, { token, expiresAtMs });
     return { status: "ok", token, expiresAt };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : "installation token request failed";
     // Never surface the underlying request, which carries the signed assertion.
     return {
       status: "error",
-      reason: error instanceof Error ? error.message : "installation token request failed",
+      code: isSigningFailure(error) ? "credential_unusable" : "github_unreachable",
+      detail,
     };
   }
+}
+
+/**
+ * Whether the key itself is the problem rather than the network.
+ *
+ * A reviewer can do nothing about either, but an operator can: one needs the
+ * App's private key replaced, the other needs waiting out.
+ */
+function isSigningFailure(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === "JsonWebTokenError" ||
+    /secretOrPrivateKey|PEM|asn1|DECODER|unsupported/i.test(error.message)
+  );
 }

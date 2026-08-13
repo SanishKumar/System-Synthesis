@@ -196,19 +196,97 @@ describe("publishing the decision check", () => {
     };
     await expect(writeDecisionCheck(review(), { transport: unreachable, env })).resolves.toEqual({
       status: "error",
-      reason: "fetch failed",
+      code: "github_unreachable",
+      detail: "fetch failed",
     });
   });
 
-  it("keeps the detail of a credential failure instead of collapsing it", async () => {
-    const refused: HttpTransport = async (url) =>
+  it("distinguishes credential failures a reviewer would respond to differently", async () => {
+    const answering = (status: number): HttpTransport => async (url) =>
       url.endsWith("/installation")
-        ? { status: 500, json: async () => ({ message: "Server Error" }) }
+        ? { status, json: async () => ({ message: "no" }) }
         : { status: 200, json: async () => ({}) };
-    await expect(writeDecisionCheck(review(), { transport: refused, env })).resolves.toEqual({
-      status: "error",
-      reason: "installation lookup returned 500",
-    });
+
+    // A rejected credential needs the App's key replaced; a failing GitHub
+    // needs waiting out. Collapsing both to "error" lost that.
+    await expect(
+      writeDecisionCheck(review(), { transport: answering(401), env })
+    ).resolves.toMatchObject({ status: "error", code: "credential_rejected" });
+    resetGitHubAppCacheForTests();
+    await expect(
+      writeDecisionCheck(review(), { transport: answering(500), env })
+    ).resolves.toMatchObject({ status: "error", code: "installation_lookup_failed" });
+  });
+
+  it("reports an unusable private key rather than throwing past the caller", async () => {
+    // Signing happens before any request. An exception escaping here left the
+    // caller unable to record that publishing had failed at all.
+    const { transport } = transportFor();
+    await expect(
+      writeDecisionCheck(review(), {
+        transport,
+        env: { GITHUB_APP_ID: "1234", GITHUB_APP_PRIVATE_KEY: "-----BEGIN RSA PRIVATE KEY-----\nnot a key\n-----END RSA PRIVATE KEY-----" },
+      })
+    ).resolves.toMatchObject({ status: "error", code: "credential_unusable" });
+  });
+
+  it("reports a misconfigured frontend URL rather than throwing past the caller", async () => {
+    const { transport } = transportFor();
+    const frontendUrl = process.env.FRONTEND_URL;
+    process.env.FRONTEND_URL = "not-a-url";
+    try {
+      await expect(
+        writeDecisionCheck(review(), { transport, env })
+      ).resolves.toMatchObject({ status: "error", code: "configuration_invalid" });
+    } finally {
+      if (frontendUrl === undefined) delete process.env.FRONTEND_URL;
+      else process.env.FRONTEND_URL = frontendUrl;
+    }
+  });
+
+  it("never lets an unexpected fault escape instead of being recorded", async () => {
+    const exploding: HttpTransport = () => {
+      throw new RangeError("something nobody predicted");
+    };
+    await expect(
+      writeDecisionCheck(review(), { transport: exploding, env })
+    ).resolves.toMatchObject({ status: "error" });
+  });
+
+  it("creates one check run when two attempts for the same commit overlap", async () => {
+    const { transport, recorded } = transportFor();
+    let created = 0;
+    const slowCreate: HttpTransport = async (url, init) => {
+      if (init.method === "POST" && url.endsWith("/check-runs")) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        created += 1;
+        return { status: 201, json: async () => ({ id: 100 + created }) };
+      }
+      if (url.includes("/check-runs?check_name=")) {
+        // Reflects what GitHub would now report, so the second attempt can see
+        // the first attempt's run rather than a stale empty list.
+        return {
+          status: 200,
+          json: async () => ({
+            check_runs: created
+              ? [{ id: 101, external_id: REVIEW_ID }]
+              : [],
+          }),
+        };
+      }
+      return transport(url, init);
+    };
+
+    await Promise.all([
+      writeDecisionCheck(review(), { transport: slowCreate, env }),
+      writeDecisionCheck(review(), { transport: slowCreate, env }),
+    ]);
+
+    // Two gates on one commit is worse than a slow one: a reviewer cannot tell
+    // which is authoritative, and branch protection may wait on both.
+    expect(created).toBe(1);
+    expect(recorded.filter((call) => call.method === "POST" && call.url.endsWith("/check-runs")).length)
+      .toBeLessThanOrEqual(1);
   });
 
   it("reports a refused write rather than pretending it published", async () => {

@@ -22,6 +22,7 @@ import {
   updateArchitectureReviewAnalysis,
   updateArchitectureReviewDecision,
   type ArchitectureReviewRecord,
+  type GitHubSyncState,
   type ReviewMutationResult,
 } from "../services/reviewRepository.js";
 
@@ -109,7 +110,9 @@ function badRequest(res: Response, error: z.ZodError): Response {
  * point; an unreachable or uninstalled App must not turn a recorded decision
  * into a failed action.
  */
-async function publishAndLog(review: ArchitectureReviewRecord): Promise<void> {
+async function publishAndLog(
+  review: ArchitectureReviewRecord
+): Promise<GitHubSyncState | null> {
   try {
     const state = await publishDecisionCheck(review);
     if (state.status === "failed") {
@@ -118,11 +121,13 @@ async function publishAndLog(review: ArchitectureReviewRecord): Promise<void> {
         reason: state.reason,
       });
     }
+    return state;
   } catch (error) {
     logger.warn("Architecture decision check not published", {
       reviewId: review.id,
       reason: error instanceof Error ? error.message : "unknown",
     });
+    return null;
   }
 }
 
@@ -138,16 +143,27 @@ async function publishAndLog(review: ArchitectureReviewRecord): Promise<void> {
  *
  * Re-reading is owner-scoped, so a review that vanished under the caller falls
  * back to what was already resolved rather than widening what they can see.
+ *
+ * If the re-read itself fails, the attempt's own result is still better than
+ * the record from before it: falling back to the untouched snapshot would
+ * report a gate as pending immediately after publishing it, which is the
+ * failure this function exists to prevent.
  */
 async function afterPublishing(
   review: ArchitectureReviewRecord,
-  ownerId: string
+  ownerId: string,
+  published: GitHubSyncState | null
 ): Promise<ArchitectureReviewRecord> {
   try {
-    return (await getArchitectureReview(review.id, ownerId)) ?? review;
-  } catch {
-    return review;
+    const current = await getArchitectureReview(review.id, ownerId);
+    if (current) return current;
+  } catch (error) {
+    logger.warn("Could not re-read a review after publishing", {
+      reviewId: review.id,
+      reason: error instanceof Error ? error.message : "unknown",
+    });
   }
+  return published ? { ...review, githubSync: published } : review;
 }
 
 async function mutationResponse(
@@ -163,8 +179,8 @@ async function mutationResponse(
       error: "This review changed in another session. Refresh before retrying.",
     });
   }
-  await publishAndLog(result.review);
-  const review = await afterPublishing(result.review, ownerId);
+  const state = await publishAndLog(result.review);
+  const review = await afterPublishing(result.review, ownerId, state);
   return res.json({ ...review, ...analyzerStatus(review), ...importStatus(review) });
 }
 
@@ -365,8 +381,8 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
     }
     // Re-analysis can turn a blocking verdict into a passing one, or return an
     // approved review to pending, so the gate has to follow it.
-    await publishAndLog(result.review);
-    const published = await afterPublishing(result.review, req.user!.userId);
+    const state = await publishAndLog(result.review);
+    const published = await afterPublishing(result.review, req.user!.userId, state);
     return res.json({
       ...published,
       ...analyzerStatus(published),
@@ -400,7 +416,7 @@ router.post("/:id/github-sync/retry", reviewCreateLimiter, async (req, res) => {
     // review resolved at the start of the request then describes the previous
     // head, revision and report, and returning it would walk the reader's page
     // backwards onto a commit that is no longer under review.
-    const current = await afterPublishing(review, req.user!.userId);
+    const current = await afterPublishing(review, req.user!.userId, githubSync);
     return res.json({
       ...current,
       ...analyzerStatus(current),

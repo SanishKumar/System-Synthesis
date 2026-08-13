@@ -121,11 +121,21 @@ unpublished and retrying is worth doing:
 
 | Failed | Meaning |
 | --- | --- |
-| `fetch failed` | GitHub was unreachable from the server |
-| `installation lookup returned 401` | The App's private key no longer matches the registration |
-| `installation lookup returned 5xx` | GitHub was failing; retry later |
-| `check run write returned 403` | The App lacks `Checks: Read and write`, or the installation was removed |
-| `check run write returned 422` | GitHub rejected the payload — a genuine bug worth reporting |
+| `github_unreachable` | GitHub could not be reached from the server |
+| `credential_unusable` | The App's private key could not sign a request; replace it |
+| `credential_rejected` | GitHub refused the App's credential — a rotated key, or access removed |
+| `installation_lookup_failed` | GitHub could not confirm the installation; usually transient |
+| `token_request_failed` | GitHub would not issue an installation token |
+| `check_write_forbidden` | The App lacks `Checks: Read and write`, or the installation was removed |
+| `check_write_invalid` | GitHub rejected the payload — a genuine bug worth reporting |
+| `check_write_failed` | GitHub refused the write for some other reason |
+| `configuration_invalid` | `FRONTEND_URL` is not a valid URL, so the check cannot be addressed |
+| `unexpected_error` | A fault nobody anticipated; the server log carries the detail |
+
+These are a fixed vocabulary rather than whatever an exception happened to say.
+A reviewer sees them, so they have to mean the same thing every time and reveal
+nothing about the server's insides; the originating message is logged for
+whoever operates the service.
 
 The distinction is load-bearing. A transient fault reported as a skip would tell
 a reviewer their pull request needs no update while the gate sits unpublished,
@@ -145,6 +155,18 @@ for. If the pull request moves on while an attempt is in flight, the answer is
 discarded rather than applied to the newer state — for a skip as much as for a
 success, because "nothing was published" is true only of the generation it was
 attempted for.
+
+Within one generation a success is never undone. Two attempts can overlap — a
+retry alongside the publish a decision triggered — and if one succeeds and a
+slower one fails, the pull request still carries the gate the successful one
+wrote, because nothing about the review changed in between. Recording the later
+failure would report a gate that is present as missing. A later success is still
+recorded, so retrying after fixing a permission works as expected.
+
+Reviews created before synchronization was tracked hold no recorded generation.
+The first attempt one of them makes adopts the empty slot and fills it in, so
+such a review reports its gate correctly from then on instead of claiming
+forever that it had never reached a pull request.
 
 ## What this does not do yet
 

@@ -31,6 +31,26 @@ jobs:
 
   backend-check:
     runs-on: ubuntu-latest
+
+    # A disposable PostgreSQL, so the synchronization contract runs against real
+    # SQL rather than only against memory storage. The two backends implement
+    # the same guarantees separately and have already drifted once; each is
+    # correct on its own terms, so only running both catches the disagreement.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: system_synthesis_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v6
@@ -56,6 +76,29 @@ jobs:
 
       - name: Run backend, security, recovery, and convergence tests
         run: npm test --workspace=server
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/system_synthesis_test
+
+      - name: Fail if the PostgreSQL contract did not actually run
+        # Skipping is the correct local behaviour and the wrong CI behaviour: a
+        # suite that silently skips here would leave the SQL untested while the
+        # pipeline stayed green.
+        run: npm test --workspace=server -- src/services/__tests__/githubSyncPostgres.test.ts --reporter=json --outputFile=pg-report.json
+        env:
+          TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/system_synthesis_test
+
+      - name: Check the PostgreSQL contract reported passing tests
+        run: |
+          node -e '
+            const report = require("./server/pg-report.json");
+            const passed = report.numPassedTests ?? 0;
+            const skipped = (report.numPendingTests ?? 0) + (report.numTodoTests ?? 0);
+            if (passed === 0 || skipped > 0) {
+              console.error(`PostgreSQL contract did not run: ${passed} passed, ${skipped} skipped`);
+              process.exit(1);
+            }
+            console.log(`PostgreSQL contract ran: ${passed} passed`);
+          '
 
       - name: Run authenticated API and WebSocket integration checks
         shell: bash
