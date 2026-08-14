@@ -3,6 +3,7 @@ import {
   connectionHost,
   decideTransportTls,
   describeTls,
+  withoutDriverSslParameters,
   type TransportTls,
 } from "./transportSecurity.js";
 const { Pool } = pg;
@@ -291,6 +292,26 @@ export function shouldHaltOnPersistenceFailure(
   return state.mode === "failed" && nodeEnv === "production";
 }
 
+/**
+ * Exactly what the pool is constructed with.
+ *
+ * Exported so a test can hand it to a real client and read back the settings
+ * the driver resolved. Checking the decision function alone proved nothing
+ * about the connection: the driver was discarding that decision, and every test
+ * still passed.
+ */
+export function poolConfig(databaseUrl: string, tls: DatabaseTls) {
+  return {
+    // Stripped of its own TLS parameters, so the decision above is the one that
+    // reaches the socket rather than being replaced by the string.
+    connectionString: withoutDriverSslParameters(databaseUrl),
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 20000, // 20s for serverless databases waking up.
+    ssl: poolSsl(tls),
+  };
+}
+
 /** The driver's shape for a decision already made. A refusal never gets here. */
 function poolSsl(tls: DatabaseTls): false | { rejectUnauthorized: boolean; ca?: string } {
   if (tls.mode === "disabled" || tls.mode === "refused") return false;
@@ -339,13 +360,7 @@ export async function initDatabase(): Promise<boolean> {
   }
 
   try {
-    pool = new Pool({
-      connectionString: databaseUrl,
-      max: 10,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 20000, // 20s to allow Serverless DBs (like Neon) to wake up from cold starts
-      ssl: poolSsl(tls),
-    });
+    pool = new Pool(poolConfig(databaseUrl, tls));
 
     // Test connection
     const client = await pool.connect();

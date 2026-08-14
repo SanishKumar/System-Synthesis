@@ -7,7 +7,13 @@ import {
   markPersistenceFailed,
   shouldHaltOnPersistenceFailure,
 } from "../db.js";
-import { redisTls } from "../redis.js";
+import {
+  getRedisState,
+  initRedis,
+  redisTls,
+  setRedisStateForTests,
+  shouldReportRedisDegraded,
+} from "../redis.js";
 
 const originalUrl = process.env.DATABASE_URL;
 
@@ -211,5 +217,56 @@ describe("redis transport security", () => {
       mode: "verified",
       ca: "pem",
     });
+  });
+});
+
+describe("redis readiness", () => {
+  const originalRedisUrl = process.env.REDIS_URL;
+
+  afterEach(() => {
+    if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = originalRedisUrl;
+    setRedisStateForTests({ mode: "disabled" });
+  });
+
+  it("treats an unconfigured Redis as a deliberate memory mode", async () => {
+    delete process.env.REDIS_URL;
+    await initRedis();
+    expect(getRedisState()).toEqual({ mode: "disabled" });
+  });
+
+  it("reports a configured but unreachable Redis as failed, not as absent", async () => {
+    // Nothing listens here, so the attempt fails immediately.
+    process.env.REDIS_URL = "redis://127.0.0.1:1";
+    await initRedis();
+    const state = getRedisState();
+    expect(state.mode).toBe("failed");
+    expect(state.mode === "failed" && state.reason).toBeTruthy();
+  });
+
+  it("reports a refused transport as failed rather than connecting anyway", async () => {
+    process.env.REDIS_URL = "redis://cache.example.com:6379";
+    process.env.NODE_ENV = "production";
+    try {
+      await initRedis();
+      const state = getRedisState();
+      expect(state.mode).toBe("failed");
+      expect(state.mode === "failed" && state.reason).toContain("plaintext");
+    } finally {
+      process.env.NODE_ENV = "test";
+    }
+  });
+
+  it("calls a production deployment degraded when its configured Redis is missing", () => {
+    const failed = { mode: "failed", reason: "connection refused" } as const;
+
+    // Every instance would keep a private copy of state meant to be shared, and
+    // the platform would have no way to know.
+    expect(shouldReportRedisDegraded(failed, "production")).toBe(true);
+    // Development stays runnable; the log carries the reason.
+    expect(shouldReportRedisDegraded(failed, "development")).toBe(false);
+    // Choosing to run without Redis is never a reason to report degraded.
+    expect(shouldReportRedisDegraded({ mode: "disabled" }, "production")).toBe(false);
+    expect(shouldReportRedisDegraded({ mode: "active" }, "production")).toBe(false);
   });
 });

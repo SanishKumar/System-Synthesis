@@ -94,6 +94,52 @@ export function connectionHost(url: string): string | null {
 }
 
 /**
+ * Every parameter node-postgres reads TLS settings from.
+ *
+ * Taken from what pg-connection-string actually consumes rather than from the
+ * shorter list one would guess.
+ */
+const DRIVER_SSL_PARAMETERS = [
+  "ssl",
+  "sslmode",
+  "sslcert",
+  "sslkey",
+  "sslrootcert",
+  "uselibpqcompat",
+];
+
+/**
+ * Removes the TLS parameters the driver would act on itself.
+ *
+ * node-postgres does not merge a connection string's SSL settings with an `ssl`
+ * option — the string replaces the object. So a URL ending in `sslmode=require`
+ * silently discarded everything decided here: the supplied CA never reached the
+ * socket, and the emergency no-verify switch did nothing at all. What looked
+ * like a verified connection was verified only because this version of the
+ * driver happens to read `require` as full verification, and it warns that a
+ * future major will read it as libpq does, which does not verify.
+ *
+ * Deciding the policy and then leaving the driver an instruction to override it
+ * is not a decision. The string carries the address; the `ssl` object carries
+ * the security.
+ */
+export function withoutDriverSslParameters(url: string): string {
+  try {
+    const parsed = new URL(url);
+    let touched = false;
+    for (const parameter of DRIVER_SSL_PARAMETERS) {
+      if (parsed.searchParams.has(parameter)) {
+        parsed.searchParams.delete(parameter);
+        touched = true;
+      }
+    }
+    return touched ? parsed.toString() : url;
+  } catch {
+    return url;
+  }
+}
+
+/**
  * Says which of the four it chose, because an operator cannot tell by looking
  * at a working connection whether the certificate was checked.
  */

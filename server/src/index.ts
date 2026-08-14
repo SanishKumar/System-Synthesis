@@ -10,7 +10,12 @@ import {
   registerSocketHandlers,
 } from "./socket/handlers.js";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { initRedis, redis } from "./services/redis.js";
+import {
+  getRedisState,
+  initRedis,
+  redis,
+  shouldReportRedisDegraded,
+} from "./services/redis.js";
 import {
   getPersistenceState,
   initDatabase,
@@ -113,16 +118,24 @@ async function main() {
   // Health check
   app.get("/health", (_req, res) => {
     const persistence = getPersistenceState();
-    // A configured-but-unusable database is not a healthy instance. Reporting
+    const redisState = getRedisState();
+    // A configured-but-unusable dependency is not a healthy instance. Reporting
     // "ok" here is what lets a platform promote a deploy that silently drops
-    // every write.
-    const degraded = persistence.mode === "failed";
+    // every write, or one where each instance keeps its own private copy of
+    // state that is supposed to be shared between them.
+    const degraded =
+      persistence.mode === "failed" ||
+      shouldReportRedisDegraded(redisState, process.env.NODE_ENV);
     res.status(degraded ? 503 : 200).json({
       status: degraded ? "degraded" : "ok",
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       persistence: persistence.mode,
       dbAvailable: isDbAvailable(),
+      // Named for what it is: whether the shared store is carrying the
+      // collaboration stream, not merely whether a URL was configured.
+      redis: redisState.mode,
+      ...(redisState.mode === "failed" ? { redisReason: redisState.reason } : {}),
     });
   });
 

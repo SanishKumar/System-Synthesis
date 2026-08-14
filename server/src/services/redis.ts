@@ -176,6 +176,43 @@ export let redis: any = null;
 const serverStartTime = Date.now();
 
 /**
+ * Whether Redis is carrying the collaboration stream.
+ *
+ * The same three states persistence reports, for the same reason: running on
+ * memory alone is a legitimate development choice and a silent failure in
+ * production, where it means every instance keeps its own copy of state that is
+ * supposed to be shared. `disabled` and `failed` both mean "no Redis" and must
+ * not read alike.
+ */
+export type RedisState =
+  | { mode: "disabled" }
+  | { mode: "active" }
+  | { mode: "failed"; reason: string };
+
+let redisState: RedisState = { mode: "disabled" };
+
+export function getRedisState(): RedisState {
+  return redisState;
+}
+
+/**
+ * A configured Redis that never connected is a broken deployment, not a quiet
+ * fallback: cross-instance collaboration is exactly what it was configured for.
+ * Development stays runnable, loudly.
+ */
+export function shouldReportRedisDegraded(
+  state: RedisState,
+  nodeEnv: string | undefined
+): boolean {
+  return state.mode === "failed" && nodeEnv === "production";
+}
+
+/** Test seam for the states a real connection cannot be forced into. */
+export function setRedisStateForTests(state: RedisState): void {
+  redisState = state;
+}
+
+/**
  * How the Redis connection should be secured.
  *
  * The scheme is the switch here rather than a query parameter: `rediss://` asks
@@ -217,50 +254,59 @@ function redisTlsOptions(
 export async function initRedis(): Promise<void> {
   const redisUrl = process.env.REDIS_URL;
   if (!redisUrl) {
+    redisState = { mode: "disabled" };
     console.log("  ⚡ Redis URL not configured — using in-memory store");
     memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
     return;
   }
 
+  const fallToMemory = (reason: string): void => {
+    redisState = { mode: "failed", reason };
+    redis = null;
+    memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
+    console.error(`  ⚠ Redis unavailable: ${reason} — using in-memory store`);
+  };
+
   try {
     const Redis = (await import("ioredis")).default;
-    
+
     const tls = redisTls(redisUrl);
     console.log(`  ${tls.mode === "verified" ? "🔒" : "⚡"} ${describeTls("Redis", tls)}`);
     if (tls.mode === "refused") {
       // Redis carries collaboration updates and the identities attached to
       // them. Falling back to memory loses cross-instance coordination, which
       // is visible; sending them across a network in the clear is not.
-      console.error(`  ⚠ Redis not connected: ${tls.reason}`);
+      fallToMemory(tls.reason);
       return;
     }
 
-    redis = new Redis(redisUrl, {
+    const client = new Redis(redisUrl, {
       family: 0, // Crucial for Upstash on Render: Force IPv4
       tls: redisTlsOptions(tls),
       maxRetriesPerRequest: 3,
-      retryStrategy: (times: number) => {
-        if (times > 3) {
-          console.log("  ⚠ Redis connection failed — falling back to in-memory store");
-          redis = null;
-          return null;
-        }
-        return Math.min(times * 200, 2000);
-      },
+      // Connect on request, so the outcome belongs to this function instead of
+      // arriving later on an event nobody is waiting for.
+      lazyConnect: true,
+      retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 200, 2000)),
     });
 
-    redis.on("connect", () => {
-      console.log("  ✅ Redis connected");
-      // Explicitly seed the demo board into Redis so it appears in the database GUI
-      redis?.set("board:demo-ecommerce", JSON.stringify(demoBoardState));
-    });
-
-    redis.on("error", (err: Error) => {
+    // An error after startup must not take the process down; the store degrades
+    // to memory and says so.
+    client.on("error", (err: Error) => {
       console.error("  ⚠ Redis error:", err.message);
     });
+
+    // Waited for, rather than assumed. Reporting a configured Redis as working
+    // before it has answered is what let the deployment advertise cross-instance
+    // collaboration it did not have.
+    await client.connect();
+    redis = client;
+    redisState = { mode: "active" };
+    console.log("  ✅ Redis connected");
+    // Seed the demo board so it appears in the database GUI.
+    await client.set("board:demo-ecommerce", JSON.stringify(demoBoardState)).catch(() => undefined);
   } catch (err) {
-    console.log("  ⚠ Redis module not available — using in-memory store");
-    memoryStore.set(`board:demo-ecommerce`, JSON.stringify(demoBoardState));
+    fallToMemory(err instanceof Error ? err.message : "Redis could not be reached");
   }
 }
 
