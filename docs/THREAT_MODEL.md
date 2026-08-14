@@ -21,7 +21,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 
 1. Browser to REST/Socket.IO server: all inputs are hostile until authenticated, authorized, size-limited, and schema-validated.
 2. Server to PostgreSQL: PostgreSQL is the durable authority when configured. The connection is encrypted and the server's certificate is verified, so an attacker positioned on that path cannot present its own certificate and read or rewrite queries. A connection explicitly configured with `sslmode=disable` — a local instance, a CI service container — is unencrypted by intent and assumes a trusted loopback.
-3. Server to Redis: Redis distributes accepted updates; it is not allowed to override authorization.
+3. Server to Redis: Redis distributes accepted updates; it is not allowed to override authorization. A `rediss://` connection verifies the provider's certificate, so the update stream and the identities attached to it cannot be read or rewritten by whatever answers for that address. `redis://` is unencrypted by intent and is refused in production to any host other than this machine.
 4. Rule engine to LLM provider: deterministic findings are authoritative; LLM text is explanatory and untrusted.
 5. Generated export to operator: generated files require review and secret injection before use.
 6. Repository source to architecture adapter: Compose and policy files are hostile, bounded inputs; they do not execute.

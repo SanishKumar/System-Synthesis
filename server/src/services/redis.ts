@@ -3,6 +3,12 @@ import type {
   SerializedNode,
   SerializedEdge,
 } from "@system-synthesis/shared";
+import {
+  connectionHost,
+  decideTransportTls,
+  describeTls,
+  type TransportTls,
+} from "./transportSecurity.js";
 
 // In-memory store as fallback when Redis is unavailable
 const memoryStore = new Map<string, string>();
@@ -170,6 +176,42 @@ export let redis: any = null;
 const serverStartTime = Date.now();
 
 /**
+ * How the Redis connection should be secured.
+ *
+ * The scheme is the switch here rather than a query parameter: `rediss://` asks
+ * for TLS and `redis://` asks for none. Verification was previously turned off
+ * for every TLS connection, which left the collaboration stream — board
+ * updates and the identities attached to them — readable and rewritable by
+ * anything able to answer for the provider's address.
+ */
+export function redisTls(
+  redisUrl: string,
+  env: NodeJS.ProcessEnv = process.env
+): TransportTls {
+  const host = connectionHost(redisUrl);
+  if (host === null) {
+    return { mode: "refused", reason: "REDIS_URL is not a valid connection string" };
+  }
+  return decideTransportTls({
+    service: "Redis",
+    host,
+    requested: redisUrl.startsWith("rediss://") ? "encrypted" : "disabled",
+    noVerify: env.REDIS_SSL_NO_VERIFY === "true",
+    ca: env.REDIS_CA_CERT?.trim() || undefined,
+    allowPlaintext: env.REDIS_ALLOW_PLAINTEXT === "true",
+    nodeEnv: env.NODE_ENV,
+  });
+}
+
+function redisTlsOptions(
+  tls: TransportTls
+): { rejectUnauthorized: boolean; ca?: string } | undefined {
+  if (tls.mode === "disabled" || tls.mode === "refused") return undefined;
+  if (tls.mode === "unverified") return { rejectUnauthorized: false };
+  return tls.ca ? { rejectUnauthorized: true, ca: tls.ca } : { rejectUnauthorized: true };
+}
+
+/**
  * Try to connect to Redis. Falls back to in-memory store silently.
  */
 export async function initRedis(): Promise<void> {
@@ -183,11 +225,19 @@ export async function initRedis(): Promise<void> {
   try {
     const Redis = (await import("ioredis")).default;
     
-    const isTls = redisUrl.startsWith("rediss://");
-    
+    const tls = redisTls(redisUrl);
+    console.log(`  ${tls.mode === "verified" ? "🔒" : "⚡"} ${describeTls("Redis", tls)}`);
+    if (tls.mode === "refused") {
+      // Redis carries collaboration updates and the identities attached to
+      // them. Falling back to memory loses cross-instance coordination, which
+      // is visible; sending them across a network in the clear is not.
+      console.error(`  ⚠ Redis not connected: ${tls.reason}`);
+      return;
+    }
+
     redis = new Redis(redisUrl, {
       family: 0, // Crucial for Upstash on Render: Force IPv4
-      tls: isTls ? { rejectUnauthorized: false } : undefined,
+      tls: redisTlsOptions(tls),
       maxRetriesPerRequest: 3,
       retryStrategy: (times: number) => {
         if (times > 3) {

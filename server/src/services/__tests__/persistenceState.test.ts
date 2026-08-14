@@ -7,6 +7,7 @@ import {
   markPersistenceFailed,
   shouldHaltOnPersistenceFailure,
 } from "../db.js";
+import { redisTls } from "../redis.js";
 
 const originalUrl = process.env.DATABASE_URL;
 
@@ -69,6 +70,36 @@ describe("database transport security", () => {
   const HOSTED = "postgresql://user:pass@ep-example.aws.neon.tech/main?sslmode=require";
   const LOCAL = "postgresql://postgres:postgres@localhost:5432/scratch?sslmode=disable";
 
+  it("does not decide encryption from the URL scheme", () => {
+    // The regression this replaces: postgres:// and postgresql:// name the same
+    // database, and the first was sent in plaintext across a network while the
+    // second tried TLS against a local instance that had none.
+    for (const scheme of ["postgres", "postgresql"]) {
+      expect(databaseTls(`${scheme}://user:pass@remote.example.com:5432/app`, {})).toEqual({
+        mode: "verified",
+      });
+      expect(databaseTls(`${scheme}://postgres@localhost:5432/app`, {})).toEqual({
+        mode: "disabled",
+      });
+    }
+  });
+
+  it("verifies a remote database that says nothing about TLS", () => {
+    expect(databaseTls("postgres://user:pass@db.example.com/app", {})).toEqual({
+      mode: "verified",
+    });
+  });
+
+  it("leaves a database on this machine alone when nothing is specified", () => {
+    // The documented local setup URL. Requiring ceremony to run Postgres on a
+    // laptop is how a security default gets switched off wholesale.
+    expect(databaseTls("postgresql://user:password@localhost:5432/system_synthesis", {}))
+      .toEqual({ mode: "disabled" });
+    expect(databaseTls("postgresql://user:pass@127.0.0.1:5432/app", {})).toEqual({
+      mode: "disabled",
+    });
+  });
+
   it("verifies the certificate of a hosted connection", () => {
     // Encrypting without checking who answered stops passive eavesdropping and
     // nothing else: whoever can answer for the address can read every query.
@@ -86,16 +117,40 @@ describe("database transport security", () => {
     }
   });
 
-  it("leaves a database with no TLS to negotiate alone", () => {
+  it("honours an explicit disable, including for a container on a private network", () => {
     expect(databaseTls(LOCAL, {})).toEqual({ mode: "disabled" });
+    // The Docker development stack: not loopback, so it has to say so.
+    expect(
+      databaseTls("postgresql://ss_user:pw@postgres:5432/system_synthesis?sslmode=disable", {
+        NODE_ENV: "development",
+      })
+    ).toEqual({ mode: "disabled" });
   });
 
-  it("keeps a connection that never used TLS unencrypted rather than breaking it", () => {
-    // The only behaviour that changes is unverified to verified. A local URL
-    // that reaches its database without TLS today still does.
-    expect(databaseTls("postgres://postgres@localhost:5432/scratch", {})).toEqual({
-      mode: "disabled",
-    });
+  it("refuses plaintext to a remote database in production", () => {
+    const refused = databaseTls(
+      "postgresql://user:pass@db.example.com:5432/app?sslmode=disable",
+      { NODE_ENV: "production" }
+    );
+    expect(refused.mode).toBe("refused");
+    expect(refused.mode === "refused" && refused.reason).toContain("plaintext");
+  });
+
+  it("still allows plaintext to this machine in production", () => {
+    expect(
+      databaseTls("postgresql://user:pass@127.0.0.1:5432/app?sslmode=disable", {
+        NODE_ENV: "production",
+      })
+    ).toEqual({ mode: "disabled" });
+  });
+
+  it("accepts plaintext to a remote database only when it is stated twice", () => {
+    expect(
+      databaseTls("postgresql://user:pass@db.example.com/app?sslmode=disable", {
+        NODE_ENV: "production",
+        DATABASE_ALLOW_PLAINTEXT: "true",
+      })
+    ).toEqual({ mode: "disabled" });
   });
 
   it("offers an opt-out that does not need a redeploy", () => {
@@ -117,7 +172,44 @@ describe("database transport security", () => {
     expect(databaseTls(HOSTED, { DATABASE_CA_CERT: ca })).toEqual({ mode: "verified", ca });
   });
 
-  it("treats an unparseable connection string as having no sslmode", () => {
-    expect(databaseTls("not a url", {})).toEqual({ mode: "disabled" });
+  it("refuses a connection string it cannot read rather than guessing", () => {
+    expect(databaseTls("not a url", {}).mode).toBe("refused");
+  });
+});
+
+describe("redis transport security", () => {
+  it("verifies the certificate of a TLS Redis connection", () => {
+    // The collaboration stream carries board updates and the identities
+    // attached to them; accepting any certificate left both rewritable.
+    expect(redisTls("rediss://default:pw@fly-cache.upstash.io:6379", {})).toEqual({
+      mode: "verified",
+    });
+  });
+
+  it("leaves a local Redis unencrypted", () => {
+    expect(redisTls("redis://localhost:6379", {})).toEqual({ mode: "disabled" });
+    expect(redisTls("redis://127.0.0.1:6379", {})).toEqual({ mode: "disabled" });
+  });
+
+  it("allows the Docker development stack to reach its container", () => {
+    expect(redisTls("redis://redis:6379", { NODE_ENV: "development" })).toEqual({
+      mode: "disabled",
+    });
+  });
+
+  it("refuses plaintext Redis to a remote host in production", () => {
+    const refused = redisTls("redis://cache.example.com:6379", { NODE_ENV: "production" });
+    expect(refused.mode).toBe("refused");
+    expect(refused.mode === "refused" && refused.reason).toContain("plaintext");
+  });
+
+  it("offers the same opt-out and supplied root as the database", () => {
+    expect(redisTls("rediss://cache.example.com:6379", { REDIS_SSL_NO_VERIFY: "true" })).toEqual({
+      mode: "unverified",
+    });
+    expect(redisTls("rediss://cache.example.com:6379", { REDIS_CA_CERT: "pem" })).toEqual({
+      mode: "verified",
+      ca: "pem",
+    });
   });
 });

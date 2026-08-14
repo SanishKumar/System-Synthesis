@@ -64,7 +64,10 @@ services:
     environment:
       PORT: 4000
       REDIS_URL: redis://redis:6379
-      DATABASE_URL: postgresql://${POSTGRES_USER:-ss_user}:${POSTGRES_PASSWORD:-ss_dev_password}@postgres:5432/${POSTGRES_DB:-system_synthesis}
+      # sslmode=disable is required, not incidental: the database is a container
+      # on a private network rather than this machine, so it is not assumed
+      # local, and it offers no TLS to negotiate.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ss_user}:${POSTGRES_PASSWORD:-ss_dev_password}@postgres:5432/${POSTGRES_DB:-system_synthesis}?sslmode=disable
       JWT_SECRET: ${JWT_SECRET:-dev-jwt-secret-change-in-prod}
       FRONTEND_URL: http://localhost:3000
       NODE_ENV: development

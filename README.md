@@ -197,7 +197,8 @@ These statements are limited to checked behavior in this repository.
 | A change in extraction output cannot land without a deliberate import-version decision | Pinned extraction-fingerprint test |
 | Import staleness is reported independently of analyzer staleness | Import-provenance repository tests |
 | A configured but unusable database stops a production boot instead of silently serving memory storage | Persistence startup tests and an unreachable-database boot |
-| The database connection verifies the server's certificate rather than encrypting to whoever answers, and a connection that never used TLS is left unencrypted rather than broken | Transport-decision tests for every mode, plus each mode exercised against a real database |
+| Database and Redis connections verify the server's certificate rather than encrypting to whoever answers, and transport security follows the host rather than the URL scheme | Shared transport-decision tests across both services, plus each database mode exercised against a real instance |
+| Plaintext to a host other than this machine is refused in production unless it is accepted explicitly | Refusal tests for both services, and a startup that records it as a persistence failure |
 | A compose-path matching no file at either commit fails instead of passing an empty review | Compose source-resolution tests and a real two-commit repository run |
 | GitHub App access is short-lived, repository-scoped, and never served near expiry | GitHub App credential tests |
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
@@ -208,7 +209,7 @@ These statements are limited to checked behavior in this repository.
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 162 backend tests (285 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 172 backend tests (295 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
