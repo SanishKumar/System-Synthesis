@@ -213,6 +213,33 @@ export function setRedisStateForTests(state: RedisState): void {
 }
 
 /**
+ * Keeps the reported state describing the connection for as long as it lasts.
+ *
+ * A startup answer alone goes stale the moment the connection drops: the
+ * instance would go on reporting a store it shares with nothing, which is the
+ * same silence as never having reported at all, only later. Reconnection is the
+ * reason the client retries indefinitely rather than giving up — recovery has
+ * to be able to say so too.
+ */
+export function attachRedisLifecycle(client: {
+  on(event: string, handler: () => void): unknown;
+}): void {
+  client.on("close", () => {
+    if (redisState.mode === "active") {
+      redisState = { mode: "failed", reason: "connection closed" };
+      console.error("  ⚠ Redis connection closed — using in-memory store until it returns");
+    }
+  });
+  client.on("end", () => {
+    redisState = { mode: "failed", reason: "connection ended" };
+  });
+  client.on("ready", () => {
+    if (redisState.mode !== "active") console.log("  ✅ Redis connected");
+    redisState = { mode: "active" };
+  });
+}
+
+/**
  * How the Redis connection should be secured.
  *
  * The scheme is the switch here rather than a query parameter: `rediss://` asks
@@ -287,14 +314,19 @@ export async function initRedis(): Promise<void> {
       // Connect on request, so the outcome belongs to this function instead of
       // arriving later on an event nobody is waiting for.
       lazyConnect: true,
-      retryStrategy: (times: number) => (times > 3 ? null : Math.min(times * 200, 2000)),
+      // Keeps trying rather than giving up permanently, so a provider restart
+      // or a brief network fault is something the process recovers from instead
+      // of spending the rest of its life on memory storage.
+      retryStrategy: (times: number) => Math.min(times * 200, 5000),
     });
 
-    // An error after startup must not take the process down; the store degrades
-    // to memory and says so.
+    // An error after startup must not take the process down; commands fail into
+    // the memory fallback the readers already have.
     client.on("error", (err: Error) => {
       console.error("  ⚠ Redis error:", err.message);
     });
+
+    attachRedisLifecycle(client);
 
     // Waited for, rather than assumed. Reporting a configured Redis as working
     // before it has answered is what let the deployment advertise cross-instance

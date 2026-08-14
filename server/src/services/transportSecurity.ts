@@ -109,6 +109,49 @@ const DRIVER_SSL_PARAMETERS = [
 ];
 
 /**
+ * What a connection string asks for about TLS, in the several ways it can.
+ *
+ * `sslmode` is libpq's spelling and `ssl` is node-postgres's own. Reading only
+ * the first meant `ssl=true` was stripped as a driver parameter and then not
+ * counted as a request, so an explicit instruction to encrypt was answered by
+ * connecting in the clear. A file of trusted roots was discarded the same way,
+ * leaving Node's default trust in place of the one that was asked for.
+ */
+export interface UrlTlsIntent {
+  requested: TlsRequest;
+  /** `sslrootcert`: a file of certificate authorities to trust instead. */
+  caPath?: string;
+  /** `sslcert`/`sslkey`: a client certificate, which is not supported here. */
+  clientCertificateParameters: string[];
+}
+
+export function readUrlTlsIntent(url: string): UrlTlsIntent {
+  const empty: UrlTlsIntent = { requested: "unspecified", clientCertificateParameters: [] };
+  let parameters: URLSearchParams;
+  try {
+    parameters = new URL(url).searchParams;
+  } catch {
+    return empty;
+  }
+
+  const sslmode = parameters.get("sslmode");
+  const ssl = parameters.get("ssl");
+  let requested: TlsRequest = "unspecified";
+  if (sslmode) {
+    requested = sslmode === "disable" ? "disabled" : "encrypted";
+  } else if (ssl !== null) {
+    // node-postgres accepts ssl=true and ssl=1; anything else it treats as off.
+    requested = ssl === "true" || ssl === "1" ? "encrypted" : "disabled";
+  }
+
+  return {
+    requested,
+    caPath: parameters.get("sslrootcert") || undefined,
+    clientCertificateParameters: ["sslcert", "sslkey"].filter((name) => parameters.has(name)),
+  };
+}
+
+/**
  * Removes the TLS parameters the driver would act on itself.
  *
  * node-postgres does not merge a connection string's SSL settings with an `ssl`

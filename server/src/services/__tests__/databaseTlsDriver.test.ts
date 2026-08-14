@@ -66,11 +66,11 @@ describe("TLS settings the PostgreSQL driver resolves", () => {
     ).toEqual({ rejectUnauthorized: false });
   });
 
-  it("does not let the connection string weaken the decision", () => {
+  it("does not let the connection string weaken verification", () => {
     // sslmode=no-verify is a node-postgres extension that turns verification
-    // off. Whoever writes the URL must not be able to overrule the policy.
+    // off. Asking for TLS and asking to skip checking who answered are
+    // different requests, and only the first is the URL's to make.
     expect(resolvedSsl(`${REMOTE}?sslmode=no-verify`)).toEqual({ rejectUnauthorized: true });
-    expect(resolvedSsl(`${REMOTE}?ssl=false`)).toEqual({ rejectUnauthorized: true });
   });
 
   it("still disables TLS entirely where that was the decision", () => {
@@ -90,5 +90,29 @@ describe("TLS settings the PostgreSQL driver resolves", () => {
 
   it("leaves a connection string without TLS parameters untouched", () => {
     expect(poolConfig(REMOTE, databaseTls(REMOTE, {})).connectionString).toBe(REMOTE);
+  });
+
+  it("honours node-postgres's own ssl parameter, not only libpq's sslmode", () => {
+    // ssl=true was stripped as a driver parameter and then not counted as a
+    // request, so an explicit instruction to encrypt connected in the clear.
+    expect(resolvedSsl("postgresql://u:p@localhost:5432/app?ssl=true")).toMatchObject({
+      rejectUnauthorized: true,
+    });
+    expect(resolvedSsl("postgresql://u:p@localhost:5432/app?ssl=1")).toMatchObject({
+      rejectUnauthorized: true,
+    });
+  });
+
+  it("reads ssl=false as a request for no encryption", () => {
+    const local = resolvedSsl("postgresql://u:p@localhost:5432/app?ssl=false");
+    expect(local === false || local === undefined).toBe(true);
+  });
+
+  it("still refuses ssl=false to a remote host in production", () => {
+    expect(
+      databaseTls("postgresql://u:p@db.example.com:5432/app?ssl=false", {
+        NODE_ENV: "production",
+      }).mode
+    ).toBe("refused");
   });
 });

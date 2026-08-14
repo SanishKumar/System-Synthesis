@@ -8,6 +8,7 @@ import {
   shouldHaltOnPersistenceFailure,
 } from "../db.js";
 import {
+  attachRedisLifecycle,
   getRedisState,
   initRedis,
   redisTls,
@@ -178,6 +179,49 @@ describe("database transport security", () => {
     expect(databaseTls(HOSTED, { DATABASE_CA_CERT: ca })).toEqual({ mode: "verified", ca });
   });
 
+  it("trusts the authorities a connection string points at", () => {
+    // sslrootcert was stripped with the other driver parameters, leaving Node's
+    // default roots in place of the trust the operator asked for — a different
+    // trust decision, made silently.
+    const decision = databaseTls(
+      "postgresql://u:p@db.example.com/app?sslmode=verify-full&sslrootcert=/etc/ssl/private-ca.pem",
+      {},
+      (path) => (path === "/etc/ssl/private-ca.pem" ? "PRIVATE-CA-PEM" : (() => { throw new Error("wrong path"); })())
+    );
+    expect(decision).toEqual({ mode: "verified", ca: "PRIVATE-CA-PEM" });
+  });
+
+  it("refuses when the authorities it was told to trust cannot be read", () => {
+    const decision = databaseTls(
+      "postgresql://u:p@db.example.com/app?sslrootcert=/missing/ca.pem",
+      {},
+      () => { throw new Error("ENOENT: no such file or directory"); }
+    );
+    expect(decision.mode).toBe("refused");
+    expect(decision.mode === "refused" && decision.reason).toContain("/missing/ca.pem");
+  });
+
+  it("prefers an inline authority over a path, for a deployment that cannot mount files", () => {
+    expect(
+      databaseTls(
+        "postgresql://u:p@db.example.com/app?sslrootcert=/etc/ssl/ca.pem",
+        { DATABASE_CA_CERT: "INLINE-PEM" },
+        () => { throw new Error("must not be read"); }
+      )
+    ).toEqual({ mode: "verified", ca: "INLINE-PEM" });
+  });
+
+  it("refuses a client certificate rather than dropping mutual authentication", () => {
+    // The driver cannot see these now that the string is sanitised, so carrying
+    // on would remove client authentication without a word.
+    const decision = databaseTls(
+      "postgresql://u:p@db.example.com/app?sslcert=/c.pem&sslkey=/k.pem",
+      {}
+    );
+    expect(decision.mode).toBe("refused");
+    expect(decision.mode === "refused" && decision.reason).toContain("sslcert");
+  });
+
   it("refuses a connection string it cannot read rather than guessing", () => {
     expect(databaseTls("not a url", {}).mode).toBe("refused");
   });
@@ -268,5 +312,57 @@ describe("redis readiness", () => {
     // Choosing to run without Redis is never a reason to report degraded.
     expect(shouldReportRedisDegraded({ mode: "disabled" }, "production")).toBe(false);
     expect(shouldReportRedisDegraded({ mode: "active" }, "production")).toBe(false);
+  });
+});
+
+describe("redis state over the process lifetime", () => {
+  /** The events ioredis emits, without a server to emit them. */
+  function lifecycle() {
+    const handlers = new Map<string, Array<() => void>>();
+    return {
+      on(event: string, handler: () => void) {
+        handlers.set(event, [...(handlers.get(event) || []), handler]);
+        return this;
+      },
+      emit(event: string) {
+        for (const handler of handlers.get(event) || []) handler();
+      },
+    };
+  }
+
+  afterEach(() => setRedisStateForTests({ mode: "disabled" }));
+
+  it("stops reporting a shared store once the connection drops", () => {
+    const client = lifecycle();
+    attachRedisLifecycle(client as never);
+    client.emit("ready");
+    expect(getRedisState()).toEqual({ mode: "active" });
+
+    // A startup answer alone goes stale here: the instance would keep claiming
+    // a store it no longer shares with anything.
+    client.emit("close");
+    expect(getRedisState().mode).toBe("failed");
+  });
+
+  it("reports a shared store again once the connection returns", () => {
+    const client = lifecycle();
+    attachRedisLifecycle(client as never);
+    client.emit("ready");
+    client.emit("close");
+    expect(getRedisState().mode).toBe("failed");
+
+    // Recovery is the point of retrying forever rather than giving up.
+    client.emit("ready");
+    expect(getRedisState()).toEqual({ mode: "active" });
+  });
+
+  it("treats an ended connection as failed rather than absent", () => {
+    const client = lifecycle();
+    attachRedisLifecycle(client as never);
+    client.emit("ready");
+    client.emit("end");
+    const state = getRedisState();
+    expect(state.mode).toBe("failed");
+    expect(state.mode === "failed" && state.reason).toBeTruthy();
   });
 });

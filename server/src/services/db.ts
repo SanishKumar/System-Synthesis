@@ -1,8 +1,10 @@
+import { readFileSync } from "node:fs";
 import pg from "pg";
 import {
   connectionHost,
   decideTransportTls,
   describeTls,
+  readUrlTlsIntent,
   withoutDriverSslParameters,
   type TransportTls,
 } from "./transportSecurity.js";
@@ -229,34 +231,63 @@ export type DatabaseTls = TransportTls;
  */
 export function databaseTls(
   databaseUrl: string,
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  readFile: (path: string) => string = defaultReadFile
 ): DatabaseTls {
   const host = connectionHost(databaseUrl);
   if (host === null) {
     return { mode: "refused", reason: "DATABASE_URL is not a valid connection string" };
   }
-  const sslmode = readSslMode(databaseUrl);
+  const intent = readUrlTlsIntent(databaseUrl);
+
+  // A client certificate cannot be honoured here, and the driver will not see
+  // it either now that the string is stripped of its TLS parameters. Refusing
+  // says so; carrying on would drop mutual authentication without a word.
+  if (intent.clientCertificateParameters.length > 0) {
+    return {
+      mode: "refused",
+      reason:
+        `DATABASE_URL sets ${intent.clientCertificateParameters.join(" and ")}, and client ` +
+        "certificate authentication is not supported. Remove it, or connect through " +
+        "something that terminates the client certificate.",
+    };
+  }
+
+  // An inline authority wins over a path, so a deployment that cannot mount a
+  // file still has a way in. A path that cannot be read is a refusal rather
+  // than a fallback to Node's roots: the operator asked for a specific trust
+  // anchor, and quietly substituting a different one is the whole failure this
+  // module exists to prevent.
+  let ca = env.DATABASE_CA_CERT?.trim() || undefined;
+  if (!ca && intent.caPath) {
+    try {
+      ca = readFile(intent.caPath).trim();
+    } catch (error) {
+      return {
+        mode: "refused",
+        reason:
+          `DATABASE_URL asks to trust the authorities in ${intent.caPath}, which could not ` +
+          `be read: ${error instanceof Error ? error.message : "unknown error"}`,
+      };
+    }
+  }
+
   return decideTransportTls({
     service: "PostgreSQL",
     host,
-    requested: sslmode === "disable" ? "disabled" : sslmode ? "encrypted" : "unspecified",
+    requested: intent.requested,
     // Recoverable without a redeploy. If a certificate chain stops validating in
     // production — an expired root, a provider migration — an operator can set
     // this, restart, and be encrypted again while the cause is found.
     noVerify: env.DATABASE_SSL_NO_VERIFY === "true",
-    // A provider whose root is not in Node's bundled store supplies it here.
-    ca: env.DATABASE_CA_CERT?.trim() || undefined,
+    ca,
     allowPlaintext: env.DATABASE_ALLOW_PLAINTEXT === "true",
     nodeEnv: env.NODE_ENV,
   });
 }
 
-function readSslMode(databaseUrl: string): string | null {
-  try {
-    return new URL(databaseUrl).searchParams.get("sslmode");
-  } catch {
-    return null;
-  }
+function defaultReadFile(path: string): string {
+  return readFileSync(path, "utf8");
 }
 
 /**
