@@ -9,7 +9,9 @@ import {
 } from "../db.js";
 import {
   attachRedisLifecycle,
+  getRedisClientForTests,
   getRedisState,
+  setRedisClientForTests,
   initRedis,
   redisTls,
   setRedisStateForTests,
@@ -330,10 +332,14 @@ describe("redis state over the process lifetime", () => {
     };
   }
 
-  afterEach(() => setRedisStateForTests({ mode: "disabled" }));
+  afterEach(() => {
+    setRedisStateForTests({ mode: "disabled" });
+    setRedisClientForTests(null);
+  });
 
   it("stops reporting a shared store once the connection drops", () => {
     const client = lifecycle();
+    setRedisClientForTests(client);
     attachRedisLifecycle(client as never);
     client.emit("ready");
     expect(getRedisState()).toEqual({ mode: "active" });
@@ -346,6 +352,7 @@ describe("redis state over the process lifetime", () => {
 
   it("reports a shared store again once the connection returns", () => {
     const client = lifecycle();
+    setRedisClientForTests(client);
     attachRedisLifecycle(client as never);
     client.emit("ready");
     client.emit("close");
@@ -358,11 +365,123 @@ describe("redis state over the process lifetime", () => {
 
   it("treats an ended connection as failed rather than absent", () => {
     const client = lifecycle();
+    setRedisClientForTests(client);
     attachRedisLifecycle(client as never);
     client.emit("ready");
     client.emit("end");
     const state = getRedisState();
     expect(state.mode).toBe("failed");
     expect(state.mode === "failed" && state.reason).toBeTruthy();
+  });
+
+  it("ignores a client this process does not hold", () => {
+    const abandoned = lifecycle();
+    attachRedisLifecycle(abandoned as never);
+    setRedisStateForTests({ mode: "failed", reason: "connection refused" });
+
+    // A client left over from a failed start would reach a server eventually
+    // and announce itself ready. Nothing exported it, the adapter was built
+    // without it, and no reader would ever use it — so it does not get to say
+    // the shared store is working.
+    abandoned.emit("ready");
+
+    expect(getRedisState().mode).toBe("failed");
+    expect(getRedisClientForTests()).toBeNull();
+  });
+});
+
+
+describe("redis client ownership through a failed start", () => {
+  const originalRedisUrl = process.env.REDIS_URL;
+
+  afterEach(() => {
+    if (originalRedisUrl === undefined) delete process.env.REDIS_URL;
+    else process.env.REDIS_URL = originalRedisUrl;
+    setRedisStateForTests({ mode: "disabled" });
+  });
+
+  it("leaves no client behind when the first connection fails", async () => {
+    // Nothing listens here, so the initial connect rejects.
+    process.env.REDIS_URL = "redis://127.0.0.1:1";
+    await initRedis();
+
+    // The three have to agree. A client left retrying in the background would
+    // eventually reach a server, announce itself ready and set this to active,
+    // while the exported client stayed null, every reader used memory, and the
+    // Socket.IO adapter — built during startup, when there was no client — went
+    // on fanning out to nobody.
+    expect(getRedisState().mode).toBe("failed");
+    expect(getRedisClientForTests()).toBeNull();
+
+    // Give any surviving retry the time it would need to contradict that.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(getRedisState().mode).toBe("failed");
+    expect(getRedisClientForTests()).toBeNull();
+  });
+
+  it("does not let a discarded client's lifecycle speak for the shared store", async () => {
+    process.env.REDIS_URL = "redis://127.0.0.1:1";
+    await initRedis();
+    expect(getRedisState().mode).toBe("failed");
+
+    // Whatever the abandoned connection does next, health is answering for the
+    // client this process actually holds, which is none.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(getRedisState()).not.toEqual({ mode: "active" });
+    expect(getRedisClientForTests()).toBeNull();
+  });
+});
+
+describe("connection strings that cannot be honoured as written", () => {
+  it("refuses an sslmode it does not recognise instead of guessing", () => {
+    // "something was asked for, so encrypt" is the right answer by accident,
+    // from a string nobody read. A typo should be corrected, not interpreted.
+    const decision = databaseTls("postgresql://u:p@db.example.com/app?sslmode=definitely-not-valid", {});
+    expect(decision.mode).toBe("refused");
+    expect(decision.mode === "refused" && decision.reason).toContain("definitely-not-valid");
+  });
+
+  it("accepts every sslmode that is real", () => {
+    for (const mode of ["disable", "allow", "prefer", "require", "verify-ca", "verify-full", "no-verify"]) {
+      expect(
+        databaseTls(`postgresql://u:p@db.example.com/app?sslmode=${mode}`, {}).mode
+      ).not.toBe("refused");
+    }
+  });
+
+  it("refuses a value for ssl that means nothing", () => {
+    expect(databaseTls("postgresql://u:p@db.example.com/app?ssl=maybe", {}).mode).toBe("refused");
+  });
+
+  it("refuses two parameters that ask for opposite things", () => {
+    const decision = databaseTls(
+      "postgresql://u:p@db.example.com/app?sslmode=require&ssl=false",
+      {}
+    );
+    expect(decision.mode).toBe("refused");
+    expect(decision.mode === "refused" && decision.reason).toContain("opposite");
+  });
+
+  it("treats a trust anchor as a request to encrypt, even to this machine", () => {
+    // Naming the authorities to check says there is a certificate to check.
+    // Answering that by connecting in the clear ignores the instruction.
+    expect(
+      databaseTls("postgresql://u:p@localhost:5432/app?sslrootcert=/etc/ssl/ca.pem", {},
+        () => "CA-PEM")
+    ).toEqual({ mode: "verified", ca: "CA-PEM" });
+
+    // The same when the authority arrives out of band.
+    expect(
+      databaseTls("postgresql://u:p@localhost:5432/app", { DATABASE_CA_CERT: "CA-PEM" })
+    ).toEqual({ mode: "verified", ca: "CA-PEM" });
+  });
+
+  it("refuses a URL that supplies authorities and turns TLS off in the same breath", () => {
+    const decision = databaseTls(
+      "postgresql://u:p@db.example.com/app?sslmode=disable&sslrootcert=/etc/ssl/ca.pem",
+      {},
+      () => "CA-PEM"
+    );
+    expect(decision.mode).toBe("refused");
   });
 });

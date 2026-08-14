@@ -213,6 +213,22 @@ export function setRedisStateForTests(state: RedisState): void {
 }
 
 /**
+ * The client this process actually holds.
+ *
+ * Read through a function rather than the exported binding so a test observes
+ * the current value: the reported state, this client and the Socket.IO adapter
+ * have to agree, and only one of the three is visible in a status field.
+ */
+export function getRedisClientForTests(): unknown {
+  return redis;
+}
+
+/** Makes a stand-in the held client, so its lifecycle is allowed to speak. */
+export function setRedisClientForTests(client: unknown): void {
+  redis = client;
+}
+
+/**
  * Keeps the reported state describing the connection for as long as it lasts.
  *
  * A startup answer alone goes stale the moment the connection drops: the
@@ -224,16 +240,24 @@ export function setRedisStateForTests(state: RedisState): void {
 export function attachRedisLifecycle(client: {
   on(event: string, handler: () => void): unknown;
 }): void {
+  // Only the client this process holds may speak for the shared store. Tearing
+  // a failed client down already stops it retrying, but a connection that
+  // survives by any route must not be able to report itself active while the
+  // readers use memory and the Socket.IO adapter fans out to nothing. The state
+  // and the client are one answer, so they are checked together.
+  const owns = () => redis === client;
+
   client.on("close", () => {
-    if (redisState.mode === "active") {
+    if (owns() && redisState.mode === "active") {
       redisState = { mode: "failed", reason: "connection closed" };
       console.error("  ⚠ Redis connection closed — using in-memory store until it returns");
     }
   });
   client.on("end", () => {
-    redisState = { mode: "failed", reason: "connection ended" };
+    if (owns()) redisState = { mode: "failed", reason: "connection ended" };
   });
   client.on("ready", () => {
+    if (!owns()) return;
     if (redisState.mode !== "active") console.log("  ✅ Redis connected");
     redisState = { mode: "active" };
   });
@@ -326,13 +350,31 @@ export async function initRedis(): Promise<void> {
       console.error("  ⚠ Redis error:", err.message);
     });
 
-    attachRedisLifecycle(client);
+    try {
+      // Waited for, rather than assumed. Reporting a configured Redis as working
+      // before it has answered is what let the deployment advertise
+      // cross-instance collaboration it did not have.
+      await client.connect();
+    } catch (connectError) {
+      // Nothing else in the process ever learns about this client: it is not
+      // exported, and the Socket.IO adapter and the collaboration subscriber
+      // were built while it was absent. Left retrying in the background it
+      // would eventually reach a server and announce itself ready, flipping
+      // health to active while every reader still used memory and no update
+      // reached another instance — a worse lie than the one it replaced, and a
+      // connection nobody can see or close.
+      //
+      // Recovery from a failed start is a restart, which is what reporting
+      // failed asks the platform for.
+      client.removeAllListeners();
+      client.disconnect();
+      throw connectError;
+    }
 
-    // Waited for, rather than assumed. Reporting a configured Redis as working
-    // before it has answered is what let the deployment advertise cross-instance
-    // collaboration it did not have.
-    await client.connect();
+    // Ownership first, then the lifecycle: the handlers refuse to speak for any
+    // client but the one this process holds.
     redis = client;
+    attachRedisLifecycle(client);
     redisState = { mode: "active" };
     console.log("  ✅ Redis connected");
     // Seed the demo board so it appears in the database GUI.

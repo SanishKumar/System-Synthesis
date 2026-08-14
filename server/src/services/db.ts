@@ -239,6 +239,9 @@ export function databaseTls(
     return { mode: "refused", reason: "DATABASE_URL is not a valid connection string" };
   }
   const intent = readUrlTlsIntent(databaseUrl);
+  if (intent.invalid) {
+    return { mode: "refused", reason: `DATABASE_URL: ${intent.invalid}` };
+  }
 
   // A client certificate cannot be honoured here, and the driver will not see
   // it either now that the string is stripped of its TLS parameters. Refusing
@@ -275,7 +278,9 @@ export function databaseTls(
   return decideTransportTls({
     service: "PostgreSQL",
     host,
-    requested: intent.requested,
+    // An authority supplied out of band says the same thing a path in the URL
+    // does: there is a certificate here worth checking.
+    requested: intent.requested === "unspecified" && ca ? "encrypted" : intent.requested,
     // Recoverable without a redeploy. If a certificate chain stops validating in
     // production — an expired root, a provider migration — an operator can set
     // this, restart, and be encrypted again while the cause is found.

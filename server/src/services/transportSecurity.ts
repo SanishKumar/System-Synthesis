@@ -123,7 +123,26 @@ export interface UrlTlsIntent {
   caPath?: string;
   /** `sslcert`/`sslkey`: a client certificate, which is not supported here. */
   clientCertificateParameters: string[];
+  /** Set when the string cannot be honoured as written. */
+  invalid?: string;
 }
+
+/**
+ * What libpq accepts, plus node-postgres's own extension.
+ *
+ * A value outside this set is a mistake, not a preference. `sslmode=требуется`
+ * or a typo like `requir` would otherwise fall through to "something was asked
+ * for, so encrypt" — the right answer by luck, from a string nobody read.
+ */
+const SSL_MODES = new Set([
+  "disable",
+  "allow",
+  "prefer",
+  "require",
+  "verify-ca",
+  "verify-full",
+  "no-verify",
+]);
 
 export function readUrlTlsIntent(url: string): UrlTlsIntent {
   const empty: UrlTlsIntent = { requested: "unspecified", clientCertificateParameters: [] };
@@ -134,21 +153,53 @@ export function readUrlTlsIntent(url: string): UrlTlsIntent {
     return empty;
   }
 
+  const caPath = parameters.get("sslrootcert") || undefined;
+  const clientCertificateParameters = ["sslcert", "sslkey"].filter((name) =>
+    parameters.has(name)
+  );
+  const invalid = (reason: string): UrlTlsIntent => ({
+    requested: "unspecified",
+    caPath,
+    clientCertificateParameters,
+    invalid: reason,
+  });
+
   const sslmode = parameters.get("sslmode");
   const ssl = parameters.get("ssl");
-  let requested: TlsRequest = "unspecified";
-  if (sslmode) {
-    requested = sslmode === "disable" ? "disabled" : "encrypted";
-  } else if (ssl !== null) {
-    // node-postgres accepts ssl=true and ssl=1; anything else it treats as off.
-    requested = ssl === "true" || ssl === "1" ? "encrypted" : "disabled";
+  if (sslmode !== null && !SSL_MODES.has(sslmode)) {
+    return invalid(`sslmode=${sslmode} is not a value this connection can be made with`);
+  }
+  if (ssl !== null && !["true", "false", "1", "0"].includes(ssl)) {
+    return invalid(`ssl=${ssl} is not a value this connection can be made with`);
   }
 
-  return {
-    requested,
-    caPath: parameters.get("sslrootcert") || undefined,
-    clientCertificateParameters: ["sslcert", "sslkey"].filter((name) => parameters.has(name)),
-  };
+  let requested: TlsRequest = "unspecified";
+  if (sslmode !== null) {
+    requested = sslmode === "disable" ? "disabled" : "encrypted";
+  }
+  if (ssl !== null) {
+    const fromSsl: TlsRequest = ssl === "true" || ssl === "1" ? "encrypted" : "disabled";
+    // Two parameters that answer the same question differently is a mistake
+    // whichever one wins, so neither does.
+    if (requested !== "unspecified" && requested !== fromSsl) {
+      return invalid(`sslmode=${sslmode} and ssl=${ssl} ask for opposite things`);
+    }
+    requested = fromSsl;
+  }
+
+  // Naming the authorities to trust is a statement that there is a certificate
+  // to check, so it is a request for TLS even when nothing else says so. Paired
+  // with an instruction to disable, it is a contradiction rather than a default.
+  if (caPath) {
+    if (requested === "disabled") {
+      return invalid(
+        `sslrootcert names certificate authorities to trust, but the same URL turns TLS off`
+      );
+    }
+    requested = "encrypted";
+  }
+
+  return { requested, caPath, clientCertificateParameters };
 }
 
 /**
