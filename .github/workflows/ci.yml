@@ -65,6 +65,13 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      # The production tree is what gets deployed, so a high-severity advisory
+      # reaching it fails the build rather than waiting to be noticed. Anything
+      # knowingly carried is recorded in docs/KNOWN_LIMITATIONS.md; today that is
+      # one low, development-only advisory, which this does not cover.
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
       - name: Build architecture packages and backend
         run: npm run build --workspace=architecture-core && npm run build --workspace=architecture-cli && npm run build --workspace=architecture-action && npm run build --workspace=server
 
