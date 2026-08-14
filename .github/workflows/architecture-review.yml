@@ -114,7 +114,7 @@ jobs:
 
       - name: Preserve review reports
         if: always() && steps.review.outputs.json-file != ''
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: architecture-review-${{ github.event.pull_request.number }}
           path: |
