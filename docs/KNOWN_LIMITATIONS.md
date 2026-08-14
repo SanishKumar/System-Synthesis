@@ -8,6 +8,7 @@
 - Semantic version history requires PostgreSQL. Development memory mode returns an explicit unavailable response for durable checkpoint creation.
 - JWTs have expiry but no server-side denylist. Guest JWTs are server-verified identities, not proof of a real human identity.
 - Audit records are application records, not an immutable external compliance log.
+- The database connection verifies the server's certificate against the roots Node bundles, which is what the hosted provider's chain terminates at. A provider whose root is not bundled needs `DATABASE_CA_CERT`. `DATABASE_SSL_NO_VERIFY=true` restores encryption without verification and is an incident escape hatch, not a configuration: while it is set, anything able to answer for the database's address can read and rewrite every query.
 - Architecture rules are explainable lint policies and graph analyses, not universal architectural truth or formal verification.
 - SARIF/JSON describe deterministic findings, but rule suppression policy is not yet managed through an organization-wide policy service.
 - Docker Compose import accepts one bounded Compose document. It does not evaluate interpolation, includes, extends, profiles, or override-file merging, so an unexpanded `${VAR}` reference to a service is not resolved and produces no edge.

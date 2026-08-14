@@ -197,12 +197,59 @@ const MIGRATION_SQL = `
     ON architecture_review_integrations(owner_id, updated_at DESC);
 `;
 
-/** Whether the connection string asks for TLS to be off, as libpq spells it. */
-export function sslDisabled(databaseUrl: string): boolean {
+/**
+ * How this connection should treat transport security.
+ *
+ * `unverified` encrypts but accepts any certificate, which stops passive
+ * eavesdropping and does nothing about an active attacker: anything able to
+ * answer for the database's address can present its own certificate and read
+ * and rewrite every query. It is a deliberate escape hatch, not a default.
+ */
+export type DatabaseTls =
+  | { mode: "disabled" }
+  | { mode: "verified"; ca?: string }
+  | { mode: "unverified" };
+
+/**
+ * Decides transport security from the connection string and environment.
+ *
+ * Deliberately explicit rather than delegated to the driver. node-postgres
+ * currently reads `sslmode=require` as full verification and warns that a
+ * future major will switch it to libpq's weaker meaning, so a deployment that
+ * relied on the driver's reading would quietly stop verifying at some later
+ * upgrade. Stating the decision here makes that impossible.
+ *
+ * A connection that reaches the database without TLS today keeps doing so: only
+ * connections that were already encrypted change, and they change from
+ * accepting any certificate to checking the one presented.
+ */
+export function databaseTls(
+  databaseUrl: string,
+  env: NodeJS.ProcessEnv = process.env
+): DatabaseTls {
+  const sslmode = readSslMode(databaseUrl);
+  // A database on a loopback interface or a disposable CI service has no TLS to
+  // negotiate, and forcing it there fails the connection outright.
+  if (sslmode === "disable") return { mode: "disabled" };
+
+  // Recoverable without a redeploy. If a certificate chain stops validating in
+  // production — an expired root, a provider migration — an operator can set
+  // this, restart, and be encrypted again while the cause is found.
+  if (env.DATABASE_SSL_NO_VERIFY === "true") return { mode: "unverified" };
+
+  // A provider whose root is not in Node's bundled store supplies it here.
+  const ca = env.DATABASE_CA_CERT?.trim();
+  if (sslmode || databaseUrl.startsWith("postgresql://")) {
+    return ca ? { mode: "verified", ca } : { mode: "verified" };
+  }
+  return { mode: "disabled" };
+}
+
+function readSslMode(databaseUrl: string): string | null {
   try {
-    return new URL(databaseUrl).searchParams.get("sslmode") === "disable";
+    return new URL(databaseUrl).searchParams.get("sslmode");
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -239,6 +286,33 @@ export function shouldHaltOnPersistenceFailure(
   return state.mode === "failed" && nodeEnv === "production";
 }
 
+/** The driver's shape for a decision already made. */
+function poolSsl(tls: DatabaseTls): false | { rejectUnauthorized: boolean; ca?: string } {
+  if (tls.mode === "disabled") return false;
+  if (tls.mode === "unverified") return { rejectUnauthorized: false };
+  return tls.ca ? { rejectUnauthorized: true, ca: tls.ca } : { rejectUnauthorized: true };
+}
+
+/**
+ * Says which of the three it chose, because an operator cannot tell by looking
+ * at a working connection whether the certificate was checked.
+ */
+function announceTls(tls: DatabaseTls): void {
+  if (tls.mode === "verified") {
+    console.log(`  🔒 PostgreSQL TLS: certificate verified${tls.ca ? " against a supplied CA" : ""}`);
+    return;
+  }
+  if (tls.mode === "unverified") {
+    const message =
+      "PostgreSQL TLS: encrypted but NOT verified (DATABASE_SSL_NO_VERIFY=true). " +
+      "Anything that can answer for the database's address can read and rewrite every query.";
+    if (process.env.NODE_ENV === "production") console.warn(`  ⚠ ${message}`);
+    else console.log(`  ⚡ ${message}`);
+    return;
+  }
+  console.log("  ⚡ PostgreSQL TLS: disabled (sslmode=disable)");
+}
+
 /** Records a schema failure discovered after the pool itself came up. */
 export function markPersistenceFailed(reason: string): void {
   persistenceState = { mode: "failed", reason };
@@ -258,25 +332,16 @@ export async function initDatabase(): Promise<boolean> {
     return false;
   }
 
+  const tls = databaseTls(databaseUrl);
+  announceTls(tls);
+
   try {
     pool = new Pool({
       connectionString: databaseUrl,
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 20000, // 20s to allow Serverless DBs (like Neon) to wake up from cold starts
-      // Support SSL for cloud-hosted Postgres (Neon, Supabase, etc.). An
-      // explicit `sslmode=disable` is honoured rather than overridden, because
-      // a database reached over a loopback interface — a test service in CI, a
-      // local instance — has no TLS to negotiate, and forcing it there fails
-      // the connection outright.
-      //
-      // Whether a verified certificate should be required for the rest is a
-      // separate question, and still open: see docs/KNOWN_LIMITATIONS.md.
-      ssl: sslDisabled(databaseUrl)
-        ? undefined
-        : databaseUrl.includes("sslmode=require") || databaseUrl.startsWith("postgresql://")
-          ? { rejectUnauthorized: false }
-          : undefined,
+      ssl: poolSsl(tls),
     });
 
     // Test connection
