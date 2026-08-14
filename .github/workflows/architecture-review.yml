@@ -54,8 +54,14 @@ jobs:
           policy-path: .system-synthesis/policy.json
           base-revision: ${{ github.event.pull_request.base.sha }}
           head-revision: ${{ github.event.pull_request.head.sha }}
-          ingestion-url: ${{ github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
-          ingestion-token: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
+          # Both halves or neither. Asking only whether this is a fork was not
+          # enough: a Dependabot pull request runs on a branch in this
+          # repository, so that test passed, but such an event can read Actions
+          # variables and cannot read secrets. The endpoint arrived without its
+          # credential, and the Action refused the pair — correctly, since a URL
+          # with no token is a misconfiguration and not a request to skip.
+          ingestion-url: ${{ (github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL != '' && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
+          ingestion-token: ${{ (github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL != '' && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
 
       - name: Upload source-linked findings to code scanning
         if: >-
@@ -69,11 +75,16 @@ jobs:
           category: system-synthesis/docker-compose
 
       - name: Publish or update pull-request summary
+        # The same events that withhold secrets also hand out a read-only token,
+        # so commenting would fail on a pull request the analysis itself handled
+        # perfectly well. The findings are still in the job summary and the
+        # uploaded reports; only the convenience comment is absent.
         if: >-
           always() &&
           steps.review.outputs.comment-file != '' &&
           steps.review.outputs.ingestion-status != 'stale' &&
-          github.event.pull_request.head.repo.full_name == github.repository
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]'
         uses: actions/github-script@v8
         env:
           COMMENT_FILE: ${{ steps.review.outputs.comment-file }}
