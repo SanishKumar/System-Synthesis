@@ -65,6 +65,20 @@ export function decideTransportTls(decision: TlsDecision): TransportTls {
   const local = isLoopbackHost(decision.host);
 
   if (decision.requested === "disabled") {
+    // Naming the authorities to trust and turning encryption off are opposite
+    // instructions, and picking one silently is how a trust decision gets made
+    // by accident. Checked here rather than where the URL is parsed, because a
+    // trust anchor can also arrive through the environment, and both services
+    // read one — the whole reason this decision is shared.
+    if (decision.ca) {
+      return {
+        mode: "refused",
+        reason:
+          `${decision.service} was given certificate authorities to trust and also told ` +
+          "not to use TLS. Remove one: authorities are only meaningful on an encrypted " +
+          "connection.",
+      };
+    }
     if (!local && decision.nodeEnv === "production" && !decision.allowPlaintext) {
       return {
         mode: "refused",
@@ -77,8 +91,13 @@ export function decideTransportTls(decision: TlsDecision): TransportTls {
     return { mode: "disabled" };
   }
 
-  // Nothing said, nothing to negotiate: a database on this machine.
-  if (decision.requested === "unspecified" && local) return { mode: "disabled" };
+  // A trust anchor says there is a certificate to check, whether it was named
+  // in the URL or supplied through the environment, so it is a request for TLS
+  // even to a service on this machine.
+  if (decision.requested === "unspecified" && local && !decision.ca) {
+    // Nothing said, nothing to negotiate: a database on this machine.
+    return { mode: "disabled" };
+  }
 
   if (decision.noVerify) return { mode: "unverified" };
   return decision.ca ? { mode: "verified", ca: decision.ca } : { mode: "verified" };

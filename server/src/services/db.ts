@@ -278,9 +278,7 @@ export function databaseTls(
   return decideTransportTls({
     service: "PostgreSQL",
     host,
-    // An authority supplied out of band says the same thing a path in the URL
-    // does: there is a certificate here worth checking.
-    requested: intent.requested === "unspecified" && ca ? "encrypted" : intent.requested,
+    requested: intent.requested,
     // Recoverable without a redeploy. If a certificate chain stops validating in
     // production — an expired root, a provider migration — an operator can set
     // this, restart, and be encrypted again while the cause is found.

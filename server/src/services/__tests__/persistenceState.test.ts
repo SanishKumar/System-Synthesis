@@ -484,4 +484,29 @@ describe("connection strings that cannot be honoured as written", () => {
     );
     expect(decision.mode).toBe("refused");
   });
+
+  it("refuses the same contradiction when the authority arrives out of band", () => {
+    // The check lived where the URL was parsed, so it only caught the anchor
+    // spelled in the URL. An anchor supplied through the environment is the
+    // same instruction and was silently ignored alongside it.
+    const decision = databaseTls("postgresql://u:p@db.example.com/app?sslmode=disable", {
+      DATABASE_CA_CERT: "CA-PEM",
+    });
+    expect(decision.mode).toBe("refused");
+    expect(decision.mode === "refused" && decision.reason).toContain("authorities");
+  });
+
+  it("refuses a Redis given authorities on an unencrypted scheme", () => {
+    // Both services read a trust anchor, which is why the rule belongs to the
+    // decision they share rather than to either one's parser.
+    const decision = redisTls("redis://cache.example.com:6379", { REDIS_CA_CERT: "CA-PEM" });
+    expect(decision.mode).toBe("refused");
+  });
+
+  it("still trusts a supplied authority on a Redis that is encrypted", () => {
+    expect(redisTls("rediss://cache.example.com:6379", { REDIS_CA_CERT: "CA-PEM" })).toEqual({
+      mode: "verified",
+      ca: "CA-PEM",
+    });
+  });
 });

@@ -108,6 +108,16 @@ describe("TLS settings the PostgreSQL driver resolves", () => {
     expect(local === false || local === undefined).toBe(true);
   });
 
+  it("never hands the driver authorities for a connection it will not encrypt", () => {
+    // A refusal must not resolve to a usable configuration: the pool is never
+    // built from one, and if that ever changed, a trust anchor sitting on an
+    // unencrypted connection would be a contradiction shipped to the socket.
+    const url = "postgresql://u:p@db.example.com/app?sslmode=disable";
+    const decision = databaseTls(url, { DATABASE_CA_CERT: CA });
+    expect(decision.mode).toBe("refused");
+    expect(poolConfig(url, decision).ssl).toBe(false);
+  });
+
   it("still refuses ssl=false to a remote host in production", () => {
     expect(
       databaseTls("postgresql://u:p@db.example.com:5432/app?ssl=false", {
