@@ -1,6 +1,6 @@
 import pg from "pg";
 import { describe, expect, it } from "vitest";
-import { databaseTls, poolConfig } from "../db.js";
+import { databaseTls, poolConfig, type UsableDatabaseTls } from "../db.js";
 
 /**
  * What the driver actually ends up connecting with.
@@ -24,8 +24,16 @@ interface ResolvedParameters {
 }
 
 /** `connectionParameters` is what the driver resolved, and is not in its types. */
+function usable(url: string, env: NodeJS.ProcessEnv = {}): UsableDatabaseTls {
+  const decision = databaseTls(url, env);
+  if (decision.mode === "refused") {
+    throw new Error(`expected a connectable decision for ${url}, got: ${decision.reason}`);
+  }
+  return decision;
+}
+
 function connectionParameters(url: string, env: NodeJS.ProcessEnv = {}): ResolvedParameters {
-  const client = new pg.Client(poolConfig(url, databaseTls(url, env)));
+  const client = new pg.Client(poolConfig(url, usable(url, env)));
   return (client as unknown as { connectionParameters: ResolvedParameters })
     .connectionParameters;
 }
@@ -89,7 +97,7 @@ describe("TLS settings the PostgreSQL driver resolves", () => {
   });
 
   it("leaves a connection string without TLS parameters untouched", () => {
-    expect(poolConfig(REMOTE, databaseTls(REMOTE, {})).connectionString).toBe(REMOTE);
+    expect(poolConfig(REMOTE, usable(REMOTE)).connectionString).toBe(REMOTE);
   });
 
   it("honours node-postgres's own ssl parameter, not only libpq's sslmode", () => {
@@ -108,14 +116,15 @@ describe("TLS settings the PostgreSQL driver resolves", () => {
     expect(local === false || local === undefined).toBe(true);
   });
 
-  it("never hands the driver authorities for a connection it will not encrypt", () => {
-    // A refusal must not resolve to a usable configuration: the pool is never
-    // built from one, and if that ever changed, a trust anchor sitting on an
-    // unencrypted connection would be a contradiction shipped to the socket.
+  it("cannot be built into a connection at all when the decision was a refusal", () => {
+    // `ssl: false` is not the absence of an answer, it is a working plaintext
+    // connection — so returning one here would turn a refusal into the exact
+    // thing it refused. The type excludes a refusal from this call; this covers
+    // the cast that gets around the type.
     const url = "postgresql://u:p@db.example.com/app?sslmode=disable";
     const decision = databaseTls(url, { DATABASE_CA_CERT: CA });
     expect(decision.mode).toBe("refused");
-    expect(poolConfig(url, decision).ssl).toBe(false);
+    expect(() => poolConfig(url, decision as UsableDatabaseTls)).toThrow(/refused/i);
   });
 
   it("still refuses ssl=false to a remote host in production", () => {

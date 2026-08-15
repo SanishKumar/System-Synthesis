@@ -217,6 +217,15 @@ const MIGRATION_SQL = `
 export type DatabaseTls = TransportTls;
 
 /**
+ * A decision that can actually become a connection.
+ *
+ * Refusal is deliberately not part of it. Every other mode answers "how should
+ * this connect"; a refusal answers "it should not", and the two only look alike
+ * until something tries to build a pool from the second.
+ */
+export type UsableDatabaseTls = Exclude<DatabaseTls, { mode: "refused" }>;
+
+/**
  * Decides transport security from the connection string and environment.
  *
  * Deliberately explicit rather than delegated to the driver. node-postgres
@@ -334,7 +343,18 @@ export function shouldHaltOnPersistenceFailure(
  * about the connection: the driver was discarding that decision, and every test
  * still passed.
  */
-export function poolConfig(databaseUrl: string, tls: DatabaseTls) {
+export function poolConfig(databaseUrl: string, tls: UsableDatabaseTls) {
+  // A refusal is not a configuration, and `ssl: false` is not "no answer" — it
+  // is a working plaintext connection. Returning one here would turn every
+  // future refusal into exactly the thing it refused. The type excludes it so a
+  // caller cannot reach this, and the check catches the cast that gets around
+  // the type.
+  const decision = tls as DatabaseTls;
+  if (decision.mode === "refused") {
+    throw new Error(
+      `A refused transport decision cannot be turned into a connection: ${decision.reason}`
+    );
+  }
   return {
     // Stripped of its own TLS parameters, so the decision above is the one that
     // reaches the socket rather than being replaced by the string.
@@ -346,9 +366,9 @@ export function poolConfig(databaseUrl: string, tls: DatabaseTls) {
   };
 }
 
-/** The driver's shape for a decision already made. A refusal never gets here. */
-function poolSsl(tls: DatabaseTls): false | { rejectUnauthorized: boolean; ca?: string } {
-  if (tls.mode === "disabled" || tls.mode === "refused") return false;
+/** The driver's shape for a decision already made. A refusal cannot get here. */
+function poolSsl(tls: UsableDatabaseTls): false | { rejectUnauthorized: boolean; ca?: string } {
+  if (tls.mode === "disabled") return false;
   if (tls.mode === "unverified") return { rejectUnauthorized: false };
   return tls.ca ? { rejectUnauthorized: true, ca: tls.ca } : { rejectUnauthorized: true };
 }
