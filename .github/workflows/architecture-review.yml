@@ -85,7 +85,7 @@ jobs:
           steps.review.outputs.ingestion-status != 'stale' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.actor != 'dependabot[bot]'
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           COMMENT_FILE: ${{ steps.review.outputs.comment-file }}
         with:
