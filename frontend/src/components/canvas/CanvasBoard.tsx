@@ -10,6 +10,7 @@ import {
   type NodeTypes,
   type EdgeTypes,
   type Node,
+  type OnNodeDrag,
   type Connection,
   useReactFlow,
   ConnectionMode,
@@ -491,8 +492,13 @@ export default function CanvasBoard({
   const isConnectMode = activeTool === "draw";
 
   // --- Drag-into-group detection ---
-  const handleNodeDragStop = useCallback(
-    (_event: React.MouseEvent, draggedNode: Node) => {
+  // Typed from React Flow's own handler type rather than restating its
+  // signature: the event it passes is the library's to define, and it changed
+  // from a React synthetic event to a DOM one in a minor release. Restating it
+  // here turned that into a build failure in a component that never reads the
+  // event at all.
+  const handleNodeDragStop = useCallback<OnNodeDrag>(
+    (_event, draggedNode: Node) => {
       if (readOnly) return;
       // Don't reparent groups themselves
       if (draggedNode.type === "groupNode") return;
