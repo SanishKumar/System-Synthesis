@@ -38,10 +38,10 @@
   },
   "dependencies": {
     "@system-synthesis/shared": "*",
-    "yaml": "2.8.3"
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
-    "vitest": "^4.1.7"
+    "vitest": "^4.1.10"
   }
 }
