@@ -21,6 +21,15 @@ if (process.env.NODE_ENV === "production" && JWT_SECRET === DEVELOPMENT_SECRET) 
   throw new Error("JWT_SECRET must be configured in production");
 }
 
+/**
+ * The secret this deployment signs with, for the few places that need to sign
+ * something other than a session token. Exported so nothing re-derives it and
+ * quietly disagrees about which secret is in force.
+ */
+export function signingSecret(): string {
+  return JWT_SECRET;
+}
+
 export interface JwtPayload {
   userId: string;
   userName: string;

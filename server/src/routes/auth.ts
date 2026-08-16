@@ -11,7 +11,15 @@
 
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { signToken, requireAuth } from "../middleware/auth.js";
+import { signToken, requireAuth, signingSecret } from "../middleware/auth.js";
+import { logger } from "../middleware/logger.js";
+import {
+  authorizeUrl,
+  exchangeCodeForIdentity,
+  readGitHubOAuthConfig,
+  signLinkState,
+  verifyLinkState,
+} from "../services/githubIdentity.js";
 import { getPool } from "../services/db.js";
 import { v4 as uuid } from "uuid";
 import { z } from "zod";
@@ -57,6 +65,17 @@ export async function ensureUsersTable(): Promise<void> {
       updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  // A verified GitHub account, for accounts that have linked one. The numeric
+  // id is what identity is matched on, because GitHub does not reuse it and a
+  // login can be changed by its owner. Unique, so two accounts here cannot both
+  // claim to be the same person on GitHub — which is the whole point of asking.
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_user_id TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_login TEXT`);
+  await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS github_linked_at TIMESTAMPTZ`);
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_users_github_user_id
+       ON users(github_user_id) WHERE github_user_id IS NOT NULL`
+  );
   console.log("  ✅ Users table ready");
 }
 
@@ -173,7 +192,9 @@ router.get("/me", requireAuth, async (req, res) => {
     
     if (pool) {
       const result = await pool.query(
-        "SELECT id, user_name, email, is_guest, created_at FROM users WHERE id = $1",
+        `SELECT id, user_name, email, is_guest, created_at,
+                github_user_id, github_login, github_linked_at
+           FROM users WHERE id = $1`,
         [userId]
       );
       if (result.rows.length > 0) row = result.rows[0];
@@ -188,6 +209,15 @@ router.get("/me", requireAuth, async (req, res) => {
         email: row.email,
         isGuest: row.is_guest,
         createdAt: row.created_at,
+        // Absent until the account proves a GitHub identity. Reported plainly
+        // so the interface can say "unverified" rather than implying otherwise.
+        github: row.github_user_id
+          ? {
+              userId: row.github_user_id,
+              login: row.github_login,
+              linkedAt: row.github_linked_at,
+            }
+          : null,
       });
     } else {
       // Legacy user (not in DB yet)
@@ -312,6 +342,137 @@ router.post("/upgrade", requireAuth, async (req, res) => {
 
     const token = signToken({ userId, userName: userName.trim(), isGuest: false });
     res.json({ token, user: { userId, userName: userName.trim(), email: email.toLowerCase() } });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── GitHub identity ────────────────────────────────────────────────
+
+/**
+ * Where GitHub returns the reviewer after they authorise. Registered on the App
+ * and sent again at exchange, so a code issued for this deployment cannot be
+ * redeemed against another.
+ */
+function callbackUrl(): string {
+  const base = process.env.PUBLIC_API_URL || `http://localhost:${process.env.PORT || 4000}`;
+  return new URL("/api/auth/github/callback", base).toString();
+}
+
+function frontendUrl(path: string): string {
+  return new URL(path, process.env.FRONTEND_URL || "http://localhost:3000").toString();
+}
+
+/**
+ * GET /api/auth/github/start — begin proving which GitHub account this is.
+ *
+ * Returns the URL rather than redirecting, because the caller is a script in a
+ * page holding a bearer token: a redirect would arrive without it.
+ */
+router.get("/github/start", requireAuth, (req, res) => {
+  const config = readGitHubOAuthConfig();
+  if (!config) {
+    return res.status(503).json({
+      error: "GitHub identity is not configured on this server",
+      code: "not_configured",
+    });
+  }
+  if (req.user!.isGuest ?? req.user!.userId.startsWith("guest-")) {
+    return res.status(403).json({ error: "A permanent account is required to link GitHub" });
+  }
+  const state = signLinkState(req.user!.userId, signingSecret());
+  res.setHeader("Cache-Control", "no-store");
+  res.json({ url: authorizeUrl(config, state, callbackUrl()) });
+});
+
+/**
+ * GET /api/auth/github/callback — GitHub returns the reviewer here.
+ *
+ * The account being linked comes from the signed state, never from the query,
+ * so a callback cannot attach an identity to somebody else's account. Failures
+ * return the reviewer to the interface with a stable reason rather than a stack.
+ */
+router.get("/github/callback", async (req, res) => {
+  const back = (reason: string) =>
+    res.redirect(frontendUrl(`/integrations?github=${encodeURIComponent(reason)}`));
+
+  const code = typeof req.query.code === "string" ? req.query.code : "";
+  const state = typeof req.query.state === "string" ? req.query.state : "";
+  if (!code || !state) return back("state_invalid");
+
+  const verified = verifyLinkState(state, signingSecret());
+  if (!verified) return back("state_invalid");
+
+  try {
+    const identity = await exchangeCodeForIdentity(code, { redirectUri: callbackUrl() });
+    if (identity.status !== "ok") {
+      logger.warn("GitHub identity link failed", {
+        userId: verified.userId,
+        code: identity.code,
+        detail: identity.detail,
+      });
+      return back(identity.code);
+    }
+
+    const pool = getDbOrNull();
+    if (pool) {
+      // One GitHub account, one reviewer. The partial unique index refuses the
+      // second claim rather than letting two accounts answer to one person.
+      const taken = await pool.query(
+        "SELECT id FROM users WHERE github_user_id = $1 AND id <> $2",
+        [identity.githubUserId, verified.userId]
+      );
+      if (taken.rows.length > 0) return back("already_linked");
+      await pool.query(
+        `UPDATE users
+            SET github_user_id = $2, github_login = $3,
+                github_linked_at = NOW(), updated_at = NOW()
+          WHERE id = $1`,
+        [verified.userId, identity.githubUserId, identity.login]
+      );
+    } else {
+      const claimed = IN_MEMORY_USERS.find(
+        (u) => u.github_user_id === identity.githubUserId && u.id !== verified.userId
+      );
+      if (claimed) return back("already_linked");
+      const user = IN_MEMORY_USERS.find((u) => u.id === verified.userId);
+      if (user) {
+        user.github_user_id = identity.githubUserId;
+        user.github_login = identity.login;
+        user.github_linked_at = new Date();
+      }
+    }
+    return back("linked");
+  } catch (err: any) {
+    logger.warn("GitHub identity link failed", {
+      userId: verified.userId,
+      code: "unexpected_error",
+      detail: err?.message,
+    });
+    return back("unexpected_error");
+  }
+});
+
+/** DELETE /api/auth/github — unlink, so a mistaken or shared account can be undone. */
+router.delete("/github", requireAuth, async (req, res) => {
+  try {
+    const pool = getDbOrNull();
+    if (pool) {
+      await pool.query(
+        `UPDATE users SET github_user_id = NULL, github_login = NULL,
+                          github_linked_at = NULL, updated_at = NOW()
+          WHERE id = $1`,
+        [req.user!.userId]
+      );
+    } else {
+      const user = IN_MEMORY_USERS.find((u) => u.id === req.user!.userId);
+      if (user) {
+        user.github_user_id = null;
+        user.github_login = null;
+        user.github_linked_at = null;
+      }
+    }
+    res.json({ github: null });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

@@ -233,6 +233,8 @@ export default function IntegrationsPage() {
             </section>
           ) : (
             <>
+              <ReviewerIdentityPanel />
+
               {issued && (
                 <CredentialPanel
                   issued={issued}
@@ -349,6 +351,117 @@ export default function IntegrationsPage() {
         />
       )}
     </div>
+  );
+}
+
+/** Why a link attempt ended the way it did, in words rather than codes. */
+const IDENTITY_RESULT: Record<string, { tone: "ok" | "bad"; message: string }> = {
+  linked: { tone: "ok", message: "GitHub account linked." },
+  state_invalid: { tone: "bad", message: "That authorization could not be matched to your account. Start again." },
+  code_rejected: { tone: "bad", message: "GitHub rejected the authorization. Start again." },
+  identity_lookup_failed: { tone: "bad", message: "GitHub did not return an account for that authorization." },
+  github_unreachable: { tone: "bad", message: "GitHub could not be reached. Try again shortly." },
+  already_linked: { tone: "bad", message: "That GitHub account is already linked to another account here." },
+  not_configured: { tone: "bad", message: "This server has no GitHub identity configured." },
+  unexpected_error: { tone: "bad", message: "The link failed unexpectedly. The server log records why." },
+};
+
+/**
+ * Which GitHub account this reviewer is.
+ *
+ * A decision is currently attributed to whoever holds a session here, an
+ * identity this product issued to itself. Linking a GitHub account is what lets
+ * a decision name a person GitHub agrees exists — the step every entitlement
+ * check has to be built on.
+ */
+function ReviewerIdentityPanel() {
+  const { authenticatedFetch, isReady } = useUser();
+  const [identity, setIdentity] = useState<{ login: string; linkedAt: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      const response = await authenticatedFetch(`${API_URL}/api/auth/me`);
+      const body = await response.json();
+      setIdentity(body?.github ? { login: body.github.login, linkedAt: body.github.linkedAt } : null);
+    } catch {
+      setIdentity(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [authenticatedFetch]);
+
+  useEffect(() => {
+    if (isReady) void load();
+  }, [isReady, load]);
+
+  // The callback returns here with the outcome of the round trip.
+  useEffect(() => {
+    const outcome = new URLSearchParams(window.location.search).get("github");
+    if (!outcome) return;
+    const result = IDENTITY_RESULT[outcome] || IDENTITY_RESULT.unexpected_error;
+    if (result.tone === "ok") toast.success(result.message);
+    else toast.error(result.message);
+    window.history.replaceState({}, "", window.location.pathname);
+  }, []);
+
+  const connect = async () => {
+    setBusy(true);
+    try {
+      const response = await authenticatedFetch(`${API_URL}/api/auth/github/start`);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body?.error || "Could not start the GitHub authorization.");
+      window.location.href = body.url;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not start the GitHub authorization.");
+      setBusy(false);
+    }
+  };
+
+  const unlink = async () => {
+    setBusy(true);
+    try {
+      const response = await authenticatedFetch(`${API_URL}/api/auth/github`, { method: "DELETE" });
+      if (!response.ok) throw new Error("Could not unlink the GitHub account.");
+      setIdentity(null);
+      toast.success("GitHub account unlinked.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not unlink the GitHub account.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card mb-6 p-6">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="mb-2 flex items-center gap-2 text-[10px] font-mono font-semibold uppercase tracking-[0.15em] text-text-muted">
+            <Github className="h-3.5 w-3.5" />
+            Reviewer identity
+          </div>
+          <h2 className="font-display text-lg font-bold tracking-[-0.02em] text-text-primary">
+            {loading ? "Checking…" : identity ? `Verified as ${identity.login}` : "This account is not linked to GitHub"}
+          </h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-text-secondary">
+            {identity
+              ? "Decisions made here can be attributed to a GitHub account, not only to a session on this server."
+              : "A decision is currently recorded against this account alone, which GitHub knows nothing about. Linking proves who you are there; it does not yet grant or check permission on a repository."}
+          </p>
+        </div>
+        {!loading && (
+          <button
+            onClick={() => void (identity ? unlink() : connect())}
+            disabled={busy}
+            className={identity ? "btn-secondary h-9 gap-2 text-xs" : "btn-primary h-9 gap-2 text-xs"}
+          >
+            {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Github className="h-3.5 w-3.5" />}
+            {identity ? "Unlink" : "Link GitHub account"}
+          </button>
+        )}
+      </div>
+    </section>
   );
 }
 

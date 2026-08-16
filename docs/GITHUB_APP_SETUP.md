@@ -168,11 +168,41 @@ The first attempt one of them makes adopts the empty slot and fills it in, so
 such a review reports its gate correctly from then on instead of claiming
 forever that it had never reached a pull request.
 
+## 7. Let reviewers prove who they are
+
+The App proves the application. It says nothing about the person who clicked
+approve, so a decision is otherwise attributed to a System Synthesis account and
+nothing else — an identity this product issued to itself.
+
+On the App's settings page, copy the **Client ID**, generate a **Client secret**,
+and set the callback URL to `<PUBLIC_API_URL>/api/auth/github/callback`. Then set
+on the server:
+
+| Variable | Meaning |
+| --- | --- |
+| `GITHUB_APP_CLIENT_ID` | From the App's settings page |
+| `GITHUB_APP_CLIENT_SECRET` | Generated on the same page; shown once |
+| `PUBLIC_API_URL` | Where GitHub returns the reviewer, if not localhost |
+
+A reviewer then opens **Connections** and links their account. Identity is matched
+on GitHub's numeric account id, which is not reused; the login is kept for
+display and may change. One GitHub account can be linked to one account here, so
+two reviewers cannot both answer to the same person.
+
+The reviewer's access token is used once, to ask GitHub who they are, and is
+discarded. Repository permission checks read through the App's installation
+token, which the server already holds, so no second long-lived credential per
+reviewer is stored.
+
+Without these two values, linking is unavailable and reported as such. Nothing
+else changes: decisions are still recorded, audited and published.
+
 ## What this does not do yet
 
-The App authenticates *the application*, not the person. It does not verify that
-whoever clicked approve is a repository collaborator, a code owner, or somebody
-other than the pull request author. That is fine for reviewing your own
-repositories; it is not yet sufficient for enforcing a gate on a team, and
-GitHub-authenticated reviewer identity is the next step before that claim can be
-made. See [known limitations](./KNOWN_LIMITATIONS.md).
+A reviewer can now prove which GitHub account they are. Nothing yet *checks*
+that account against the repository: approval does not require being a
+collaborator or a code owner, and the author of a pull request is not prevented
+from approving their own change. Linking is the identity half of that gap, and
+the entitlement half is still open — so this remains adequate for reviewing your
+own repositories and not yet sufficient for enforcing a gate on a team. See
+[known limitations](./KNOWN_LIMITATIONS.md).

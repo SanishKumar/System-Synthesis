@@ -218,6 +218,7 @@ These statements are limited to checked behavior in this repository.
 | A configured Redis that never connected, or that stops answering later, is reported rather than silently replaced by memory, and reported again when it returns | Lifetime state tests across drop and recovery, and a health endpoint that returns 503 in production |
 | An explicit TLS instruction in a connection string is honoured or refused, never quietly dropped, and a value nobody can interpret is refused rather than guessed at | Driver-resolution tests for `ssl`, `sslmode`, `sslrootcert`, and client-certificate parameters, plus rejection of unknown and contradictory values |
 | Reported Redis health, the client the process holds, and the fan-out built from it cannot disagree | Ownership tests across a failed start, a drop, and a recovery |
+| A reviewer can prove which GitHub account they are, and an authorization cannot be redirected onto another account | Signed, expiring, account-bound state and route tests for forgery, reuse, and a second claim on one identity |
 | A compose-path matching no file at either commit fails instead of passing an empty review | Compose source-resolution tests and a real two-commit repository run |
 | GitHub App access is short-lived, repository-scoped, and never served near expiry | GitHub App credential tests |
 | A browser decision publishes a merge gate on the pull request, and replaces it rather than duplicating it | Decision check tests |
@@ -228,7 +229,7 @@ These statements are limited to checked behavior in this repository.
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 206 backend tests (329 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 230 backend tests (353 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
