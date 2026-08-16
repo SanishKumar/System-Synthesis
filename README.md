@@ -8,6 +8,21 @@ The browser product persists the same review model so a team can inspect impact,
 
 The collaborative canvas still exists, but it is no longer the main claim. It is a supporting surface for architecture modeling, inspection, durable history, and export.
 
+## What a review looks like
+
+![A pull request that publishes a database port, reviewed in System Synthesis: topology before and after, the semantic delta, deterministic findings with file and line evidence, and the merge gate](docs/demo.gif)
+
+A pull request adds an analytics service and publishes Postgres to the host. The recording follows one reviewer through it, end to end:
+
+1. **The queue** — every pull request the analyzer has compared, newest first, and what each is waiting on.
+2. **Topology before and after** — the same graph at both revisions, with `db` marked changed. Nodes hold their positions between revisions, so the eye compares structure rather than layout.
+3. **The semantic delta** — what changed in architecture terms. Source order and line movement are excluded, so reformatting alone produces nothing here.
+4. **Findings with evidence** — `Persistence port is publicly published`, marked `critical` and `blocks merge`, pointing at `docker-compose.yml:13`.
+5. **The decision** — a rejection, with the reason it requires, recorded against a new revision.
+6. **The gate that follows it** — `Synced to GitHub`, conclusion `failure`, and an audit trail reading *imported from pull request* then *decision changed to rejected*.
+
+No step of that is generated prose. Every finding comes from a deterministic rule over the canonical graph, the merge gate is written from the stored decision, and the same analysis runs in the pull-request check.
+
 ## The problem
 
 Code review shows text. Many important architecture changes are hidden inside that text:
