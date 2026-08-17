@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Toaster } from "sonner";
+import Analytics from "@/components/Analytics";
 
 const themeBootstrap = `
   (() => {
@@ -41,6 +42,7 @@ export default function RootLayout({
       <body className="min-h-screen bg-canvas text-text-primary font-body antialiased">
         {children}
         <Toaster theme="system" position="bottom-right" richColors />
+        <Analytics />
       </body>
     </html>
   );

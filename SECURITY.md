@@ -67,6 +67,7 @@ that is a judgement worth revisiting, and a good argument will change it.
 - A reviewer's GitHub access token is used once, to read their account, and is
   never stored.
 - Fork pull requests deliberately receive no ingestion credential.
+- The hosted frontend sends page traffic to Vercel Web Analytics. Review identifiers, board identifiers and invitation tokens are removed from the path first, because an invitation token in a URL is a credential and a review identifier says which reviews exist. If you find a path that reaches it unscrubbed, that is a reportable defect.
 
 If a secret has been committed anywhere, treat rotation as the fix. Removing it
 from the working tree is not a fix.
