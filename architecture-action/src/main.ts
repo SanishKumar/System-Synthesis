@@ -1,5 +1,4 @@
 import * as core from "@actions/core";
-import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   writeFileSync,
@@ -7,7 +6,12 @@ import {
 import { isAbsolute, relative, resolve } from "node:path";
 import { COMPOSE_FILE_NAMES } from "@system-synthesis/architecture-core";
 import { composeReviewComment } from "./comment.js";
-import { resolveComposeSources } from "./composeSources.js";
+import {
+  composeCandidatesAt,
+  readFileAtRevision,
+  resolveComposeSources,
+  verifyRevision,
+} from "@system-synthesis/architecture-cli";
 import { createActionReview } from "./review.js";
 import {
   createIngestionPayload,
@@ -16,7 +20,6 @@ import {
   uploadArchitectureReview,
 } from "./ingestion.js";
 
-const MAX_GIT_FILE_BYTES = 1_100_000;
 
 function safeRepositoryPath(value: string, label: string): string {
   const normalized = value.replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -39,53 +42,6 @@ function repositoryDirectory(value: string): string {
     throw new Error("repository-directory must stay within GITHUB_WORKSPACE.");
   }
   return requested;
-}
-
-function verifyRevision(revision: string, cwd: string): void {
-  execFileSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], {
-    cwd,
-    stdio: "ignore",
-  });
-}
-
-function revisionFile(
-  revision: string,
-  repositoryPath: string,
-  cwd: string
-): string | undefined {
-  try {
-    execFileSync("git", ["cat-file", "-e", `${revision}:${repositoryPath}`], {
-      cwd,
-      stdio: "ignore",
-    });
-  } catch {
-    return undefined;
-  }
-  return execFileSync("git", ["show", `${revision}:${repositoryPath}`], {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: MAX_GIT_FILE_BYTES,
-    stdio: ["ignore", "pipe", "ignore"],
-  });
-}
-
-/**
- * Root-level Compose files present at a revision, used only to turn a
- * misconfigured `compose-path` into an actionable message. Probing the known
- * names directly keeps this to a few cheap lookups instead of listing the tree.
- */
-function composeCandidates(revision: string, cwd: string): string[] {
-  return COMPOSE_FILE_NAMES.filter((name) => {
-    try {
-      execFileSync("git", ["cat-file", "-e", `${revision}:${name}`], {
-        cwd,
-        stdio: "ignore",
-      });
-      return true;
-    } catch {
-      return false;
-    }
-  });
 }
 
 /**
@@ -136,9 +92,9 @@ async function run(): Promise<void> {
     composePath,
     baseRevision,
     headRevision,
-    baseFile: revisionFile(baseRevision, composePath, sourceDirectory),
-    headFile: revisionFile(headRevision, composePath, sourceDirectory),
-    findCandidates: () => composeCandidates(headRevision, sourceDirectory),
+    baseFile: readFileAtRevision(baseRevision, composePath, sourceDirectory),
+    headFile: readFileAtRevision(headRevision, composePath, sourceDirectory),
+    findCandidates: () => composeCandidatesAt(headRevision, sourceDirectory),
   });
 
   const reports = createActionReview({
@@ -151,7 +107,7 @@ async function run(): Promise<void> {
     // The base branch policy governs the PR, so a PR cannot disable its own
     // required checks. Policy changes take effect after they are merged.
     policyContent: policyPath
-      ? revisionFile(baseRevision, policyPath, sourceDirectory)
+      ? readFileAtRevision(baseRevision, policyPath, sourceDirectory)
       : undefined,
     reviewedAt: new Date(),
   });

@@ -7,21 +7,18 @@ and provable — which constrains how changes are made.
 ## Try it before changing it
 
 You do not need an account, a server, or any GitHub permission to see what this
-does. The CLI compares two Compose files, so it works on any repository you can
-clone, including one you do not own:
+does. The CLI reads two revisions straight out of a repository's history, so it
+works on any project you can clone, including one you do not own:
 
 ```bash
 npm ci
 npm run build --workspace=architecture-core
 npm run build --workspace=architecture-cli
 
-git show main:docker-compose.yml > /tmp/base.yml
-git show my-branch:docker-compose.yml > /tmp/head.yml
-
 node architecture-cli/dist/bin.js review \
-  --base /tmp/base.yml \
-  --head /tmp/head.yml \
-  --source-path docker-compose.yml
+  --repo ../their-project \
+  --compose-path docker-compose.yml \
+  --base-revision main --head-revision my-branch
 ```
 
 Exit code 1 means the change introduced something blocking. `--format sarif`

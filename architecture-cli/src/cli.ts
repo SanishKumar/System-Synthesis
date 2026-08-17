@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { basename, dirname } from "node:path";
 import { parseArchitecturePolicy } from "./policy.js";
+import { composePairFromGit } from "./gitSource.js";
 import {
   formatReview,
   type ReviewOutputFormat,
@@ -36,6 +37,7 @@ const HELP = `System Synthesis architecture change intelligence
 
 Usage:
   system-synthesis review --base <compose.yaml> --head <compose.yaml> [options]
+  system-synthesis review --repo <dir> --compose-path <path>       --base-revision <rev> --head-revision <rev> [options]
   system-synthesis import --file <compose.yaml> [options]
 
 Review options:
@@ -43,9 +45,12 @@ Review options:
   --output <path>                 Write report to a file instead of stdout
   --policy <policy.json>          Rule policy and justified suppressions
   --repository <owner/name>       Repository recorded in source provenance
+  --repo <dir>                    Read both sides from a Git repository, using
+                                  --base-revision and --head-revision as commits
+  --compose-path <path>           Compose file to read at each revision (with --repo)
   --source-path <path>            Repository-relative Compose path for evidence
-  --base-revision <sha>           Base revision label (default: base)
-  --head-revision <sha>           Head revision label (default: head)
+  --base-revision <sha>           Base revision; a label without --repo (default: base)
+  --head-revision <sha>           Head revision; a label without --repo (default: head)
   --reviewed-at <ISO timestamp>   Reproducible report time
 
 Exit codes:
@@ -57,6 +62,8 @@ Exit codes:
 const VALUE_OPTIONS = new Set([
   "base",
   "head",
+  "repo",
+  "compose-path",
   "file",
   "format",
   "output",
@@ -166,29 +173,62 @@ function runImport(parsed: ParsedArguments, io: CliIO): number {
   return 0;
 }
 
-function runReview(parsed: ParsedArguments, io: CliIO): number {
+/**
+ * Both sides of the comparison, from two files or from a repository's history.
+ *
+ * Reading history directly is what makes this usable against a project you have
+ * only cloned: the alternative is extracting each revision by hand first, and a
+ * step that has to be got right before the tool runs is a step where people
+ * stop. The revisions must be named explicitly — guessing a default would let a
+ * misremembered branch quietly review the wrong pair.
+ */
+function reviewSides(
+  parsed: ParsedArguments,
+  io: CliIO
+): { base: ReturnType<typeof importCompose>; head: ReturnType<typeof importCompose> } {
+  const repository = parsed.values.get("repository");
+  const directory = parsed.values.get("repo");
+
+  if (directory) {
+    const composePath = required(parsed, "compose-path");
+    const baseRevision = required(parsed, "base-revision");
+    const headRevision = required(parsed, "head-revision");
+    const evidencePath = (parsed.values.get("source-path") || composePath).replace(/\\/g, "/");
+    const sources = composePairFromGit({
+      directory,
+      composePath,
+      baseRevision,
+      headRevision,
+    });
+    return {
+      base: dockerComposeAdapter.import(
+        [{ path: evidencePath, content: sources.baseContent }],
+        { repository, revision: baseRevision }
+      ),
+      head: dockerComposeAdapter.import(
+        [{ path: evidencePath, content: sources.headContent }],
+        { repository, revision: headRevision }
+      ),
+    };
+  }
+
   const basePath = required(parsed, "base");
   const headPath = required(parsed, "head");
   const evidencePath = parsed.values.get("source-path");
-  const repository = parsed.values.get("repository");
-  const base = importCompose(
-    basePath,
-    sourcePath(basePath, evidencePath),
-    io,
-    {
+  return {
+    base: importCompose(basePath, sourcePath(basePath, evidencePath), io, {
       repository,
       revision: parsed.values.get("base-revision") || "base",
-    }
-  );
-  const head = importCompose(
-    headPath,
-    sourcePath(headPath, evidencePath),
-    io,
-    {
+    }),
+    head: importCompose(headPath, sourcePath(headPath, evidencePath), io, {
       repository,
       revision: parsed.values.get("head-revision") || "head",
-    }
-  );
+    }),
+  };
+}
+
+function runReview(parsed: ParsedArguments, io: CliIO): number {
+  const { base, head } = reviewSides(parsed, io);
   const reviewedAt = parsed.values.get("reviewed-at")
     ? new Date(parsed.values.get("reviewed-at")!)
     : io.now();

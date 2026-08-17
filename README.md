@@ -42,16 +42,18 @@ System Synthesis answers a narrower question:
 
 ## Try it on any repository
 
-The analysis needs two Compose files and nothing else — no account, no server, no GitHub permission — so it runs against a repository you do not own:
+The analysis needs a repository and two revisions — no account, no server, no GitHub permission — so it runs against a project you do not own:
 
 ```bash
-git clone https://github.com/someone/their-project && cd their-project
-git show main:docker-compose.yml   > /tmp/base.yml
-git show their-branch:docker-compose.yml > /tmp/head.yml
+git clone https://github.com/someone/their-project
 
 node <path-to>/architecture-cli/dist/bin.js review \
-  --base /tmp/base.yml --head /tmp/head.yml --source-path docker-compose.yml
+  --repo their-project \
+  --compose-path docker-compose.yml \
+  --base-revision main --head-revision their-branch
 ```
+
+Each side is read out of the repository's history, so nothing has to be extracted first. A path that exists at neither revision fails rather than comparing two empty documents, and a revision the clone cannot resolve is named. Two files on disk still work directly with `--base` and `--head`.
 
 The pull-request half — check run, comment, persisted review — needs a repository you can install a GitHub App on and store a secret in, so use your own repository or a fork. A pull request opened *into* someone else's repository cannot exercise it: fork pull requests receive no secrets and a read-only token by design, the App is not installed there, and the decision gate refuses a change's own author. See [contributing](./CONTRIBUTING.md).
 
@@ -246,7 +248,7 @@ These statements are limited to checked behavior in this repository.
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 95 architecture-core tests, 7 CLI tests, 24 Action tests, and 244 backend tests (370 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 95 architecture-core tests, 13 CLI tests, 24 Action tests, and 244 backend tests (376 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
