@@ -282,3 +282,66 @@ describe("exposure impacts describe how far a binding reached", () => {
     expect(added?.severity).toBe("info");
   });
 });
+
+/**
+ * Where a component sits, when somebody exposes it.
+ *
+ * Zone was derived from exposure alone, so publishing a datastore promoted it
+ * out of the private zone and every trust-boundary crossing into it stopped
+ * being a crossing. Making the system worse removed findings, which is the one
+ * direction a review must never move.
+ */
+describe("exposure does not reclassify what a component is", () => {
+  const WITH_PRIVATE_DB = `services:
+  api:
+    image: api:1
+    ports:
+      - "0.0.0.0:8080:8080"
+    depends_on:
+      - db
+  db:
+    image: postgres:16
+`;
+  const WITH_PUBLISHED_DB = `services:
+  api:
+    image: api:1
+    ports:
+      - "0.0.0.0:8080:8080"
+    depends_on:
+      - db
+  db:
+    image: postgres:16
+    ports:
+      - "0.0.0.0:5432:5432"
+`;
+
+  const zoneOf = (content: string, label: string) =>
+    graph(content, "r1").nodes.find((node) => node.data.label === label)?.data.zone;
+
+  it("keeps a published datastore out of the perimeter", () => {
+    expect(zoneOf(WITH_PRIVATE_DB, "db")).toBe("private");
+    expect(zoneOf(WITH_PUBLISHED_DB, "db")).toBe("private");
+  });
+
+  it("still places an exposed ordinary service in the perimeter", () => {
+    // The rule this replaces was right about services and wrong about stores.
+    expect(zoneOf(WITH_PUBLISHED_DB, "api")).toBe("dmz");
+  });
+
+  it("adds a finding when a datastore is published, and removes none", () => {
+    const review = reviewArchitectureChange(
+      graph(WITH_PRIVATE_DB, "base"),
+      graph(WITH_PUBLISHED_DB, "head"),
+      {},
+      REVIEWED_AT
+    );
+
+    expect(review.newFindings.map((finding) => finding.ruleId)).toContain(
+      "compose-published-persistence-port"
+    );
+    // The crossing into the database existed before and must still exist: the
+    // database did not stop being on the other side of a boundary by being
+    // exposed. Publishing it once resolved two of these.
+    expect(review.resolvedFindings).toEqual([]);
+  });
+});

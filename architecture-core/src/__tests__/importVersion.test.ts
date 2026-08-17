@@ -7,6 +7,12 @@ import { canonicalGraphFingerprint } from "../provenance.js";
  * claims to model, so a change in extraction shows up here. The loopback
  * binding is deliberate: without one the fixture could not detect a change to
  * host-address handling or zone assignment.
+ *
+ * The database also publishes a reachable binding, because the loopback one
+ * alone could not. Zone assignment for a datastore was wrong for exactly that
+ * case — publishing it moved it into the perimeter — and this fixture passed
+ * throughout, which is the more useful lesson: a pin only guards the paths its
+ * fixture actually walks.
  */
 const FIXTURE = `name: shop
 services:
@@ -35,6 +41,7 @@ services:
     image: postgres:16
     ports:
       - "127.0.0.1:5432:5432"
+      - "0.0.0.0:5433:5432"
     volumes:
       - data:/var/lib/postgresql/data
     healthcheck:
@@ -54,7 +61,7 @@ volumes:
  * different graph, which is exactly when COMPOSE_ADAPTER_VERSION must be
  * reconsidered. Update both together, deliberately.
  */
-const PINNED_FINGERPRINT = "ac41dbc8cfa7163b";
+const PINNED_FINGERPRINT = "21aadce874f4157a";
 
 describe("Compose import version", () => {
   const { graph } = dockerComposeAdapter.import([

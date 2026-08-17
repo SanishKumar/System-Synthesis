@@ -45,6 +45,8 @@ const ADAPTER_ID = "docker-compose";
  * Version 4 reads an unbracketed IPv6 host address, keeps an entry it cannot
  * fully model instead of dropping it, and assigns the zone from whether a port
  * is reachable beyond the machine rather than from whether one exists.
+ * Version 5 stops letting exposure reclassify a component that is internal by
+ * nature: publishing a database's port no longer moves it into the perimeter.
  *
  * This is separate from the analyzer version. Analyzer identity answers "would
  * the current rules still reach this verdict from this graph"; this answers
@@ -55,7 +57,7 @@ const ADAPTER_ID = "docker-compose";
  * `architecture-core/src/__tests__/importVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const COMPOSE_ADAPTER_VERSION = 4;
+export const COMPOSE_ADAPTER_VERSION = 5;
 const MAX_COMPOSE_BYTES = 1_000_000;
 const MAX_SERVICES = 500;
 /** Filenames `docker compose` picks up without an explicit `-f`. */
@@ -125,6 +127,38 @@ function classifyService(name: string, service: ComposeService): ArchNodeType {
   if (/(vault)/.test(identity)) return "vault";
   if (/(keycloak|ory|authentik)/.test(identity)) return "auth";
   return "service";
+}
+
+/**
+ * Components whose place in the topology is decided by what they are.
+ *
+ * A database is internal whether or not somebody published its port. Deriving
+ * the zone from exposure alone made that backwards: publishing a database moved
+ * it from `private` into `dmz`, and the trust-boundary crossings into it stopped
+ * being crossings at all. Exposing a datastore made two findings disappear.
+ *
+ * Exposure is still reported — by the rules that exist for it, which name the
+ * service and the port. It just no longer rewrites what the component is.
+ */
+const INTERNAL_BY_NATURE = new Set<ArchNodeType>([
+  "database",
+  "storage",
+  "warehouse",
+  "cache",
+  "broker",
+  "queue",
+  "search",
+  "stream",
+  "vault",
+  "registry",
+]);
+
+function zoneFor(type: ArchNodeType, publiclyReachable: boolean): "dmz" | "private" {
+  if (INTERNAL_BY_NATURE.has(type)) return "private";
+  // A port reachable only from the machine itself does not put a service in a
+  // perimeter zone; treating it as though it did marked correct local bindings
+  // as publicly exposed.
+  return publiclyReachable ? "dmz" : "private";
 }
 
 function stringList(value: unknown): string[] {
@@ -305,10 +339,7 @@ function makeNode(
       tech: displayTechnology(image),
       environment: "development",
       instances: replicas(service),
-      // A port reachable only from the machine itself does not put the service
-      // in a perimeter zone; treating it as though it did marked correct local
-      // bindings as publicly exposed.
-      zone: publishedPortBindings.some(isPubliclyReachable) ? "dmz" : "private",
+      zone: zoneFor(type, publishedPortBindings.some(isPubliclyReachable)),
       provenance: provenance(file, address, revision, line),
       sourceProperties: {
         image: image || undefined,

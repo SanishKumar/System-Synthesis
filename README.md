@@ -224,7 +224,8 @@ These statements are limited to checked behavior in this repository.
 | Re-analysis that reproduces the same verdict does not revoke an existing decision | Recompute repository tests |
 | An inferred environment dependency requires an exact service-name match and never overrides a declared one | Compose environment-reference tests |
 | Environment values are never carried into the stored graph | Compose environment-reference tests |
-| A change in extraction output cannot land without a deliberate import-version decision | Pinned extraction-fingerprint test |
+| A change in extraction output cannot land without a deliberate import-version decision, for every path the fixture walks | Pinned extraction-fingerprint test, covering a datastore published both to loopback and beyond it |
+| Exposing a component never removes a finding: what a component is decides where it sits, and publishing it is reported rather than reclassifying it | Zone tests across a private and a published datastore, and a review asserting nothing is resolved |
 | Import staleness is reported independently of analyzer staleness | Import-provenance repository tests |
 | A configured but unusable database stops a production boot instead of silently serving memory storage | Persistence startup tests and an unreachable-database boot |
 | Database and Redis connections verify the server's certificate rather than encrypting to whoever answers, and transport security follows the host rather than the URL scheme | Shared transport-decision tests across both services, plus each database mode exercised against a real instance |
@@ -245,7 +246,7 @@ These statements are limited to checked behavior in this repository.
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 92 architecture-core tests, 7 CLI tests, 24 Action tests, and 244 backend tests (367 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 95 architecture-core tests, 7 CLI tests, 24 Action tests, and 244 backend tests (370 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
