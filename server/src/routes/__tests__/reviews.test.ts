@@ -18,6 +18,18 @@ const github = {
   onWrite: null as null | (() => Promise<void>),
 };
 
+/** The GitHub account the deciding session has proved, if any. */
+const identity = {
+  linked: { githubUserId: null as string | null, githubLogin: null as string | null },
+  authorId: 7001,
+  permission: "admin",
+};
+
+vi.mock("../auth.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../auth.js")>();
+  return { ...actual, linkedGitHubIdentity: async () => identity.linked };
+});
+
 vi.mock("../../services/githubApp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../services/githubApp.js")>();
   return {
@@ -180,6 +192,14 @@ describe("architecture review routes and the decision gate", () => {
         if (github.onWrite) await github.onWrite();
         return new Response(JSON.stringify({ id: 99 }), { status: github.writeStatus });
       }
+      // What entitlement asks about: who opened the change, and what standing
+      // the person deciding has on the repository.
+      if (url.includes("/pulls/")) {
+        return new Response(JSON.stringify({ user: { id: identity.authorId } }), { status: 200 });
+      }
+      if (url.includes("/collaborators/")) {
+        return new Response(JSON.stringify({ permission: identity.permission }), { status: 200 });
+      }
       return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
     }) as typeof fetch;
   });
@@ -295,6 +315,85 @@ describe("architecture review routes and the decision gate", () => {
     // reader's page back onto a commit that is no longer under review.
     expect(retried.body.headRevision).toBe(NEXT_SHA);
     expect(retried.body.githubSync.headRevision).toBe(NEXT_SHA);
+  });
+
+  it("refuses a decision from the author of the pull request", async () => {
+    // The reviewer is identified and has full permission; they opened the
+    // change. Nothing is written, so no gate goes out of step with the PR.
+    github.installed = true;
+    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc";
+    process.env.GITHUB_APP_CLIENT_SECRET = "shhh";
+    identity.linked = { githubUserId: "7001", githubLogin: "octo-author" };
+    try {
+      const baseUrl = await startApp();
+      const ingested = await ingest(baseUrl);
+      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+
+      const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          decision: "rejected",
+          note: "Approving my own architecture change.",
+          expectedRevision: before!.revision,
+        }),
+      });
+
+      expect(decided.status).toBe(403);
+      expect(decided.body.code).toBe("self_approval");
+      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      expect(after?.decision).toBe("pending");
+    } finally {
+      identity.linked = { githubUserId: null, githubLogin: null };
+      delete process.env.GITHUB_APP_CLIENT_ID;
+      delete process.env.GITHUB_APP_CLIENT_SECRET;
+    }
+  });
+
+  it("refuses a decision from an account that has not linked a GitHub identity", async () => {
+    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc";
+    process.env.GITHUB_APP_CLIENT_SECRET = "shhh";
+    try {
+      const baseUrl = await startApp();
+      const ingested = await ingest(baseUrl);
+      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+
+      const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          decision: "rejected",
+          note: "Publishing a database port is not acceptable.",
+          expectedRevision: before!.revision,
+        }),
+      });
+
+      expect(decided.status).toBe(403);
+      expect(decided.body.code).toBe("identity_required");
+      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      expect(after?.decision).toBe("pending");
+    } finally {
+      delete process.env.GITHUB_APP_CLIENT_ID;
+      delete process.env.GITHUB_APP_CLIENT_SECRET;
+    }
+  });
+
+  it("still records a decision where the deployment cannot check entitlement", async () => {
+    // No identity configured: this is every deployment that worked before the
+    // check existed, and it must keep working rather than locking everyone out.
+    const baseUrl = await startApp();
+    const ingested = await ingest(baseUrl);
+    const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+
+    const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        decision: "rejected",
+        note: "Publishing a database port is not acceptable.",
+        expectedRevision: before!.revision,
+      }),
+    });
+
+    expect(decided.status).toBe(200);
+    expect(decided.body.decision).toBe("rejected");
   });
 
   it("refuses an unauthenticated retry", async () => {

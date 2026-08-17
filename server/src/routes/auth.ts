@@ -453,6 +453,35 @@ router.get("/github/callback", async (req, res) => {
   }
 });
 
+/**
+ * The GitHub account an account has proved, if any.
+ *
+ * Read wherever a decision has to be attributed to a person rather than to a
+ * session. Returns nulls rather than throwing for an account that never linked
+ * one, because "not linked" is an answer the caller has to act on.
+ */
+export async function linkedGitHubIdentity(
+  userId: string
+): Promise<{ githubUserId: string | null; githubLogin: string | null }> {
+  const pool = getDbOrNull();
+  if (pool) {
+    const found = await pool.query(
+      "SELECT github_user_id, github_login FROM users WHERE id = $1",
+      [userId]
+    );
+    const row = found.rows[0];
+    return {
+      githubUserId: row?.github_user_id ?? null,
+      githubLogin: row?.github_login ?? null,
+    };
+  }
+  const user = IN_MEMORY_USERS.find((u) => u.id === userId);
+  return {
+    githubUserId: user?.github_user_id ?? null,
+    githubLogin: user?.github_login ?? null,
+  };
+}
+
 /** DELETE /api/auth/github — unlink, so a mistaken or shared account can be undone. */
 router.delete("/github", requireAuth, async (req, res) => {
   try {

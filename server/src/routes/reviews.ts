@@ -11,6 +11,8 @@ import {
 import { reviewCreateLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
+import { reviewDecisionEntitlement } from "../services/reviewEntitlement.js";
+import { linkedGitHubIdentity } from "./auth.js";
 import {
   analyzerStatus,
   importStatus,
@@ -440,6 +442,22 @@ router.patch("/:id/decision", async (req, res) => {
         error: "Blocking findings must be resolved or explicitly suppressed before approval.",
       });
     }
+
+    // Whether this person may decide at all, asked before anything is recorded.
+    // A refusal here is not a failed publish: nothing was written, so there is
+    // no decision to be out of step with the pull request.
+    const entitlement = await reviewDecisionEntitlement(
+      current,
+      await linkedGitHubIdentity(req.user!.userId)
+    );
+    if (entitlement.status === "refused") {
+      logger.warn("Architecture decision refused", {
+        reviewId: current.id,
+        code: entitlement.code,
+      });
+      return res.status(403).json({ error: entitlement.message, code: entitlement.code });
+    }
+
     const result = await updateArchitectureReviewDecision(
       current.id,
       req.user!.userId,

@@ -197,12 +197,31 @@ reviewer is stored.
 Without these two values, linking is unavailable and reported as such. Nothing
 else changes: decisions are still recorded, audited and published.
 
+## 8. What deciding then requires
+
+With both the App and reviewer identity configured, a decision on a
+pull-request review is checked before it is recorded:
+
+| Refusal | Meaning |
+| --- | --- |
+| `identity_required` | The deciding account has not linked a GitHub account |
+| `self_approval` | The decider opened the pull request |
+| `insufficient_permission` | The decider has no write access to the repository |
+| `verification_unavailable` | GitHub could not be asked; nothing was recorded |
+
+A refusal writes nothing, so no gate is left disagreeing with the pull request.
+`verification_unavailable` is deliberately a refusal rather than a pass: letting
+anyone decide whenever GitHub is unreachable would be a false gate at exactly
+the moment nobody would notice.
+
+A deployment without the App, or without identity configured, cannot ask any of
+this. It records the decision as before rather than locking every reviewer out
+of a product that worked — and records that the decision was unverified, rather
+than implying it was checked.
+
 ## What this does not do yet
 
-A reviewer can now prove which GitHub account they are. Nothing yet *checks*
-that account against the repository: approval does not require being a
-collaborator or a code owner, and the author of a pull request is not prevented
-from approving their own change. Linking is the identity half of that gap, and
-the entitlement half is still open — so this remains adequate for reviewing your
-own repositories and not yet sufficient for enforcing a gate on a team. See
-[known limitations](./KNOWN_LIMITATIONS.md).
+Write access to the repository is the bar. `CODEOWNERS` is not read, so a
+collaborator who owns no part of the changed architecture can still decide.
+Permission is read at the moment of the decision and not re-checked afterwards.
+See [known limitations](./KNOWN_LIMITATIONS.md).
