@@ -40,6 +40,21 @@ System Synthesis answers a narrower question:
 
 > What architecture changed in this pull request, and did the change introduce a policy violation?
 
+## Try it on any repository
+
+The analysis needs two Compose files and nothing else — no account, no server, no GitHub permission — so it runs against a repository you do not own:
+
+```bash
+git clone https://github.com/someone/their-project && cd their-project
+git show main:docker-compose.yml   > /tmp/base.yml
+git show their-branch:docker-compose.yml > /tmp/head.yml
+
+node <path-to>/architecture-cli/dist/bin.js review \
+  --base /tmp/base.yml --head /tmp/head.yml --source-path docker-compose.yml
+```
+
+The pull-request half — check run, comment, persisted review — needs a repository you can install a GitHub App on and store a secret in, so use your own repository or a fork. A pull request opened *into* someone else's repository cannot exercise it: fork pull requests receive no secrets and a read-only token by design, the App is not installed there, and the decision gate refuses a change's own author. See [contributing](./CONTRIBUTING.md).
+
 ## Demonstration
 
 The included example changes a checkout service so it publishes a host port and directly depends on PostgreSQL.
@@ -319,6 +334,10 @@ The frontend is a Next.js application. The backend requires a long-running Node.
 The server Dockerfile installs only the server/core/shared workspaces, builds the extracted engine before the server, copies the core runtime into the production stage, and skips lifecycle scripts in production install.
 
 Cloudflare Workers/Sites output is not configured. Moving the Socket.IO backend to that runtime would be a separate hosting migration.
+
+## Contributing and security
+
+[Contributing](./CONTRIBUTING.md) covers running the gate locally, what a change is expected to carry, and the decisions that are deliberate rather than oversights. Report a vulnerability privately through [security](./SECURITY.md) — including any case where the gate itself says something untrue, which is treated as a security defect rather than a bug.
 
 ## License
 
