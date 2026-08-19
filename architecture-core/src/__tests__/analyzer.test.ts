@@ -10,6 +10,12 @@ import { DEFAULT_RULES, type ArchitectureRule } from "../validation.js";
  * This list is the deliberate gate. Changing the rule set fails here first, so
  * the analyzer identity is always an explicit decision rather than a silent
  * side effect of editing rules.
+ *
+ * Adding the Kubernetes rules changed the fingerprint but not ANALYZER_VERSION.
+ * The version records what the fingerprint cannot see — wording and impact
+ * classification — and every Kubernetes rule is scoped to a Kubernetes graph,
+ * so no verdict this analyzer had already reached moves. The identity change is
+ * carried by the fingerprint alone, which is what it is for.
  */
 const PINNED_RULE_SET = [
   "client-to-persistence:critical",
@@ -22,6 +28,11 @@ const PINNED_RULE_SET = [
   "disconnected-component:info",
   "high-sla-single-instance:info",
   "incomplete-queue-flow:warning",
+  "k8s-dependency-without-readiness-probe:info",
+  "k8s-exposed-persistence-workload:critical",
+  "k8s-exposed-sensitive-workload:critical",
+  "k8s-sensitive-workload-without-network-policy:warning",
+  "k8s-unresolved-workload-exposure:warning",
   "single-point-of-failure:warning",
   "unmediated-trust-boundary:warning",
 ];

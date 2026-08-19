@@ -6,6 +6,8 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Added
 
+- Kubernetes source adapter in `architecture-core` for plain manifests and Kustomize bases: workloads become components, Services and Ingresses decide reach past the cluster boundary, NetworkPolicy coverage is recorded, and dependencies are inferred from literal container environment and argument references. Carries its own extraction contract, `K8S_ADAPTER_VERSION`, and refuses Helm chart templates by name rather than reading them as YAML. Not yet selectable from the CLI, Action, or server
+- Five deterministic Kubernetes rules, scoped to Kubernetes graphs so no Compose review changes: published persistence and sensitive workloads, unresolved Service types, sensitive workloads left uncovered where NetworkPolicies are in use, and dependencies without a readiness probe
 - Source-derived architecture reviews for a bounded Docker Compose subset, with stable graph identities and source-line provenance
 - Semantic pull-request impact for component/dependency, host exposure, trust-boundary, redundancy, and downstream blast-radius changes
 - Deterministic change policy with base-branch authority, scoped/expiring suppressions, Markdown/JSON/SARIF output, and merge-gating exit codes
@@ -25,6 +27,7 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Changed
 
+- Moved component classification and zone assignment into a shared `componentNature` module so every adapter agrees on what a component is and where exposure may not put it; Compose extraction is unchanged and its pinned fingerprint proves it
 - Repositioned the product around deterministic architecture change intelligence; the collaborative canvas is now a supporting inspection/modeling surface
 - Extracted canonical graph analysis, diffing, validation, source import, and review policy into the reusable `architecture-core` workspace
 - Hardened the production server image so the extracted core is built, pruned, and available at runtime

@@ -248,7 +248,7 @@ These statements are limited to checked behavior in this repository.
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
 
-Current automated count: 95 architecture-core tests, 13 CLI tests, 24 Action tests, and 244 backend tests (376 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+Current automated count: 137 architecture-core tests, 13 CLI tests, 24 Action tests, and 244 backend tests (418 total). A further 8 backend tests run the synchronization contract against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
 
 ## Collaborative modeling platform
 
@@ -321,7 +321,7 @@ CI builds the frontend, extracted core, CLI, bundled action, and backend; runs a
 
 ## Repository map
 
-- `architecture-core/` — canonical graphs, import adapter, graph algorithms, semantic review, policy, SARIF
+- `architecture-core/` — canonical graphs, import adapters, graph algorithms, semantic review, policy, SARIF
 - `architecture-cli/` — import/review commands and JSON/Markdown/SARIF reporters
 - `architecture-action/` — tested, bundled GitHub Action runtime
 - `frontend/` — review/decision UI plus collaborative architecture canvas

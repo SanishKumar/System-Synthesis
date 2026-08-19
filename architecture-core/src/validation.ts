@@ -370,6 +370,145 @@ const dependencyWithoutHealthcheck: ArchitectureRule = {
   },
 };
 
+function isKubernetesGraph(graph: ArchitectureGraph): boolean {
+  return graph.nodes.some((node) => node.data.provenance?.adapter === "kubernetes");
+}
+
+/**
+ * How far a workload's Services carry it. Absent means the adapter recorded no
+ * reach for it, which is the case for a workload no Service selects.
+ */
+function clusterReach(node: SerializedNode): string {
+  const value = node.data.sourceProperties?.clusterExposure;
+  return typeof value === "string" ? value : "cluster";
+}
+
+function describeServices(node: SerializedNode): string {
+  const types = [...new Set(sourceStringArray(node, "serviceTypes"))];
+  return types.length ? types.join(", ") : "Service";
+}
+
+const exposedPersistenceWorkload: ArchitectureRule = {
+  id: "k8s-exposed-persistence-workload",
+  title: "Persistence workload is published outside the cluster",
+  severity: "critical",
+  rationale: "Databases and durable stores should not be routable from outside the cluster unless external access is explicitly required and protected.",
+  references: ["CWE-284"],
+  appliesTo: isKubernetesGraph,
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      if (!PERSISTENCE_TYPES.includes(node.data.nodeType)) return [];
+      // A ClusterIP port is how a datastore is supposed to be reached. Only a
+      // route past the cluster boundary is a finding.
+      const reach = clusterReach(node);
+      if (reach !== "external" && reach !== "node") return [];
+      const ports = sourceStringArray(node, "exposedPorts");
+      return [issue(
+        this,
+        node.id,
+        `The ${node.data.label} persistence workload is published outside the cluster by a ${describeServices(node)} Service${ports.length ? `: ${ports.join(", ")}` : ""}.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const exposedSensitiveWorkload: ArchitectureRule = {
+  id: "k8s-exposed-sensitive-workload",
+  title: "Sensitive workload is published outside the cluster",
+  severity: "critical",
+  rationale: "Caches, brokers, and search engines hold sessions, credentials, queued messages, and indexed copies of production data, and are frequently deployed without authentication because they are assumed to be cluster-internal.",
+  references: ["CWE-284"],
+  appliesTo: isKubernetesGraph,
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      // Deliberately disjoint from the persistence rule so one exposure cannot
+      // produce two findings.
+      if (!["cache", "broker", "search"].includes(node.data.nodeType)) return [];
+      const reach = clusterReach(node);
+      if (reach !== "external" && reach !== "node") return [];
+      const ports = sourceStringArray(node, "exposedPorts");
+      return [issue(
+        this,
+        node.id,
+        `The ${node.data.label} ${node.data.nodeType} is published outside the cluster by a ${describeServices(node)} Service${ports.length ? `: ${ports.join(", ")}` : ""}.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const unresolvedWorkloadExposure: ArchitectureRule = {
+  id: "k8s-unresolved-workload-exposure",
+  title: "Sensitive workload has an unresolved Service type",
+  severity: "warning",
+  rationale: "A Service type this import could not resolve may be LoadBalancer or NodePort once applied. The reach cannot be established from the source, and an unestablished reach is not a contained one.",
+  appliesTo: isKubernetesGraph,
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      if (!SENSITIVE_TYPES.includes(node.data.nodeType)) return [];
+      if (clusterReach(node) !== "unknown") return [];
+      return [issue(
+        this,
+        node.id,
+        `The ${node.data.label} ${node.data.nodeType} is fronted by a Service whose type this import could not resolve.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const sensitiveWorkloadWithoutNetworkPolicy: ArchitectureRule = {
+  id: "k8s-sensitive-workload-without-network-policy",
+  title: "Sensitive workload is not covered by a NetworkPolicy",
+  severity: "warning",
+  rationale: "Without a policy selecting it, a workload accepts connections from every pod in the cluster, so a compromise anywhere reaches it directly.",
+  references: ["CWE-1327"],
+  // Only where the source models network boundaries at all. Reporting every
+  // workload in a repository that uses none would say nothing about that
+  // repository beyond the fact that it uses none.
+  appliesTo: (graph) => isKubernetesGraph(graph) && graph.nodes.some(
+    (node) => node.data.sourceProperties?.networkPoliciesDeclared === true
+  ),
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      if (!SENSITIVE_TYPES.includes(node.data.nodeType)) return [];
+      if (node.data.sourceProperties?.networkPoliciesDeclared !== true) return [];
+      if (node.data.sourceProperties?.selectedByNetworkPolicy === true) return [];
+      return [issue(
+        this,
+        node.id,
+        `${node.data.label} holds sensitive data and no NetworkPolicy in this import selects it.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const dependencyWithoutReadinessProbe: ArchitectureRule = {
+  id: "k8s-dependency-without-readiness-probe",
+  title: "Dependency has no modeled readiness probe",
+  severity: "info",
+  rationale: "Without a readiness probe a pod receives Service traffic as soon as it starts, so a dependent workload can be routed to a dependency that is not yet usable.",
+  appliesTo: isKubernetesGraph,
+  evaluate(graph) {
+    const targets = [...new Set(graph.edges.map((edge) => edge.target))].sort();
+    return targets.flatMap((nodeId) => {
+      const node = graph.nodesById.get(nodeId);
+      if (!node || node.data.sourceProperties?.hasReadinessProbe === true) return [];
+      // An Ingress has no pods and therefore no probe to model.
+      if (node.data.sourceProperties?.kind === "Ingress") return [];
+      return [issue(
+        this,
+        node.id,
+        `${node.data.label} is a dependency but declares no readiness probe.`,
+        [node.id],
+        graph.edges.filter((edge) => edge.target === node.id).map((edge) => edge.id)
+      )];
+    });
+  },
+};
+
 export const DEFAULT_RULES: ArchitectureRule[] = [
   clientToPersistence,
   dependencyWithoutHealthcheck,
@@ -383,6 +522,11 @@ export const DEFAULT_RULES: ArchitectureRule[] = [
   publishedSensitiveServicePort,
   restrictedSensitivePort,
   publicServiceToPersistence,
+  exposedPersistenceWorkload,
+  exposedSensitiveWorkload,
+  unresolvedWorkloadExposure,
+  sensitiveWorkloadWithoutNetworkPolicy,
+  dependencyWithoutReadinessProbe,
 ];
 
 function findingLocations(

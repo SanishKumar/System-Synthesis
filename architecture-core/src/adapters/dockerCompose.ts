@@ -17,6 +17,7 @@ import {
   parsePublishedPort,
   type PublishedPortBinding,
 } from "../portExposure.js";
+import { classifyByIdentity, zoneFor } from "../componentNature.js";
 import {
   canonicalizeGraph,
   stableEdgeId,
@@ -116,49 +117,7 @@ function imageName(service: ComposeService): string {
 }
 
 function classifyService(name: string, service: ComposeService): ArchNodeType {
-  const identity = `${name} ${imageName(service)}`.toLowerCase();
-  if (/(postgres|mysql|mariadb|mongo|cassandra|cockroach|sqlserver|mssql|oracle)/.test(identity)) return "database";
-  if (/(redis|memcached)/.test(identity)) return "cache";
-  if (/(rabbitmq|kafka|nats|pulsar|activemq|redpanda)/.test(identity)) return "broker";
-  if (/(elasticsearch|opensearch|meilisearch|solr)/.test(identity)) return "search";
-  if (/(nginx|traefik|envoy|haproxy|caddy)/.test(identity)) return "proxy";
-  if (/(prometheus|grafana|datadog|newrelic|jaeger|zipkin)/.test(identity)) return "monitor";
-  if (/(minio|seaweedfs)/.test(identity)) return "storage";
-  if (/(vault)/.test(identity)) return "vault";
-  if (/(keycloak|ory|authentik)/.test(identity)) return "auth";
-  return "service";
-}
-
-/**
- * Components whose place in the topology is decided by what they are.
- *
- * A database is internal whether or not somebody published its port. Deriving
- * the zone from exposure alone made that backwards: publishing a database moved
- * it from `private` into `dmz`, and the trust-boundary crossings into it stopped
- * being crossings at all. Exposing a datastore made two findings disappear.
- *
- * Exposure is still reported — by the rules that exist for it, which name the
- * service and the port. It just no longer rewrites what the component is.
- */
-const INTERNAL_BY_NATURE = new Set<ArchNodeType>([
-  "database",
-  "storage",
-  "warehouse",
-  "cache",
-  "broker",
-  "queue",
-  "search",
-  "stream",
-  "vault",
-  "registry",
-]);
-
-function zoneFor(type: ArchNodeType, publiclyReachable: boolean): "dmz" | "private" {
-  if (INTERNAL_BY_NATURE.has(type)) return "private";
-  // A port reachable only from the machine itself does not put a service in a
-  // perimeter zone; treating it as though it did marked correct local bindings
-  // as publicly exposed.
-  return publiclyReachable ? "dmz" : "private";
+  return classifyByIdentity(`${name} ${imageName(service)}`.toLowerCase());
 }
 
 function stringList(value: unknown): string[] {
