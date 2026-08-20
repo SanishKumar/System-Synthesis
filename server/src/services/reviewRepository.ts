@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { EntitlementEvidence } from "./reviewEntitlement.js";
 import type {
   ArchitectureChangeReview,
   ArchitecturePolicy,
@@ -1090,7 +1091,13 @@ export async function updateArchitectureReviewDecision(
   ownerId: string,
   expectedRevision: number,
   decision: Exclude<ReviewDecision, "pending">,
-  note: string | null
+  note: string | null,
+  /**
+   * What was established about the decider before this was allowed. Written in
+   * the same transaction as the decision, because evidence recorded separately
+   * can be absent for exactly the decision somebody later needs to account for.
+   */
+  entitlement: EntitlementEvidence
 ): Promise<ReviewMutationResult> {
   const pool = getPool();
   if (pool) {
@@ -1126,7 +1133,7 @@ export async function updateArchitectureReviewDecision(
           id,
           ownerId,
           review.revision,
-          JSON.stringify({ decision, note }),
+          JSON.stringify({ decision, note, entitlement }),
         ]
       );
       await client.query("COMMIT");
@@ -1159,7 +1166,9 @@ export async function updateArchitectureReviewDecision(
     actorId: ownerId,
     eventType: "decision.changed",
     reviewRevision: review.revision,
-    data: { decision, note },
+    // Memory mode records the same evidence as PostgreSQL. The two storage
+    // paths disagreeing about what a decision means is its own defect.
+    data: { decision, note, entitlement },
     createdAt: now,
   });
   return { status: "updated", review: structuredClone(stored) };

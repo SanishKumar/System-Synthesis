@@ -31,12 +31,34 @@ export type EntitlementBasis =
 
 export type EntitlementRefusal =
   | "identity_required"
+  /** The login on file resolved to a different account than the one linked. */
+  | "identity_mismatch"
   | "self_approval"
   | "insufficient_permission"
   | "verification_unavailable";
 
+/**
+ * What was established about the person deciding, at the moment they decided.
+ *
+ * Stored with the decision. A decision without this is a name in a column: it
+ * cannot answer which GitHub account made it, whether permission was checked at
+ * all, or what GitHub said when it was. `basis` is the part that matters most,
+ * because `unenforced` and `verified` look identical afterwards otherwise.
+ */
+export interface EntitlementEvidence {
+  basis: EntitlementBasis;
+  repository?: string;
+  /** Immutable GitHub account id. The only durable name for who decided. */
+  githubUserId?: string;
+  /** Display login as GitHub resolved it during the check, not as stored. */
+  githubLogin?: string;
+  /** The level GitHub reported, kept verbatim. */
+  permission?: string;
+  checkedAt?: string;
+}
+
 export type EntitlementVerdict =
-  | { status: "allowed"; basis: EntitlementBasis; login?: string }
+  | { status: "allowed"; evidence: EntitlementEvidence }
   | { status: "refused"; code: EntitlementRefusal; message: string };
 
 export interface DecidingReviewer {
@@ -60,13 +82,16 @@ export async function reviewDecisionEntitlement(
   const source = review.externalSource;
 
   // Nothing to have standing on. A manual import belongs to whoever created it.
-  if (!source) return { status: "allowed", basis: "manual" };
+  if (!source) return { status: "allowed", evidence: { basis: "manual" } };
 
   // A deployment that cannot check must not pretend it did, and must not lock
   // every reviewer out of a product that worked yesterday. It records that the
   // decision was unverified instead, which is the truth.
   if (!isGitHubAppConfigured(env) || !isGitHubIdentityConfigured(env)) {
-    return { status: "allowed", basis: "unenforced" };
+    return {
+      status: "allowed",
+      evidence: { basis: "unenforced", repository: source.repository },
+    };
   }
 
   if (!reviewer.githubUserId) {
@@ -139,15 +164,53 @@ export async function reviewDecisionEntitlement(
     if (permission.status !== 200) {
       return unavailable(`permission lookup returned ${permission.status}`);
     }
-    const level = (await permission.json().catch(() => null)) as { permission?: unknown } | null;
+    const level = (await permission.json().catch(() => null)) as
+      | { permission?: unknown; user?: { id?: unknown; login?: unknown } }
+      | null;
     if (typeof level?.permission !== "string") {
       return unavailable("permission response was incomplete");
     }
+    // Asked before identity, so a reviewer without access is told that rather
+    // than being sent away with a retry message because the response for a
+    // non-collaborator carries no account to compare.
     if (!DECIDING_PERMISSIONS.has(level.permission)) {
       return insufficient(source.repository);
     }
+    // The question was asked using a login, and a login can be given away. The
+    // response names the account it actually resolved to, so this answer is
+    // about this reviewer only if that account is the one they linked. Without
+    // the comparison, standing is established for whoever holds the name today
+    // while self-approval is refused against the account that held it before.
+    const resolvedId = level.user?.id;
+    if (typeof resolvedId !== "number") {
+      return unavailable("permission response did not name the account it resolved");
+    }
+    if (String(resolvedId) !== reviewer.githubUserId) {
+      return {
+        status: "refused",
+        code: "identity_mismatch",
+        message:
+          "The GitHub account linked here no longer matches the account that login " +
+          "belongs to. Re-link your GitHub account before deciding this review.",
+      };
+    }
 
-    return { status: "allowed", basis: "verified", login: reviewer.githubLogin ?? undefined };
+    return {
+      status: "allowed",
+      evidence: {
+        basis: "verified",
+        repository: source.repository,
+        githubUserId: reviewer.githubUserId,
+        // Whatever GitHub calls this account now, which is what a later reader
+        // needs in order to find it. The stored login may already be stale.
+        githubLogin:
+          typeof level.user?.login === "string"
+            ? level.user.login
+            : reviewer.githubLogin ?? undefined,
+        permission: level.permission,
+        checkedAt: new Date().toISOString(),
+      },
+    };
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : "verification failed");
   }

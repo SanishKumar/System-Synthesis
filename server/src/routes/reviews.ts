@@ -12,7 +12,7 @@ import { reviewCreateLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
 import { reviewDecisionEntitlement } from "../services/reviewEntitlement.js";
-import { linkedGitHubIdentity } from "./auth.js";
+import { linkedGitHubIdentity, refreshGitHubLogin } from "./auth.js";
 import {
   analyzerStatus,
   importStatus,
@@ -446,10 +446,8 @@ router.patch("/:id/decision", async (req, res) => {
     // Whether this person may decide at all, asked before anything is recorded.
     // A refusal here is not a failed publish: nothing was written, so there is
     // no decision to be out of step with the pull request.
-    const entitlement = await reviewDecisionEntitlement(
-      current,
-      await linkedGitHubIdentity(req.user!.userId)
-    );
+    const identity = await linkedGitHubIdentity(req.user!.userId);
+    const entitlement = await reviewDecisionEntitlement(current, identity);
     if (entitlement.status === "refused") {
       logger.warn("Architecture decision refused", {
         reviewId: current.id,
@@ -458,12 +456,23 @@ router.patch("/:id/decision", async (req, res) => {
       return res.status(403).json({ error: entitlement.message, code: entitlement.code });
     }
 
+    // GitHub may have resolved a login this account has since changed. The link
+    // is anchored to the numeric id, which was just confirmed, so the stored
+    // label can safely follow it.
+    if (
+      entitlement.evidence.githubLogin &&
+      entitlement.evidence.githubLogin !== identity.githubLogin
+    ) {
+      await refreshGitHubLogin(req.user!.userId, entitlement.evidence.githubLogin);
+    }
+
     const result = await updateArchitectureReviewDecision(
       current.id,
       req.user!.userId,
       parsed.data.expectedRevision,
       parsed.data.decision,
-      parsed.data.note || null
+      parsed.data.note || null,
+      entitlement.evidence
     );
     return await mutationResponse(res, result, req.user!.userId);
   } catch (error: any) {

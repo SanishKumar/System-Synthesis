@@ -27,8 +27,13 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- Repository permission is now established for the linked GitHub account rather than for a login. The check was made by name while self-approval was refused by numeric id, so a renamed account, a reassigned login, or a stale identity row could point the two halves of the gate at different accounts. The permission response's own account id is compared with the linked id and a mismatch fails closed; the stored login is refreshed only once the id matches
+- Decisions record the entitlement they were allowed on. The route calculated it and discarded it, so the history could not say which GitHub account decided, whether permission was verified, or whether the deployment was running unenforced — while the documentation claimed it could. The evidence is written in the same transaction as the decision, in both PostgreSQL and memory storage, and a PostgreSQL contract test asserts no decision can exist without it
+
 - Page views are reported with an absolute URL again. The analytics `beforeSend` hook replaced the event URL with a bare path, which is not the shape the client forwards; the route is still stripped of review identifiers, board identifiers, invitation tokens, and the whole query, but the origin is now preserved
 - Corrected the privacy claim in the analytics component and in known limitations: the integration is anonymous and cookieless, but Vercel does derive a day-long visitor hash from the request, and whether consent is required is not a question a source comment can settle
+
+- Corrected two documentation claims the code does not support: the GitHub authorisation state is expiring and account-bound but not single-use, and the development-only esbuild advisory it described no longer exists at the resolved version
 
 ### Changed
 

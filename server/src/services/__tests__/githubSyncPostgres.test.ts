@@ -293,4 +293,91 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
     });
     expect(recorded).toMatchObject({ status: "skipped", reason: "not_configured" });
   });
+
+  /**
+   * The decision audit, run against real SQL.
+   *
+   * Memory storage keeps a JavaScript object; PostgreSQL round-trips the same
+   * evidence through a JSONB column. Asserting it only in memory would prove
+   * the object was constructed, not that it survives being written and read
+   * back — and the two backends have drifted before.
+   */
+  describe("entitlement evidence", () => {
+    const VERIFIED = {
+      basis: "verified" as const,
+      repository: "acme/shop",
+      githubUserId: "9002",
+      githubLogin: "octo-reviewer",
+      permission: "write",
+      checkedAt: "2026-08-20T10:00:00.000Z",
+    };
+
+    it("survives the round trip into the decision event", async () => {
+      const { repository } = await load();
+      const { review } = await ingest();
+      const decided = await repository.updateArchitectureReviewDecision(
+        review.id,
+        OWNER,
+        review.revision,
+        "approved",
+        null,
+        VERIFIED
+      );
+      expect(decided.status).toBe("updated");
+
+      const events = await repository.listArchitectureReviewEvents(review.id, OWNER);
+      const decision = events.find((event) => event.eventType === "decision.changed");
+      expect(decision?.data).toMatchObject({ decision: "approved", entitlement: VERIFIED });
+    });
+
+    it("records an unverified decision as unverified", async () => {
+      // A deployment that cannot check is allowed to decide and is not allowed
+      // to look like one that did.
+      const { repository } = await load();
+      const { review } = await ingest();
+      await repository.updateArchitectureReviewDecision(
+        review.id,
+        OWNER,
+        review.revision,
+        "rejected",
+        "Not this shape.",
+        { basis: "unenforced", repository: "acme/shop" }
+      );
+      const events = await repository.listArchitectureReviewEvents(review.id, OWNER);
+      const decision = events.find((event) => event.eventType === "decision.changed");
+      const stored = (decision?.data as Record<string, unknown>).entitlement as Record<string, unknown>;
+      expect(stored.basis).toBe("unenforced");
+      expect(stored.githubUserId).toBeUndefined();
+      expect(stored.permission).toBeUndefined();
+    });
+
+    it("writes the evidence in the same transaction as the decision", async () => {
+      // A decision that landed without its evidence is the defect this closes.
+      // Nothing may leave a decision row behind with no event beside it.
+      const { db, repository } = await load();
+      const { review } = await ingest();
+      await repository.updateArchitectureReviewDecision(
+        review.id,
+        OWNER,
+        review.revision,
+        "approved",
+        null,
+        VERIFIED
+      );
+      const pool = db.getPool()!;
+      const orphaned = await pool.query(
+        `SELECT r.id FROM architecture_reviews r
+          WHERE r.id = $1
+            AND r.decision <> 'pending'
+            AND NOT EXISTS (
+              SELECT 1 FROM architecture_review_events e
+               WHERE e.review_id = r.id
+                 AND e.event_type = 'decision.changed'
+                 AND e.data ? 'entitlement'
+            )`,
+        [review.id]
+      );
+      expect(orphaned.rows).toEqual([]);
+    });
+  });
 });

@@ -482,6 +482,26 @@ export async function linkedGitHubIdentity(
   };
 }
 
+/**
+ * Brings the stored display login back in line with GitHub.
+ *
+ * A login is a label the account holder can change; the numeric id is what the
+ * link is anchored to. Called only once GitHub has confirmed the id still
+ * matches, so this renames a known account rather than adopting a new one.
+ */
+export async function refreshGitHubLogin(userId: string, login: string): Promise<void> {
+  const pool = getDbOrNull();
+  if (pool) {
+    await pool.query(
+      "UPDATE users SET github_login = $2 WHERE id = $1 AND github_login IS DISTINCT FROM $2",
+      [userId, login]
+    );
+    return;
+  }
+  const user = IN_MEMORY_USERS.find((u) => u.id === userId);
+  if (user) user.github_login = login;
+}
+
 /** DELETE /api/auth/github — unlink, so a mistaken or shared account can be undone. */
 router.delete("/github", requireAuth, async (req, res) => {
   try {

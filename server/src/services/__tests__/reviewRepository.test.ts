@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** A manual review has no pull request to have standing on. */
+const MANUAL_ENTITLEMENT = { basis: "manual" as const };
+
 vi.mock("../db.js", () => ({ getPool: () => null }));
 
 import {
@@ -129,7 +132,8 @@ describe("architecture review repository memory fallback", () => {
       "owner-1",
       1,
       "approved",
-      null
+      null,
+      MANUAL_ENTITLEMENT
     )).resolves.toEqual({ status: "conflict" });
   });
 
@@ -160,7 +164,8 @@ describe("architecture review repository memory fallback", () => {
       "owner-1",
       2,
       "approved",
-      "Matches ADR-014."
+      "Matches ADR-014.",
+      MANUAL_ENTITLEMENT
     );
     expect(decided).toMatchObject({
       status: "updated",
@@ -358,7 +363,8 @@ describe("analyzer provenance", () => {
       "owner-1",
       2,
       "approved",
-      "Matches ADR-014."
+      "Matches ADR-014.",
+      MANUAL_ENTITLEMENT
     );
     expect(approved).toMatchObject({ status: "updated" });
 
@@ -442,6 +448,67 @@ describe("analyzer provenance", () => {
     expect(updated).toMatchObject({
       status: "updated",
       review: { analyzerVersion: CURRENT_ANALYZER_VERSION },
+    });
+  });
+});
+
+describe("a decision carries the evidence it was allowed on", () => {
+  beforeEach(() => resetMemoryReviewsForTests());
+
+  /**
+   * A decision without this is a name in a column. Whether GitHub permission was
+   * checked at all, which account decided, and what GitHub answered are the
+   * questions somebody has afterwards, and none of them can be reconstructed
+   * from the decision alone — `unenforced` and `verified` look identical once
+   * the moment has passed.
+   */
+  const VERIFIED = {
+    basis: "verified" as const,
+    repository: "acme/shop",
+    githubUserId: "9002",
+    githubLogin: "octo-reviewer",
+    permission: "write",
+    checkedAt: "2026-08-20T10:00:00.000Z",
+  };
+
+  it("records who decided, on what basis, and what GitHub said", async () => {
+    const review = await create();
+    const decided = await updateArchitectureReviewDecision(
+      review.id,
+      "owner-1",
+      review.revision,
+      "approved",
+      null,
+      VERIFIED
+    );
+    expect(decided.status).toBe("updated");
+
+    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const decision = events.find((event) => event.eventType === "decision.changed");
+    expect(decision?.data).toMatchObject({ decision: "approved", entitlement: VERIFIED });
+  });
+
+  it("distinguishes a decision nobody could verify from one that was", async () => {
+    // The deployment without a GitHub App is not lying about its decisions; it
+    // just has to say which kind they are, and it can only say so if this is
+    // written down at the time.
+    const review = await create();
+    await updateArchitectureReviewDecision(
+      review.id,
+      "owner-1",
+      review.revision,
+      "rejected",
+      "No.",
+      { basis: "unenforced", repository: "acme/shop" }
+    );
+    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const decision = events.find((event) => event.eventType === "decision.changed");
+    expect((decision?.data as Record<string, unknown>).entitlement).toEqual({
+      basis: "unenforced",
+      repository: "acme/shop",
+    });
+    expect((decision?.data as Record<string, unknown>).entitlement).not.toMatchObject({
+      basis: "verified",
     });
   });
 });

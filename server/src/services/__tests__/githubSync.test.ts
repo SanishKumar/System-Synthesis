@@ -1,6 +1,9 @@
 import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** A manual review has no pull request to have standing on. */
+const MANUAL_ENTITLEMENT = { basis: "manual" as const };
+
 vi.mock("../db.js", () => ({ getPool: () => null }));
 
 import {
@@ -119,7 +122,8 @@ describe("GitHub synchronization state", () => {
       OWNER,
       review.revision,
       "rejected",
-      "Use the API."
+      "Use the API.",
+      MANUAL_ENTITLEMENT
     );
     expect(decided.status).toBe("updated");
 
