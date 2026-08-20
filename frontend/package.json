@@ -26,7 +26,7 @@
     "sonner": "^2.0.8",
     "uuid": "^14.0.0",
     "yjs": "^13.6.32",
-    "zustand": "^5.0.2"
+    "zustand": "^5.0.15"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.3.6",
