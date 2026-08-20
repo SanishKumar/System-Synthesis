@@ -43,3 +43,24 @@ export function scrubPath(url: string): string {
     .replace(UUID, "[id]")
     .replace(BOARD_ID, "[id]");
 }
+
+/**
+ * The value to report for a page view: the same route, with the origin kept.
+ *
+ * The origin has to survive. The analytics client forwards `url` onward as an
+ * absolute URL — every documented redaction example rebuilds one — and this
+ * returned a bare path instead, which is not a shape the client contracts for.
+ * Nothing is disclosed by keeping the origin: it is this deployment's own
+ * address, which the request already carried.
+ */
+export function scrubUrl(url: string): string {
+  let origin: string;
+  try {
+    origin = new URL(url).origin;
+  } catch {
+    // A relative value, which the client is not expected to produce. Naming a
+    // host that was never received would be a worse answer than a partial one.
+    return scrubPath(url);
+  }
+  return `${origin}${scrubPath(url)}`;
+}

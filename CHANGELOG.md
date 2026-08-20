@@ -25,6 +25,11 @@ All notable changes are documented here. The project has not tagged a public rel
 - Reproducible convergence and live Socket.IO benchmark scripts
 - Threat model, failure model, ADRs, benchmark report, and known limitations
 
+### Fixed
+
+- Page views are reported with an absolute URL again. The analytics `beforeSend` hook replaced the event URL with a bare path, which is not the shape the client forwards; the route is still stripped of review identifiers, board identifiers, invitation tokens, and the whole query, but the origin is now preserved
+- Corrected the privacy claim in the analytics component and in known limitations: the integration is anonymous and cookieless, but Vercel does derive a day-long visitor hash from the request, and whether consent is required is not a question a source comment can settle
+
 ### Changed
 
 - Moved component classification and zone assignment into a shared `componentNature` module so every adapter agrees on what a component is and where exposure may not put it; Compose extraction is unchanged and its pinned fingerprint proves it

@@ -79,7 +79,7 @@ jobs:
         run: git diff --exit-code -- architecture-action/dist
 
       - name: Run architecture core tests
-        run: npm test --workspace=architecture-core && npm test --workspace=architecture-cli && npm test --workspace=architecture-action
+        run: npm test --workspace=architecture-core && npm test --workspace=architecture-cli && npm test --workspace=architecture-action && npm test --workspace=frontend
 
       - name: Run backend, security, recovery, and convergence tests
         run: npm test --workspace=server
