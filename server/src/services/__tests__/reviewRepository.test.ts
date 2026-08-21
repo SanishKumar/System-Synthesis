@@ -13,7 +13,7 @@ import {
   analyzerStatus,
   createArchitectureReview,
   CURRENT_ANALYZER_VERSION,
-  CURRENT_IMPORT_VERSION,
+  CURRENT_IMPORT_VERSIONS,
   getArchitectureReview,
   importStatus,
   ingestArchitectureReview,
@@ -246,41 +246,90 @@ describe("analyzer provenance", () => {
     expect(refreshed.review.analyzerVersion).toBe(CURRENT_ANALYZER_VERSION);
   });
 
-  it("reports stored graphs extracted by the current importer as current", async () => {
+  const COMPOSE_CURRENT = CURRENT_IMPORT_VERSIONS["docker-compose"];
+  const K8S_CURRENT = CURRENT_IMPORT_VERSIONS.kubernetes;
+
+  /** A graph carrying whichever source identity a case is about. */
+  const sourced = (adapter: unknown, version: unknown) =>
+    ({
+      source: { adapter, adapterVersion: version, files: [] },
+      nodes: [],
+      edges: [],
+    }) as never;
+  const pair = (adapter: unknown, version: unknown) => ({
+    baseGraph: sourced(adapter, version),
+    headGraph: sourced(adapter, version),
+  });
+
+  it("reports Compose graphs extracted by the current importer as current", async () => {
     const review = await create();
 
     expect(importStatus(review)).toEqual({
-      importVersion: CURRENT_IMPORT_VERSION,
-      currentImportVersion: CURRENT_IMPORT_VERSION,
+      importAdapter: "docker-compose",
+      importVersion: COMPOSE_CURRENT,
+      currentImportVersion: COMPOSE_CURRENT,
       importOutdated: false,
     });
   });
 
-  it("treats an older, unknown, or disagreeing import as outdated", async () => {
-    const review = await create();
-    const older = (version: unknown) => ({
-      ...review.headGraph,
-      source: { ...review.headGraph.source, adapterVersion: version },
-    }) as typeof review.headGraph;
+  it("reports Kubernetes graphs against the Kubernetes contract, not the Compose one", async () => {
+    // One global number could only ever be right for one adapter. Measured
+    // against Compose, a current Kubernetes review always read as outdated.
+    expect(importStatus(pair("kubernetes", K8S_CURRENT))).toEqual({
+      importAdapter: "kubernetes",
+      importVersion: K8S_CURRENT,
+      currentImportVersion: K8S_CURRENT,
+      importOutdated: false,
+    });
+  });
 
-    // A graph produced by an older pinned Action.
-    expect(importStatus({
-      baseGraph: older(CURRENT_IMPORT_VERSION - 1),
-      headGraph: older(CURRENT_IMPORT_VERSION - 1),
-    })).toMatchObject({
-      importVersion: CURRENT_IMPORT_VERSION - 1,
+  it("treats an older graph from either adapter as outdated", async () => {
+    expect(importStatus(pair("docker-compose", COMPOSE_CURRENT - 1))).toMatchObject({
+      importAdapter: "docker-compose",
+      importVersion: COMPOSE_CURRENT - 1,
+      currentImportVersion: COMPOSE_CURRENT,
       importOutdated: true,
     });
+    expect(importStatus(pair("kubernetes", K8S_CURRENT - 1))).toMatchObject({
+      importAdapter: "kubernetes",
+      importVersion: K8S_CURRENT - 1,
+      currentImportVersion: K8S_CURRENT,
+      importOutdated: true,
+    });
+  });
+
+  it("treats every way of not knowing as outdated", async () => {
     // Written before extraction was versioned.
+    expect(importStatus(pair("docker-compose", undefined))).toMatchObject({
+      importVersion: null,
+      importOutdated: true,
+    });
+    // An adapter this build cannot speak for. Its numbering means nothing here.
+    expect(importStatus(pair("terraform", 1))).toMatchObject({
+      importAdapter: "terraform",
+      currentImportVersion: null,
+      importOutdated: true,
+    });
+    // No adapter recorded at all.
+    expect(importStatus(pair(undefined, 1))).toMatchObject({
+      importAdapter: null,
+      currentImportVersion: null,
+      importOutdated: true,
+    });
+    // Two adapters cannot describe one extraction contract.
     expect(importStatus({
-      baseGraph: older(undefined),
-      headGraph: older(undefined),
-    })).toMatchObject({ importVersion: null, importOutdated: true });
-    // Sides disagreeing cannot describe one extraction contract.
+      baseGraph: sourced("docker-compose", COMPOSE_CURRENT),
+      headGraph: sourced("kubernetes", K8S_CURRENT),
+    })).toMatchObject({ importAdapter: null, importVersion: null, importOutdated: true });
+    // Nor can two versions of one adapter.
     expect(importStatus({
-      baseGraph: older(CURRENT_IMPORT_VERSION - 1),
-      headGraph: review.headGraph,
-    })).toMatchObject({ importVersion: null, importOutdated: true });
+      baseGraph: sourced("kubernetes", K8S_CURRENT - 1),
+      headGraph: sourced("kubernetes", K8S_CURRENT),
+    })).toMatchObject({
+      importAdapter: "kubernetes",
+      importVersion: null,
+      importOutdated: true,
+    });
   });
 
   it("keeps import staleness independent of analyzer staleness", async () => {

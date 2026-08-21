@@ -545,7 +545,11 @@ export default function ReviewDetailPage() {
                     : "Import the change again to rebuild the graphs."}
                 </p>
                 <p className="mt-2 font-mono text-[10px] text-text-muted">
-                  stored import v{review.importVersion ?? "unknown"} · current v{review.currentImportVersion}
+                  {/* A version means nothing without the adapter it numbers: each
+                      keeps its own contract, so v2 of one is unrelated to v2 of another. */}
+                  {review.importAdapter ?? "unknown adapter"} · stored v
+                  {review.importVersion ?? "unknown"} · current v
+                  {review.currentImportVersion ?? "unknown"}
                 </p>
               </div>
             </section>
@@ -815,8 +819,11 @@ export default function ReviewDetailPage() {
                 </div>
                 <div className="mt-1.5 flex items-center justify-between gap-3 text-[11px]">
                   <span className="text-text-muted">Importer</span>
-                  <span className={`font-mono ${review.importOutdated ? "text-amber-600" : "text-text-secondary"}`}>
-                    v{review.importVersion ?? "unknown"}
+                  <span
+                    className={`truncate font-mono ${review.importOutdated ? "text-amber-600" : "text-text-secondary"}`}
+                    title={`${review.importAdapter ?? "unknown adapter"} v${review.importVersion ?? "unknown"}`}
+                  >
+                    {review.importAdapter ?? "unknown"} v{review.importVersion ?? "unknown"}
                   </span>
                 </div>
               </section>

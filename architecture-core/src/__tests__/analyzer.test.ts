@@ -43,6 +43,15 @@ function ruleSignature(rules: readonly ArchitectureRule[]): string[] {
 }
 
 describe("analyzer identity", () => {
+  it("pins the numeric analyzer version", () => {
+    // The fingerprint moves on its own whenever a rule id or severity changes.
+    // This number is the part nothing computes: it records a change in what a
+    // rule means while its identity stays the same, which is why it has to be
+    // asserted rather than derived. Version 4 is the Kubernetes NetworkPolicy
+    // rule, which kept its id and severity and changed its verdict.
+    expect(ANALYZER_VERSION).toBe(4);
+  });
+
   it("pins the deterministic rule set", () => {
     expect(ruleSignature(DEFAULT_RULES)).toEqual(PINNED_RULE_SET);
   });

@@ -458,10 +458,26 @@ const unresolvedWorkloadExposure: ArchitectureRule = {
   },
 };
 
-/** What the import established about inbound protection, if anything. */
+/**
+ * What the import established about inbound protection, if anything.
+ *
+ * `unstated` is the answer for a graph extracted before coverage was recorded
+ * per direction. Reading an absent field as `uncovered` turned silence in
+ * storage into a finding about somebody's cluster: re-analysis reuses stored
+ * graphs rather than re-reading source, so the claim would rest on nothing.
+ *
+ * The version that stored no coverage stored `selectedByNetworkPolicy`, and
+ * that value is not convertible into one. It ignored `policyTypes`, so it
+ * counted a policy governing only egress, and it read a `matchExpressions`
+ * selector as an empty one, which selects an entire namespace. Its `true` may
+ * mean neither, and its `false` may mean a selector it could not evaluate.
+ * Neither direction is safe to infer, so neither is inferred.
+ */
 function ingressCoverage(node: SerializedNode): string {
   const value = node.data.sourceProperties?.ingressPolicyCoverage;
-  return typeof value === "string" ? value : "uncovered";
+  return value === "covered" || value === "uncovered" || value === "unknown"
+    ? value
+    : "unstated";
 }
 
 const sensitiveWorkloadWithoutNetworkPolicy: ArchitectureRule = {

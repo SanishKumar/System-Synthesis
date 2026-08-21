@@ -8,6 +8,7 @@ import type {
 import {
   canonicalGraphFingerprint,
   COMPOSE_ADAPTER_VERSION,
+  K8S_ADAPTER_VERSION,
   currentAnalyzerVersion,
   stableStringify,
 } from "@system-synthesis/architecture-core";
@@ -41,17 +42,40 @@ export function analyzerStatus(review: {
   };
 }
 
-export const CURRENT_IMPORT_VERSION = COMPOSE_ADAPTER_VERSION;
+/**
+ * The extraction contract each adapter is currently on.
+ *
+ * One global number could only ever be right for one adapter. Compared against
+ * Compose's, every current Kubernetes review read as outdated and every stale
+ * Kubernetes review could have read as current, which is the same mistake
+ * pointed the other way.
+ */
+export const CURRENT_IMPORT_VERSIONS: Readonly<Record<string, number>> = {
+  "docker-compose": COMPOSE_ADAPTER_VERSION,
+  kubernetes: K8S_ADAPTER_VERSION,
+};
 
 export interface ImportStatus {
+  /** Which adapter produced both graphs, when they agree on one. */
+  importAdapter: string | null;
   importVersion: number | null;
-  currentImportVersion: number;
+  /** What that adapter is on now, or null when this build does not know it. */
+  currentImportVersion: number | null;
   importOutdated: boolean;
 }
 
-function graphImportVersion(graph: CanonicalArchitectureGraph): number | null {
+interface GraphSourceIdentity {
+  adapter: string | null;
+  version: number | null;
+}
+
+function graphSourceIdentity(graph: CanonicalArchitectureGraph): GraphSourceIdentity {
+  const adapter = graph.source.adapter;
   const version = graph.source.adapterVersion;
-  return typeof version === "number" ? version : null;
+  return {
+    adapter: typeof adapter === "string" && adapter ? adapter : null,
+    version: typeof version === "number" ? version : null,
+  };
 }
 
 /**
@@ -59,19 +83,26 @@ function graphImportVersion(graph: CanonicalArchitectureGraph): number | null {
  * from the same source. Distinct from analyzer staleness and not fixable by
  * re-analysis, which reuses these graphs rather than re-reading the source.
  *
- * Both sides must agree and match; an unknown version on either side reads as
- * outdated so a pre-versioning graph is never assumed current.
+ * Every way of not knowing reads as outdated: an adapter this build does not
+ * recognise, a version either side omitted, two sides that disagree about the
+ * adapter, and two sides that disagree about the version. Being told to deliver
+ * the source again costs a rebuild; being told nothing is wrong when the graphs
+ * cannot be vouched for costs the finding.
  */
 export function importStatus(review: {
   baseGraph: CanonicalArchitectureGraph;
   headGraph: CanonicalArchitectureGraph;
 }): ImportStatus {
-  const base = graphImportVersion(review.baseGraph);
-  const head = graphImportVersion(review.headGraph);
+  const base = graphSourceIdentity(review.baseGraph);
+  const head = graphSourceIdentity(review.headGraph);
+  const adapter = base.adapter && base.adapter === head.adapter ? base.adapter : null;
+  const version = base.version !== null && base.version === head.version ? base.version : null;
+  const current = adapter ? CURRENT_IMPORT_VERSIONS[adapter] ?? null : null;
   return {
-    importVersion: base === head ? head : null,
-    currentImportVersion: CURRENT_IMPORT_VERSION,
-    importOutdated: base !== CURRENT_IMPORT_VERSION || head !== CURRENT_IMPORT_VERSION,
+    importAdapter: adapter,
+    importVersion: version,
+    currentImportVersion: current,
+    importOutdated: current === null || version === null || version !== current,
   };
 }
 

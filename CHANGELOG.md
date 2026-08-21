@@ -27,6 +27,10 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- A stored graph no longer has findings invented from fields it never recorded. Absent Kubernetes coverage was read as `uncovered`, so re-analysing a graph from importer version 1 manufactured a "no ingress NetworkPolicy" finding out of silence. Version 1's `selectedByNetworkPolicy` is not reinterpreted either, in either direction: it counted egress-only policies and misread set-based selectors, so neither value it holds is convertible into coverage
+- Importer freshness is measured per adapter. `CURRENT_IMPORT_VERSION` was Compose's number alone, so every current Kubernetes review reported as outdated against a contract it does not use. Each adapter is now compared with its own, and the review carries the adapter identity alongside the versions so `v2` is never shown without saying what it numbers. An unrecognised adapter, a missing version, disagreeing adapters and disagreeing versions all read as outdated
+- `ANALYZER_VERSION` is 4. The Kubernetes NetworkPolicy rule changed what it means while keeping its id and severity, which is exactly the change the rule-set fingerprint cannot see and this number exists to record
+
 - The collaborator-permission lookup no longer reports a `403` as the reviewer lacking repository access. A rate-limited response would have told an authorised reviewer something false about their own permissions; a `404`, or a successful response naming a level below write, still reports insufficient access
 - Installation-token minting is single-flight per repository. Concurrent callers arriving on a cold cache share one request instead of each minting a token, which the refresh interval never prevented because it only decides whether to discard the cache. Concurrent refreshes after an accepted permission share one request too, and every caller recovers on it
 - A token minted during the current attempt is no longer discarded and minted again. It already describes the current grant, so the second request could only be told the same thing

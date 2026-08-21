@@ -162,9 +162,12 @@ export interface ReviewRecord {
   /** Analyzer identity of the deployment serving this response. */
   currentAnalyzerVersion: string;
   analyzerOutdated: boolean;
+  /** Which adapter produced the stored graphs; null when they disagree or none was recorded. */
+  importAdapter: string | null;
   /** Extraction contract that produced the stored graphs; null when unknown. */
   importVersion: number | null;
-  currentImportVersion: number;
+  /** What that adapter is on now; null when this deployment does not know it. */
+  currentImportVersion: number | null;
   importOutdated: boolean;
   decision: ReviewDecision;
   decisionNote: string | null;

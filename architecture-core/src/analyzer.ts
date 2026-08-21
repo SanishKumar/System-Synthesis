@@ -20,8 +20,15 @@ import { DEFAULT_RULES, type ArchitectureRule } from "./validation.js";
  * proof of external reach, since the old importer discarded the address of a
  * long-syntax entry, and classified removal impacts the same way as additions.
  * Both change stored findings and impacts without touching any rule identity.
+ *
+ * Version 4 changed what `k8s-sensitive-workload-without-network-policy` means
+ * while keeping its identity and severity. It fired on a workload no policy
+ * selected; it now fires on one no policy governs inbound, and stays silent
+ * where coverage could not be established or was never recorded. Same id, same
+ * severity, different verdict from the same graph — which is precisely what the
+ * rule-set fingerprint cannot see and this number exists to record.
  */
-export const ANALYZER_VERSION = 3;
+export const ANALYZER_VERSION = 4;
 
 /**
  * Stable digest of the rule identities and default severities that decide a
