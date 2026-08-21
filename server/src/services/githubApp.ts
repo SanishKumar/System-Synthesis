@@ -55,6 +55,12 @@ export type InstallationTokenResult =
       token: string;
       expiresAt: string;
       permissions?: InstallationPermissions;
+      /**
+       * Whether this came from the cache rather than from GitHub just now. A
+       * token minted during this call already describes the current grant, so
+       * there is nothing a second look could discover.
+       */
+      fromCache?: boolean;
     }
   | { status: "not_configured" }
   | { status: "not_installed" }
@@ -126,9 +132,24 @@ const tokenCache = new Map<string, CachedToken>();
 export const FORCED_REFRESH_INTERVAL_MS = 60_000;
 const forcedRefreshAt = new Map<string, number>();
 
+/**
+ * Mints in progress, so concurrent callers share one request.
+ *
+ * Without this the cache is empty for every caller that arrives before the
+ * first response lands, and each mints its own token. That is the burst the
+ * interval was meant to prevent and does not, because the interval only decides
+ * whether to discard the cache, not who is already asking.
+ *
+ * Both the bound and this map live in this process. A deployment running
+ * several instances bounds each of them separately, so the worst case is one
+ * mint per instance per interval rather than one overall.
+ */
+const inFlight = new Map<string, Promise<InstallationTokenResult>>();
+
 export function resetGitHubAppCacheForTests(): void {
   tokenCache.clear();
   forcedRefreshAt.clear();
+  inFlight.clear();
 }
 
 /**
@@ -233,9 +254,30 @@ export async function getInstallationToken(
       token: cached.token,
       expiresAt: new Date(cached.expiresAtMs).toISOString(),
       permissions: cached.permissions,
+      fromCache: true,
     };
   }
 
+  // One request per repository at a time. Everybody who arrives while it is in
+  // flight receives the same freshly minted token.
+  const existing = inFlight.get(repository);
+  if (existing) return existing;
+  const attempt = mintInstallationToken(repository, config, now, options.transport);
+  inFlight.set(repository, attempt);
+  try {
+    return await attempt;
+  } finally {
+    inFlight.delete(repository);
+  }
+}
+
+async function mintInstallationToken(
+  repository: string,
+  config: GitHubAppConfig,
+  now: Date,
+  injected?: HttpTransport
+): Promise<InstallationTokenResult> {
+  const options = { transport: injected };
   const transport: HttpTransport =
     options.transport ??
     (async (url, init) => {
@@ -321,7 +363,7 @@ export async function getInstallationToken(
 
     const permissions = readPermissions(body.permissions);
     tokenCache.set(repository, { token, expiresAtMs, permissions });
-    return { status: "ok", token, expiresAt, permissions };
+    return { status: "ok", token, expiresAt, permissions, fromCache: false };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "installation token request failed";
     // Never surface the underlying request, which carries the signed assertion.

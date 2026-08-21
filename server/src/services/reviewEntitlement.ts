@@ -131,8 +131,12 @@ export async function reviewDecisionEntitlement(
   // short, the permission may have been accepted since, so one bounded refresh
   // is spent finding out rather than leaving the reviewer locked out for the
   // remaining life of the token.
+  // Only a cached token can be describing a grant that has since changed. One
+  // minted during this call already carries the current answer, and asking
+  // again would spend a request to be told the same thing.
   if (
     credential.status === "ok" &&
+    credential.fromCache &&
     credential.permissions &&
     !hasPullRequestRead(credential.permissions)
   ) {
@@ -185,7 +189,7 @@ export async function reviewDecisionEntitlement(
     // permission problem when the response itself establishes one; everything
     // else is the conservative answer, which asks for a retry that can work.
     if (pull.status === 403) {
-      return classifyForbidden(pull.headers);
+      return forbiddenIsNotAnAnswer("pull request", pull.headers);
     }
     if (pull.status !== 200) {
       return unavailable(`pull request lookup returned ${pull.status}`);
@@ -211,9 +215,14 @@ export async function reviewDecisionEntitlement(
       `${GITHUB_API}/repos/${source.repository}/collaborators/${reviewer.githubLogin}/permission`,
       { method: "GET", headers }
     );
-    // 403 and 404 both mean "GitHub will not say this person has standing".
-    if (permission.status === 403 || permission.status === 404) {
-      return insufficient(source.repository);
+    // A 404 is GitHub declining to name this person a collaborator, which is an
+    // answer about standing. A 403 is not: rate limits, IP allow lists and
+    // organisation policy all answer 403, and reporting one of those as "you do
+    // not have access to this repository" tells an authorised reviewer
+    // something false about their own permissions.
+    if (permission.status === 404) return insufficient(source.repository);
+    if (permission.status === 403) {
+      return forbiddenIsNotAnAnswer("collaborator", permission.headers);
     }
     if (permission.status !== 200) {
       return unavailable(`permission lookup returned ${permission.status}`);
@@ -278,24 +287,35 @@ function hasPullRequestRead(permissions: InstallationPermissions): boolean {
 }
 
 /**
- * What a 403 on the pull-request lookup actually means.
+ * A 403 is never an answer about permission here.
  *
- * Only `x-accepted-github-permissions` naming the permission is treated as
- * evidence of one, because GitHub sends that header precisely to say which
- * grant the request needed. A rate limit is recognised so it is never mistaken
- * for configuration, and anything unexplained resolves to the conservative
- * answer: telling somebody to change their App when the real problem is a rate
- * limit sends them to do work that will not help.
+ * `x-accepted-github-permissions` states what the endpoint requires, not what
+ * the caller was found to be missing — GitHub sends it to describe the endpoint,
+ * so a rate-limited response carries it just as readily as a rejected one.
+ * Reading its presence as proof of a missing grant was wrong, and reading it
+ * before the rate-limit headers made it wrong in the worst direction: the
+ * response that carries both is exactly the one where the header means least.
+ *
+ * The installation's own grant is the only thing that establishes a missing
+ * permission, and it is consulted before any request is made. Everything a 403
+ * can say afterwards is retryable, so the header is kept for the detail line
+ * and decides nothing.
  */
-function classifyForbidden(headers: SafeResponseHeaders | undefined): EntitlementVerdict {
-  const accepted = headers?.["x-accepted-github-permissions"];
-  if (accepted && /\bpull_requests\b/.test(accepted)) {
-    return missingAppPermission();
-  }
+function forbiddenIsNotAnAnswer(
+  what: string,
+  headers: SafeResponseHeaders | undefined
+): EntitlementVerdict {
+  // Rate-limit evidence first: it is the one condition here that clears on its
+  // own, and it must not be described as anything an operator should act on.
   if (headers?.["retry-after"] || headers?.["x-ratelimit-remaining"] === "0") {
-    return unavailable("pull request lookup was rate limited");
+    return unavailable(`${what} lookup was rate limited`);
   }
-  return unavailable("pull request lookup returned 403");
+  const accepted = headers?.["x-accepted-github-permissions"];
+  return unavailable(
+    accepted
+      ? `${what} lookup returned 403; the endpoint requires ${accepted}`
+      : `${what} lookup returned 403`
+  );
 }
 
 /**

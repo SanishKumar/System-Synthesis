@@ -138,8 +138,8 @@ unpublished and retrying is worth doing:
 | `installation_lookup_failed` | GitHub could not confirm the installation; usually transient |
 | `token_request_failed` | GitHub would not issue an installation token |
 | `check_write_forbidden` | The App lacks `Checks: Read and write`, or the installation was removed |
-| `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Reported when the installation's own grant is short, or when GitHub names that permission in `x-accepted-github-permissions`. Publishing is unaffected; only deciding is refused |
-| `verification_unavailable` | GitHub could not answer. A rate limit, an IP allow list, or an organisation policy answers `403` without naming a permission, and none of those are fixed by editing the App, so they are reported as something to retry rather than something to configure |
+| `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Reported only from the installation's own grant, which GitHub states when it mints a token. Publishing is unaffected; only deciding is refused |
+| `verification_unavailable` | GitHub could not answer. A rate limit, an IP allow list, or an organisation policy all answer `403`, and none of them are fixed by editing the App, so a `403` is always reported as something to retry. `X-Accepted-GitHub-Permissions` states what an endpoint requires rather than what the caller was found to be missing, so it never decides this either way |
 | `check_write_invalid` | GitHub rejected the payload — a genuine bug worth reporting |
 | `check_write_failed` | GitHub refused the write for some other reason |
 | `configuration_invalid` | `FRONTEND_URL` is not a valid URL, so the check cannot be addressed |
@@ -263,6 +263,11 @@ rather than trusting the cached answer. That extra look is allowed once per
 repository per minute, so a run of refused decisions cannot turn into a run of
 token requests. In practice the permission takes effect within about a minute
 of being accepted, not within an hour.
+
+The bound and the request-sharing behind it live in the server process. A
+deployment running several instances applies both per instance, so the worst
+case is one extra token request per instance per minute rather than one across
+the whole deployment.
 
 ### Verifying on a private repository
 

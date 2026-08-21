@@ -27,7 +27,11 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
-- A forbidden pull-request lookup is no longer assumed to mean a missing permission. GitHub answers `403` for primary and secondary rate limits, IP allow lists and organisation policy as well, and none of those are fixed by editing the App. The installation's own grant stays authoritative; a later `403` is only called a permission problem when GitHub names that permission in `x-accepted-github-permissions`, and everything else is reported as retryable
+- The collaborator-permission lookup no longer reports a `403` as the reviewer lacking repository access. A rate-limited response would have told an authorised reviewer something false about their own permissions; a `404`, or a successful response naming a level below write, still reports insufficient access
+- Installation-token minting is single-flight per repository. Concurrent callers arriving on a cold cache share one request instead of each minting a token, which the refresh interval never prevented because it only decides whether to discard the cache. Concurrent refreshes after an accepted permission share one request too, and every caller recovers on it
+- A token minted during the current attempt is no longer discarded and minted again. It already describes the current grant, so the second request could only be told the same thing
+
+- A forbidden lookup is never read as a missing permission. GitHub answers `403` for primary and secondary rate limits, IP allow lists and organisation policy, and none of those are fixed by editing the App. The installation's own grant — which GitHub states when it mints a token — is the only thing that establishes a missing permission, and it is consulted before any request is made. `X-Accepted-GitHub-Permissions` describes what an endpoint requires rather than what the caller lacks, so it decides nothing; rate-limit evidence is read first, and the header only enriches the detail line
 - The HTTP transport preserves a small allow-list of response headers — `x-ratelimit-remaining`, `retry-after` and `x-accepted-github-permissions` — so that classification rests on evidence rather than on a status code alone
 - Accepting a new App permission takes effect within about a minute instead of within the hour a token lives. A decision refused for a short grant asks GitHub for a fresh token rather than trusting the cached one, bounded to one extra request per repository per minute so refusals cannot become a token-minting storm
 

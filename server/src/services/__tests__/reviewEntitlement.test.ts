@@ -153,17 +153,25 @@ describe("who may decide a review", () => {
     }
   });
 
-  it("treats a refused permission lookup as no standing, not as an outage", async () => {
-    // GitHub answers 403 or 404 for someone it will not discuss, which is an
-    // answer about standing rather than a failure to answer.
-    for (const status of [403, 404]) {
-      const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
-        env,
-        transport: transportFor({ permissionStatus: status }),
-      });
-      expect(verdict).toMatchObject({ status: "refused", code: "insufficient_permission" });
-      resetGitHubAppCacheForTests();
-    }
+  it("treats a 404 from the permission lookup as no standing", async () => {
+    // GitHub declines to name a non-collaborator, which is an answer about
+    // standing rather than a failure to answer.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permissionStatus: 404 }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "insufficient_permission" });
+  });
+
+  it("does not read a forbidden permission lookup as the reviewer lacking access", async () => {
+    // Rate limits, IP allow lists and organisation policy all answer 403.
+    // Reporting one of those as "you do not have access to this repository"
+    // tells an authorised reviewer something false about their own permissions.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permissionStatus: 403 }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
   });
 
   it("requires a linked account before it will check anything", async () => {
@@ -385,10 +393,10 @@ describe("an installation that cannot read pull requests says so", () => {
     expect(asked.some((url) => url.includes("/contents/"))).toBe(false);
   });
 
-  it("treats a forbidden pull-request response as a permission answer only with evidence", async () => {
-    // An installation can be edited between minting a token and using it, so a
-    // grant that looked right is not proof the request will be allowed — but
-    // GitHub has to be the one saying which permission was wanted.
+  it("does not read the accepted-permissions header as proof of a missing grant", async () => {
+    // GitHub sends that header to describe what the endpoint requires, not to
+    // report what the caller was found to be missing. The grant said this was
+    // allowed, so a 403 afterwards is something to retry.
     const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
       env,
       transport: async (url, init) => {
@@ -402,7 +410,7 @@ describe("an installation that cannot read pull requests says so", () => {
         return transportFor({ permissions: FULL_GRANT })(url, init);
       },
     });
-    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
   });
 
   it("still reports an outage as an outage", async () => {
@@ -470,22 +478,59 @@ describe("a forbidden answer is only a permission answer when the response says 
     expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
   });
 
-  it("does call it a permission problem when GitHub names the permission", async () => {
-    // GitHub sends this header precisely to say which grant the request needed,
-    // which is evidence rather than inference.
+  it("puts rate-limit evidence ahead of the accepted-permissions header", async () => {
+    // A rate-limited response carries the endpoint's requirements just as
+    // readily as any other. Read in the other order, the response that carries
+    // both would be classified by the header that means least on it.
     const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
       env,
-      transport: forbiddenWith({ "x-accepted-github-permissions": "pull_requests=read" }),
-    });
-    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
-  });
-
-  it("does not read some other permission's name as this one", async () => {
-    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
-      env,
-      transport: forbiddenWith({ "x-accepted-github-permissions": "administration=write" }),
+      transport: forbiddenWith({
+        "x-accepted-github-permissions": "pull_requests=read",
+        "x-ratelimit-remaining": "0",
+      }),
     });
     expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("keeps an unknown grant plus that header conservative", async () => {
+    // Nothing here establishes a missing permission: the token response said
+    // nothing about the grant, and the header describes the endpoint.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        if (url.includes("/pulls/")) {
+          return {
+            status: 403,
+            json: async () => ({}),
+            headers: { "x-accepted-github-permissions": "pull_requests=read" },
+          };
+        }
+        return transportFor({ permissions: null })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("reports a rate-limited collaborator lookup as retryable, not as no access", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        if (url.includes("/collaborators/")) {
+          return { status: 403, json: async () => ({}), headers: { "retry-after": "60" } };
+        }
+        return transportFor({ permissions: FULL_GRANT })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("still reports a genuinely low permission level as no standing", async () => {
+    // A 200 that names a level below write is an answer, and it is this one.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permission: "read" }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "insufficient_permission" });
   });
 
   it("still refuses before asking when the grant itself is short", async () => {
@@ -577,5 +622,85 @@ describe("accepting the permission recovers without waiting for the token to exp
       now: later(FORCED_REFRESH_INTERVAL_MS * 2),
     });
     expect(allowed).toMatchObject({ status: "allowed" });
+  });
+});
+
+describe("minting a token is single-flight per repository", () => {
+  beforeEach(() => resetGitHubAppCacheForTests());
+
+  /** Counts mints and answers only after every caller has arrived. */
+  function slowInstallation(granted: Record<string, string>) {
+    const state = { granted, minted: 0 };
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const transport: HttpTransport = async (url, init) => {
+      if (url.includes("/access_tokens")) {
+        state.minted += 1;
+        await gate;
+        return {
+          status: 201,
+          json: async () => ({
+            token: `ghs_${state.minted}`,
+            expires_at: "2999-01-01T00:00:00Z",
+            permissions: state.granted,
+          }),
+        };
+      }
+      return transportFor({ permissions: FULL_GRANT })(url, init);
+    };
+    return { state, transport, open: () => release?.() };
+  }
+
+  it("shares one mint across a burst arriving on a cold cache", async () => {
+    // Every caller finds the cache empty. Without single-flight each of them
+    // mints, which is the burst the interval never protected against because
+    // the interval only decides whether to discard the cache.
+    const { state, transport, open } = slowInstallation(FULL_GRANT);
+    const burst = Promise.all(
+      Array.from({ length: 6 }, () =>
+        reviewDecisionEntitlement(review(), REVIEWER, { env, transport })
+      )
+    );
+    open();
+    const verdicts = await burst;
+    expect(state.minted).toBe(1);
+    for (const verdict of verdicts) {
+      expect(verdict).toMatchObject({ status: "allowed", evidence: { basis: "verified" } });
+    }
+  });
+
+  it("shares one refresh across a burst after the permission is accepted", async () => {
+    const { state, transport, open } = slowInstallation(CHECKS_ONLY);
+    open();
+    const AT = new Date("2026-08-21T09:00:00.000Z");
+    const refused = await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: AT });
+    expect(refused).toMatchObject({ status: "refused", code: "app_permission_missing" });
+    const beforeBurst = state.minted;
+
+    state.granted = FULL_GRANT;
+    const later = new Date(AT.getTime() + FORCED_REFRESH_INTERVAL_MS + 1);
+    const verdicts = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: later })
+      )
+    );
+
+    // One refresh for the whole burst, and everybody recovers on it.
+    expect(state.minted).toBe(beforeBurst + 1);
+    for (const verdict of verdicts) {
+      expect(verdict).toMatchObject({ status: "allowed", evidence: { basis: "verified" } });
+    }
+  });
+
+  it("does not discard a token it minted moments ago", async () => {
+    // A token minted during this call already describes the current grant.
+    // Refreshing it would spend a request to be told the same thing.
+    const { state, transport, open } = slowInstallation(CHECKS_ONLY);
+    open();
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, { env, transport });
+    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+    expect(state.minted).toBe(1);
   });
 });
