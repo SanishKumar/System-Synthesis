@@ -10,7 +10,10 @@ import { canonicalGraphFingerprint } from "../provenance.js";
  * the case a fixture is most likely to leave unwalked, and the Compose pin
  * passed for months while exactly that case was wrong. The DaemonSet, the
  * unresolved Service type, and the second namespace are here for the same
- * reason — a pin only guards the paths its fixture actually walks.
+ * reason — a pin only guards the paths its fixture actually walks. The three
+ * policy documents are here for that reason too: an egress-only policy, one
+ * that selects by label, and one whose selector this adapter cannot evaluate,
+ * so each of the three coverage states is walked rather than assumed.
  */
 const FIXTURE = `apiVersion: apps/v1
 kind: Deployment
@@ -174,6 +177,32 @@ spec:
   policyTypes:
     - Ingress
 ---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: primary-egress-only
+  namespace: shop
+spec:
+  podSelector:
+    matchLabels:
+      app: primary
+  policyTypes:
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: staging-by-expression
+  namespace: staging
+spec:
+  podSelector:
+    matchExpressions:
+      - key: tier
+        operator: In
+        values: [cache]
+  policyTypes:
+    - Ingress
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -190,7 +219,7 @@ spec:
           image: ghcr.io/acme/api:1.4
 `;
 
-const PINNED_FINGERPRINT = "23a5eb1db93e4b9e";
+const PINNED_FINGERPRINT = "bf96915522327ba4";
 
 const { graph } = kubernetesAdapter.import(
   [{ path: "k8s/shop.yaml", content: FIXTURE }],
@@ -247,6 +276,18 @@ describe("kubernetes extraction is versioned", () => {
     // shop Ingress does not reach it.
     expect(graph.nodes.filter((entry) => entry.data.label === "api")).toHaveLength(2);
     expect(node("api", "Deployment", "staging").data.sourceProperties?.clusterExposure).toBe("cluster");
-    expect(node("api", "Deployment").data.sourceProperties?.selectedByNetworkPolicy).toBe(true);
+    // Coverage is per direction, and a selector this adapter cannot evaluate is
+    // unknown rather than covered — the case that made an unrelated policy look
+    // like protection.
+    expect(node("api", "Deployment").data.sourceProperties?.ingressPolicyCoverage).toBe("covered");
+    expect(node("api", "Deployment").data.sourceProperties?.egressPolicyCoverage).toBe("uncovered");
+    expect(node("primary", "StatefulSet").data.sourceProperties?.ingressPolicyCoverage).toBe("uncovered");
+    expect(node("primary", "StatefulSet").data.sourceProperties?.egressPolicyCoverage).toBe("covered");
+    expect(node("sessions", "Deployment").data.sourceProperties?.ingressPolicyCoverage).toBe("uncovered");
+    // A selector this adapter cannot evaluate could match any pod in its own
+    // namespace, so it makes that namespace unknown rather than covered.
+    expect(
+      node("api", "Deployment", "staging").data.sourceProperties?.ingressPolicyCoverage
+    ).toBe("unknown");
   });
 });

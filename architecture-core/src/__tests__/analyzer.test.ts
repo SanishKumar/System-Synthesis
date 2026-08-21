@@ -32,6 +32,7 @@ const PINNED_RULE_SET = [
   "k8s-exposed-persistence-workload:critical",
   "k8s-exposed-sensitive-workload:critical",
   "k8s-sensitive-workload-without-network-policy:warning",
+  "k8s-unevaluated-network-policy-selector:warning",
   "k8s-unresolved-workload-exposure:warning",
   "single-point-of-failure:warning",
   "unmediated-trust-boundary:warning",

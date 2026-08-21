@@ -27,6 +27,8 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- Kubernetes NetworkPolicy coverage is evaluated rather than assumed. A policy written with `matchExpressions` produced an empty selector, and an empty selector means "every pod in the namespace", so an unrelated policy silently satisfied the protection finding for a sensitive workload. `policyTypes` was ignored entirely, so an egress-only policy counted as inbound protection. Coverage is now recorded per direction, absent `policyTypes` is inferred the way Kubernetes infers it, and a selector the importer cannot evaluate is `unknown` — never covered. Importer version 2
+
 - `/health` reports the commit the running process was built from, read from `RENDER_GIT_COMMIT` or `GIT_COMMIT`. Whether a deployment is current was previously inferred from uptime, which only ever shows that something restarted and never what it restarted into
 - A half-linked identity — a GitHub account id stored without its login — no longer puts the literal string `null` in the permission request path. GitHub answered 404 and the reviewer was told they lacked repository access when what they had was an incomplete link
 

@@ -47,6 +47,15 @@ const ADAPTER_ID = "kubernetes";
  * refused rather than parsed, because a chart is Go template source that only
  * becomes YAML once values are supplied.
  *
+ * Version 2 evaluates NetworkPolicy selectors instead of assuming them.
+ * Version 1 read only `matchLabels`, so a policy written with
+ * `matchExpressions` produced an empty selector, which the empty-selector rule
+ * then treated as selecting every workload in the namespace — an unrelated
+ * policy became proof of protection. It also ignored `policyTypes`, so an
+ * egress-only policy counted as ingress coverage. Coverage is now recorded per
+ * direction, and a selector this adapter cannot evaluate is `unknown` rather
+ * than covered.
+ *
  * Separate from COMPOSE_ADAPTER_VERSION on purpose. Each adapter is its own
  * extraction contract and a graph records which adapter produced it, so the two
  * numbers move independently.
@@ -54,7 +63,7 @@ const ADAPTER_ID = "kubernetes";
  * `architecture-core/src/__tests__/kubernetesVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const K8S_ADAPTER_VERSION = 1;
+export const K8S_ADAPTER_VERSION = 2;
 
 const MAX_MANIFEST_BYTES = 2_000_000;
 const MAX_RESOURCES = 1_000;
@@ -274,19 +283,108 @@ function serviceSelects(
   return entries.every(([key, value]) => labels[key] === value);
 }
 
+/** Whether a policy's selector picks out a workload. */
+type SelectorMatch = "matches" | "excluded" | "unknown";
+
 /**
- * A NetworkPolicy follows the opposite convention: an empty `podSelector`
- * selects every pod in the namespace, which is how a default-deny policy is
- * written. Reading it as "selects nothing" would report the strictest policy in
- * common use as absent.
+ * Whether a NetworkPolicy's `podSelector` selects a workload.
+ *
+ * An empty selector selects every pod in the namespace, which is how a
+ * default-deny policy is written; reading that as "selects nothing" would
+ * report the strictest policy in common use as absent.
+ *
+ * `matchExpressions` is not modelled, and an unmodelled selector is `unknown`.
+ * That distinction is the whole point: version 1 reduced such a selector to an
+ * empty object, which the empty-selector rule then read as selecting
+ * everything, so an unrelated policy silently satisfied a protection finding.
+ * A selector that cannot be evaluated has to say so.
  */
-function policySelects(
-  selector: Record<string, string>,
+function policySelectorMatch(
+  policy: K8sResource,
   labels: Record<string, string>
-): boolean {
-  const entries = Object.entries(selector);
-  if (!entries.length) return true;
-  return entries.every(([key, value]) => labels[key] === value);
+): SelectorMatch {
+  const selector = getIn(policy.body, ["spec", "podSelector"]);
+  // An absent selector is the same statement as an empty one.
+  if (selector === undefined || selector === null) return "matches";
+  if (!isRecord(selector)) return "unknown";
+  if (!Object.keys(selector).length) return "matches";
+
+  const declaredLabels = selector.matchLabels;
+  const declaredExpressions = selector.matchExpressions;
+  if (declaredLabels === undefined && declaredExpressions === undefined) {
+    // Keys this adapter does not recognise. Guessing at them is how the last
+    // defect happened.
+    return "unknown";
+  }
+  if (declaredLabels !== undefined) {
+    if (!isRecord(declaredLabels)) return "unknown";
+    const entries = Object.entries(declaredLabels);
+    // A value this import could not resolve cannot be compared to anything.
+    if (entries.some(([, value]) => typeof value !== "string")) return "unknown";
+    // The two halves combine with AND, so a `matchLabels` miss excludes the
+    // workload whatever the expressions would have said.
+    if (!entries.every(([key, value]) => labels[key] === value)) return "excluded";
+  }
+  // Expressions can only narrow further, and are not modelled.
+  if (declaredExpressions !== undefined) return "unknown";
+  return "matches";
+}
+
+/**
+ * Which directions of traffic a policy governs.
+ *
+ * When `policyTypes` is absent Kubernetes infers it: Ingress always applies,
+ * and Egress applies only where the policy states egress rules. Treating an
+ * absent list as both directions would let a policy that says nothing about
+ * inbound traffic count as inbound protection.
+ */
+function policyDirections(policy: K8sResource): { ingress: boolean; egress: boolean } {
+  const declared = stringList(getIn(policy.body, ["spec", "policyTypes"]));
+  if (declared.length) {
+    return {
+      ingress: declared.includes("Ingress"),
+      egress: declared.includes("Egress"),
+    };
+  }
+  return { ingress: true, egress: getIn(policy.body, ["spec", "egress"]) !== undefined };
+}
+
+/**
+ * What is known about a workload's protection in one direction.
+ *
+ * `unknown` sits between the two certainties on purpose. It must never be
+ * reported as `covered`, and reporting it as `uncovered` would state a gap the
+ * source does not show.
+ */
+export type PolicyCoverage = "uncovered" | "unknown" | "covered";
+
+const COVERAGE_RANK: Record<PolicyCoverage, number> = {
+  uncovered: 0,
+  unknown: 1,
+  covered: 2,
+};
+
+function policyCoverage(
+  workload: K8sResource,
+  policies: K8sResource[],
+  labels: Record<string, string>
+): { ingress: PolicyCoverage; egress: PolicyCoverage } {
+  let ingress: PolicyCoverage = "uncovered";
+  let egress: PolicyCoverage = "uncovered";
+  for (const policy of policies) {
+    if (policy.namespace !== workload.namespace) continue;
+    const match = policySelectorMatch(policy, labels);
+    if (match === "excluded") continue;
+    const established: PolicyCoverage = match === "matches" ? "covered" : "unknown";
+    const directions = policyDirections(policy);
+    if (directions.ingress && COVERAGE_RANK[established] > COVERAGE_RANK[ingress]) {
+      ingress = established;
+    }
+    if (directions.egress && COVERAGE_RANK[established] > COVERAGE_RANK[egress]) {
+      egress = established;
+    }
+  }
+  return { ingress, egress };
 }
 
 function servicePorts(resource: K8sResource): ClusterPortBinding[] {
@@ -380,7 +478,7 @@ function tileAt(index: number): { x: number; y: number } {
 function makeWorkloadNode(
   resource: K8sResource,
   reach: WorkloadReach,
-  selectedByNetworkPolicy: boolean,
+  coverage: { ingress: PolicyCoverage; egress: PolicyCoverage },
   policiesPresent: boolean,
   revision: string | undefined,
   index: number
@@ -421,7 +519,10 @@ function makeWorkloadNode(
         // Absent policies and unrestricted workloads are different claims: the
         // first says the source models no network boundaries at all.
         networkPoliciesDeclared: policiesPresent,
-        selectedByNetworkPolicy,
+        // Recorded per direction. A policy governing only egress says nothing
+        // about who may open a connection to this workload.
+        ingressPolicyCoverage: coverage.ingress,
+        egressPolicyCoverage: coverage.egress,
       },
     },
   };
@@ -717,19 +818,15 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
     }
 
     const policiesPresent = policies.length > 0;
-    const policySelected = new Set(
-      workloads
-        .filter((workload) =>
-          policies.some(
-            (policy) =>
-              policy.namespace === workload.namespace &&
-              policySelects(
-                stringRecord(getIn(policy.body, ["spec", "podSelector", "matchLabels"])),
-                labelsByWorkload.get(resourceAddress(workload)) || {}
-              )
-          )
-        )
-        .map(resourceAddress)
+    const coverageByWorkload = new Map(
+      workloads.map((workload) => [
+        resourceAddress(workload),
+        policyCoverage(
+          workload,
+          policies,
+          labelsByWorkload.get(resourceAddress(workload)) || {}
+        ),
+      ])
     );
 
     const nodes: SerializedNode[] = [
@@ -737,7 +834,10 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
         makeWorkloadNode(
           workload,
           reachByWorkload.get(resourceAddress(workload)) || emptyReach(),
-          policySelected.has(resourceAddress(workload)),
+          coverageByWorkload.get(resourceAddress(workload)) || {
+            ingress: "uncovered",
+            egress: "uncovered",
+          },
           policiesPresent,
           context.revision,
           index

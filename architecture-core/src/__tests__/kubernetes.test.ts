@@ -322,25 +322,27 @@ spec:
 });
 
 describe("kubernetes network policies", () => {
-  const policyFor = (selector: string) => `apiVersion: networking.k8s.io/v1
+  const policy = (spec: string, name = "restrict") => `apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: restrict
+  name: ${name}
 spec:
-  podSelector:
-${selector}
-  policyTypes:
-    - Ingress
+${spec}
 `;
 
-  it("records the workloads a policy selects", () => {
+  const coverage = (result: ReturnType<typeof importAt>, label: string) => ({
+    ingress: nodeNamed(result, label).data.sourceProperties?.ingressPolicyCoverage,
+    egress: nodeNamed(result, label).data.sourceProperties?.egressPolicyCoverage,
+  });
+
+  it("records coverage for the workloads a policy selects, and only those", () => {
     const result = importAt(
       workload("api", "node:22"),
       workload("primary", "postgres:16", { kind: "StatefulSet" }),
-      policyFor("    matchLabels:\n      app: api")
+      policy("  podSelector:\n    matchLabels:\n      app: api\n  policyTypes:\n    - Ingress")
     );
-    expect(nodeNamed(result, "api").data.sourceProperties?.selectedByNetworkPolicy).toBe(true);
-    expect(nodeNamed(result, "primary").data.sourceProperties?.selectedByNetworkPolicy).toBe(false);
+    expect(coverage(result, "api").ingress).toBe("covered");
+    expect(coverage(result, "primary").ingress).toBe("uncovered");
   });
 
   it("reads an empty podSelector as selecting every pod in the namespace", () => {
@@ -348,16 +350,106 @@ ${selector}
     // strictest policy in common use as absent.
     const result = importAt(
       workload("api", "node:22"),
-      policyFor("    {}")
+      policy("  podSelector: {}\n  policyTypes:\n    - Ingress")
     );
-    expect(nodeNamed(result, "api").data.sourceProperties?.selectedByNetworkPolicy).toBe(true);
+    expect(coverage(result, "api").ingress).toBe("covered");
+  });
+
+  it("does not let an egress-only policy establish inbound coverage", () => {
+    // A policy that says nothing about who may open a connection to a workload
+    // is not a statement that anybody is restricted from doing so.
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet" }),
+      policy("  podSelector:\n    matchLabels:\n      app: primary\n  policyTypes:\n    - Egress")
+    );
+    expect(coverage(result, "primary")).toEqual({ ingress: "uncovered", egress: "covered" });
+  });
+
+  it("infers the direction Kubernetes infers when policyTypes is absent", () => {
+    // Ingress always applies; egress applies only where egress rules exist.
+    const withoutEgress = importAt(
+      workload("api", "node:22"),
+      policy("  podSelector:\n    matchLabels:\n      app: api")
+    );
+    expect(coverage(withoutEgress, "api")).toEqual({ ingress: "covered", egress: "uncovered" });
+
+    const withEgress = importAt(
+      workload("api", "node:22"),
+      policy("  podSelector:\n    matchLabels:\n      app: api\n  egress:\n    - {}")
+    );
+    expect(coverage(withEgress, "api")).toEqual({ ingress: "covered", egress: "covered" });
+  });
+
+  it("does not treat a matchExpressions selector as selecting everything", () => {
+    // The defect this replaces: matchExpressions reduced to an empty selector,
+    // and an empty selector selects the whole namespace, so an unrelated policy
+    // became proof that a datastore was protected.
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet" }),
+      policy(
+        "  podSelector:\n    matchExpressions:\n      - key: tier\n        operator: In\n        values: [web]\n  policyTypes:\n    - Ingress"
+      )
+    );
+    expect(coverage(result, "primary").ingress).toBe("unknown");
+  });
+
+  it("excludes a workload whose matchLabels do not match, expressions or not", () => {
+    // The two halves combine with AND, so a matchLabels miss is decisive and
+    // does not need the expressions evaluated.
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet" }),
+      policy(
+        "  podSelector:\n    matchLabels:\n      app: api\n    matchExpressions:\n      - key: tier\n        operator: Exists\n  policyTypes:\n    - Ingress"
+      )
+    );
+    expect(coverage(result, "primary").ingress).toBe("uncovered");
+  });
+
+  it("does not resolve a selector value it could not read", () => {
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet" }),
+      policy("  podSelector:\n    matchLabels:\n      app:\n        nested: value\n  policyTypes:\n    - Ingress")
+    );
+    expect(coverage(result, "primary").ingress).toBe("unknown");
+  });
+
+  it("lets a definite policy outrank an unevaluable one", () => {
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet" }),
+      policy("  podSelector:\n    matchLabels:\n      app: primary\n  policyTypes:\n    - Ingress", "definite"),
+      policy(
+        "  podSelector:\n    matchExpressions:\n      - key: tier\n        operator: Exists\n  policyTypes:\n    - Ingress",
+        "vague"
+      )
+    );
+    expect(coverage(result, "primary").ingress).toBe("covered");
+  });
+
+  it("does not let a policy reach a workload in another namespace", () => {
+    const result = importAt(
+      workload("primary", "postgres:16", { kind: "StatefulSet", namespace: "shop" }),
+      `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: restrict
+  namespace: other
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+`
+    );
+    expect(coverage(result, "primary").ingress).toBe("uncovered");
   });
 
   it("separates a repository that declares no policies from one whose workload is uncovered", () => {
     const without = importAt(workload("api", "node:22"));
     expect(nodeNamed(without, "api").data.sourceProperties?.networkPoliciesDeclared).toBe(false);
-    const with_ = importAt(workload("api", "node:22"), policyFor("    matchLabels:\n      app: other"));
-    expect(nodeNamed(with_, "api").data.sourceProperties?.networkPoliciesDeclared).toBe(true);
-    expect(nodeNamed(with_, "api").data.sourceProperties?.selectedByNetworkPolicy).toBe(false);
+    const declared = importAt(
+      workload("api", "node:22"),
+      policy("  podSelector:\n    matchLabels:\n      app: other\n  policyTypes:\n    - Ingress")
+    );
+    expect(nodeNamed(declared, "api").data.sourceProperties?.networkPoliciesDeclared).toBe(true);
+    expect(coverage(declared, "api").ingress).toBe("uncovered");
   });
 });

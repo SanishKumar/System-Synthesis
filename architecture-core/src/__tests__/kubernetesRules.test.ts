@@ -116,21 +116,22 @@ describe("kubernetes exposure findings follow the Service that publishes a workl
 });
 
 describe("kubernetes network policy coverage", () => {
-  const RULE = new Set(["k8s-sensitive-workload-without-network-policy"]);
-  const policy = (app: string) => `apiVersion: networking.k8s.io/v1
+  const RULES = new Set([
+    "k8s-sensitive-workload-without-network-policy",
+    "k8s-unevaluated-network-policy-selector",
+  ]);
+  const policy = (spec: string) => `apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: restrict-${app}
+  name: restrict
 spec:
-  podSelector:
-    matchLabels:
-      app: ${app}
-  policyTypes:
-    - Ingress
+${spec}
 `;
+  const selecting = (app: string) =>
+    policy(`  podSelector:\n    matchLabels:\n      app: ${app}\n  policyTypes:\n    - Ingress`);
 
   it("says nothing about a repository that models no network boundaries at all", () => {
-    expect(findingsFor([deployment("primary", "postgres:16", "StatefulSet")], RULE)).toEqual([]);
+    expect(findingsFor([deployment("primary", "postgres:16", "StatefulSet")], RULES)).toEqual([]);
   });
 
   it("reports a datastore left uncovered where policies are in use", () => {
@@ -139,24 +140,71 @@ spec:
         [
           deployment("api", "ghcr.io/acme/api:1"),
           deployment("primary", "postgres:16", "StatefulSet"),
-          policy("api"),
+          selecting("api"),
         ],
-        RULE
+        RULES
       )
     ).toEqual(["k8s-sensitive-workload-without-network-policy"]);
   });
 
-  it("reports nothing once a policy selects the datastore", () => {
+  it("reports nothing once a policy governs traffic into the datastore", () => {
     expect(
       findingsFor(
         [
           deployment("api", "ghcr.io/acme/api:1"),
           deployment("primary", "postgres:16", "StatefulSet"),
-          policy("primary"),
+          selecting("primary"),
         ],
-        RULE
+        RULES
       )
     ).toEqual([]);
+  });
+
+  it("is not satisfied by a policy that only governs egress", () => {
+    // Reproduces the reported false negative: an egress-only policy left the
+    // datastore reachable by every pod in the cluster while the finding stayed
+    // silent.
+    expect(
+      findingsFor(
+        [
+          deployment("primary", "postgres:16", "StatefulSet"),
+          policy("  podSelector:\n    matchLabels:\n      app: primary\n  policyTypes:\n    - Egress"),
+        ],
+        RULES
+      )
+    ).toEqual(["k8s-sensitive-workload-without-network-policy"]);
+  });
+
+  it("is not satisfied by an unrelated policy written with matchExpressions", () => {
+    // The other half of the reported false negative. The selector cannot be
+    // evaluated, so the honest answer is that coverage is unestablished — never
+    // that it is covered.
+    expect(
+      findingsFor(
+        [
+          deployment("primary", "postgres:16", "StatefulSet"),
+          policy(
+            "  podSelector:\n    matchExpressions:\n      - key: tier\n        operator: In\n        values: [web]\n  policyTypes:\n    - Egress"
+          ),
+        ],
+        RULES
+      )
+    ).toEqual(["k8s-sensitive-workload-without-network-policy"]);
+  });
+
+  it("separates an unevaluable selector from a confirmed absence", () => {
+    // One finding, and the one that describes what is actually known.
+    expect(
+      findingsFor(
+        [
+          deployment("primary", "postgres:16", "StatefulSet"),
+          policy(
+            "  podSelector:\n    matchExpressions:\n      - key: tier\n        operator: Exists\n  policyTypes:\n    - Ingress"
+          ),
+        ],
+        RULES
+      )
+    ).toEqual(["k8s-unevaluated-network-policy-selector"]);
   });
 });
 

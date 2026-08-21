@@ -458,11 +458,17 @@ const unresolvedWorkloadExposure: ArchitectureRule = {
   },
 };
 
+/** What the import established about inbound protection, if anything. */
+function ingressCoverage(node: SerializedNode): string {
+  const value = node.data.sourceProperties?.ingressPolicyCoverage;
+  return typeof value === "string" ? value : "uncovered";
+}
+
 const sensitiveWorkloadWithoutNetworkPolicy: ArchitectureRule = {
   id: "k8s-sensitive-workload-without-network-policy",
-  title: "Sensitive workload is not covered by a NetworkPolicy",
+  title: "Sensitive workload is not covered by an ingress NetworkPolicy",
   severity: "warning",
-  rationale: "Without a policy selecting it, a workload accepts connections from every pod in the cluster, so a compromise anywhere reaches it directly.",
+  rationale: "Without a policy governing traffic into it, a workload accepts connections from every pod in the cluster, so a compromise anywhere reaches it directly. A policy that governs only egress does not answer this.",
   references: ["CWE-1327"],
   // Only where the source models network boundaries at all. Reporting every
   // workload in a repository that uses none would say nothing about that
@@ -474,11 +480,38 @@ const sensitiveWorkloadWithoutNetworkPolicy: ArchitectureRule = {
     return graph.nodes.flatMap((node) => {
       if (!SENSITIVE_TYPES.includes(node.data.nodeType)) return [];
       if (node.data.sourceProperties?.networkPoliciesDeclared !== true) return [];
-      if (node.data.sourceProperties?.selectedByNetworkPolicy === true) return [];
+      // Only a coverage this import actually established as absent. A selector
+      // it could not evaluate is a separate finding, because it is a different
+      // claim about a different thing.
+      if (ingressCoverage(node) !== "uncovered") return [];
       return [issue(
         this,
         node.id,
-        `${node.data.label} holds sensitive data and no NetworkPolicy in this import selects it.`,
+        `${node.data.label} holds sensitive data and no NetworkPolicy in this import governs traffic into it.`,
+        [node.id]
+      )];
+    });
+  },
+};
+
+const unevaluatedNetworkPolicySelector: ArchitectureRule = {
+  id: "k8s-unevaluated-network-policy-selector",
+  title: "NetworkPolicy coverage could not be established",
+  severity: "warning",
+  rationale: "A policy whose selector this import cannot evaluate — set-based matchExpressions, or a value it could not resolve — leaves inbound protection unestablished. Reading such a selector as though it covered the workload is how an unrelated policy comes to satisfy a protection finding.",
+  references: ["CWE-1327"],
+  appliesTo: (graph) => isKubernetesGraph(graph) && graph.nodes.some(
+    (node) => node.data.sourceProperties?.networkPoliciesDeclared === true
+  ),
+  evaluate(graph) {
+    return graph.nodes.flatMap((node) => {
+      if (!SENSITIVE_TYPES.includes(node.data.nodeType)) return [];
+      if (node.data.sourceProperties?.networkPoliciesDeclared !== true) return [];
+      if (ingressCoverage(node) !== "unknown") return [];
+      return [issue(
+        this,
+        node.id,
+        `A NetworkPolicy that may select ${node.data.label} uses a selector this import cannot evaluate, so its inbound protection is unestablished rather than confirmed.`,
         [node.id]
       )];
     });
@@ -526,6 +559,7 @@ export const DEFAULT_RULES: ArchitectureRule[] = [
   exposedSensitiveWorkload,
   unresolvedWorkloadExposure,
   sensitiveWorkloadWithoutNetworkPolicy,
+  unevaluatedNetworkPolicySelector,
   dependencyWithoutReadinessProbe,
 ];
 
