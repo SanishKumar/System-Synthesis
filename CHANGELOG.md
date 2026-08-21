@@ -27,6 +27,10 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- A forbidden pull-request lookup is no longer assumed to mean a missing permission. GitHub answers `403` for primary and secondary rate limits, IP allow lists and organisation policy as well, and none of those are fixed by editing the App. The installation's own grant stays authoritative; a later `403` is only called a permission problem when GitHub names that permission in `x-accepted-github-permissions`, and everything else is reported as retryable
+- The HTTP transport preserves a small allow-list of response headers — `x-ratelimit-remaining`, `retry-after` and `x-accepted-github-permissions` — so that classification rests on evidence rather than on a status code alone
+- Accepting a new App permission takes effect within about a minute instead of within the hour a token lives. A decision refused for a short grant asks GitHub for a fresh token rather than trusting the cached one, bounded to one extra request per repository per minute so refusals cannot become a token-minting storm
+
 - The GitHub App now asks for `Pull requests: Read` alongside `Checks: Read and write`. Establishing who opened a pull request reads that endpoint, which GitHub documents under the Pull requests permission, but the setup guide named Checks as the only permission and told operators not to grant pull-request access. On a private repository the lookup would fail and every decision would be refused as though GitHub were unreachable
 - A missing installation permission is reported as `app_permission_missing` rather than `verification_unavailable`, and says what an administrator has to change. It is established from the permissions GitHub reports when it mints the token, so no request is spent discovering it, and check publishing is unaffected — a Checks-only installation still gates pull requests, it just cannot authorise a browser decision
 

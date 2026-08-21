@@ -1,7 +1,9 @@
 import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 import { reviewDecisionEntitlement } from "../reviewEntitlement.js";
-import { resetGitHubAppCacheForTests, type HttpTransport } from "../githubApp.js";
+import {
+  FORCED_REFRESH_INTERVAL_MS,
+  resetGitHubAppCacheForTests, type HttpTransport } from "../githubApp.js";
 import type { ArchitectureReviewRecord } from "../reviewRepository.js";
 
 const { privateKey } = generateKeyPairSync("rsa", {
@@ -383,13 +385,20 @@ describe("an installation that cannot read pull requests says so", () => {
     expect(asked.some((url) => url.includes("/contents/"))).toBe(false);
   });
 
-  it("treats a forbidden pull-request response as the same configuration answer", async () => {
+  it("treats a forbidden pull-request response as a permission answer only with evidence", async () => {
     // An installation can be edited between minting a token and using it, so a
-    // grant that looked right is not proof the request will be allowed.
+    // grant that looked right is not proof the request will be allowed — but
+    // GitHub has to be the one saying which permission was wanted.
     const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
       env,
       transport: async (url, init) => {
-        if (url.includes("/pulls/")) return { status: 403, json: async () => ({}) };
+        if (url.includes("/pulls/")) {
+          return {
+            status: 403,
+            json: async () => ({}),
+            headers: { "x-accepted-github-permissions": "pull_requests=read" },
+          };
+        }
         return transportFor({ permissions: FULL_GRANT })(url, init);
       },
     });
@@ -407,5 +416,166 @@ describe("an installation that cannot read pull requests says so", () => {
       },
     });
     expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+});
+
+describe("a forbidden answer is only a permission answer when the response says so", () => {
+  beforeEach(() => resetGitHubAppCacheForTests());
+
+  /** A 403 carrying whichever headers the case is about. */
+  const forbiddenWith = (headers: Record<string, string>): HttpTransport =>
+    async (url, init) => {
+      if (url.includes("/pulls/")) {
+        return { status: 403, json: async () => ({}), headers };
+      }
+      return transportFor({ permissions: FULL_GRANT })(url, init);
+    };
+
+  it("calls a rate-limited refusal an outage, not a configuration error", async () => {
+    // The grant said this was allowed. Sending somebody to edit their App when
+    // the real problem is a rate limit is work that cannot help.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: forbiddenWith({ "x-ratelimit-remaining": "0" }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("treats a secondary rate limit the same way", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: forbiddenWith({ "retry-after": "60" }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("stays conservative when the response explains nothing", async () => {
+    // An IP allow list and an organisation policy both answer 403 without
+    // saying so. Neither is a permission this deployment can grant itself.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: forbiddenWith({}),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("stays conservative when the transport reports no headers at all", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        if (url.includes("/pulls/")) return { status: 403, json: async () => ({}) };
+        return transportFor({ permissions: FULL_GRANT })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("does call it a permission problem when GitHub names the permission", async () => {
+    // GitHub sends this header precisely to say which grant the request needed,
+    // which is evidence rather than inference.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: forbiddenWith({ "x-accepted-github-permissions": "pull_requests=read" }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+  });
+
+  it("does not read some other permission's name as this one", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: forbiddenWith({ "x-accepted-github-permissions": "administration=write" }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("still refuses before asking when the grant itself is short", async () => {
+    // The explicit grant stays authoritative: no request is made, so no 403
+    // classification is involved at all.
+    const asked: string[] = [];
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        asked.push(url);
+        return transportFor({ permissions: CHECKS_ONLY })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+    expect(asked.filter((url) => url.includes("/pulls/"))).toEqual([]);
+  });
+});
+
+describe("accepting the permission recovers without waiting for the token to expire", () => {
+  beforeEach(() => resetGitHubAppCacheForTests());
+
+  /** Mints a token whose grant changes once the installation accepts. */
+  function installation() {
+    const state = { granted: CHECKS_ONLY as Record<string, string>, minted: 0 };
+    const transport: HttpTransport = async (url, init) => {
+      if (url.includes("/access_tokens")) {
+        state.minted += 1;
+        return {
+          status: 201,
+          json: async () => ({
+            token: `ghs_${state.minted}`,
+            expires_at: "2999-01-01T00:00:00Z",
+            permissions: state.granted,
+          }),
+        };
+      }
+      return transportFor({ permissions: FULL_GRANT })(url, init);
+    };
+    return { state, transport };
+  }
+
+  const AT = new Date("2026-08-21T09:00:00.000Z");
+  const later = (ms: number) => new Date(AT.getTime() + ms);
+
+  it("recovers in a bounded minute rather than the hour a token lives", async () => {
+    const { state, transport } = installation();
+
+    const before = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport,
+      now: AT,
+    });
+    expect(before).toMatchObject({ status: "refused", code: "app_permission_missing" });
+
+    // The administrator accepts the permission. The cached token still carries
+    // the old grant and does not expire for an hour.
+    state.granted = FULL_GRANT;
+
+    const allowed = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport,
+      now: later(FORCED_REFRESH_INTERVAL_MS + 1),
+    });
+    expect(allowed).toMatchObject({ status: "allowed", evidence: { basis: "verified" } });
+  });
+
+  it("holds the bound within the interval, so refusals cannot mint tokens freely", async () => {
+    // Recovery must not become a token request per refused decision.
+    const { state, transport } = installation();
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await reviewDecisionEntitlement(review(), REVIEWER, {
+        env,
+        transport,
+        now: later(attempt * 1_000),
+      });
+    }
+    // One to fill the cache, one forced look. Nothing further inside the window.
+    expect(state.minted).toBe(2);
+  });
+
+  it("needs no restart and no configuration change to pick the grant up", async () => {
+    // The same process, the same cache, the same App configuration.
+    const { state, transport } = installation();
+    await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: AT });
+    state.granted = FULL_GRANT;
+    const allowed = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport,
+      now: later(FORCED_REFRESH_INTERVAL_MS * 2),
+    });
+    expect(allowed).toMatchObject({ status: "allowed" });
   });
 });

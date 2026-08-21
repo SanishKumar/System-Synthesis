@@ -1,4 +1,11 @@
-import { getInstallationToken, isGitHubAppConfigured, type HttpTransport } from "./githubApp.js";
+import {
+  getInstallationToken,
+  isGitHubAppConfigured,
+  readSafeHeaders,
+  type HttpTransport,
+  type InstallationPermissions,
+  type SafeResponseHeaders,
+} from "./githubApp.js";
 import { isGitHubIdentityConfigured } from "./githubIdentity.js";
 import type { ArchitectureReviewRecord } from "./reviewRepository.js";
 
@@ -71,14 +78,18 @@ export interface DecidingReviewer {
 function defaultTransport(): HttpTransport {
   return async (url, init) => {
     const response = await fetch(url, init);
-    return { status: response.status, json: () => response.json() };
+    return {
+      status: response.status,
+      json: () => response.json(),
+      headers: readSafeHeaders(response.headers),
+    };
   };
 }
 
 export async function reviewDecisionEntitlement(
   review: Pick<ArchitectureReviewRecord, "externalSource">,
   reviewer: DecidingReviewer,
-  options: { env?: NodeJS.ProcessEnv; transport?: HttpTransport } = {}
+  options: { env?: NodeJS.ProcessEnv; transport?: HttpTransport; now?: Date } = {}
 ): Promise<EntitlementVerdict> {
   const env = options.env ?? process.env;
   const source = review.externalSource;
@@ -111,10 +122,28 @@ export async function reviewDecisionEntitlement(
     };
   }
 
-  const credential = await getInstallationToken(source.repository, {
+  let credential = await getInstallationToken(source.repository, {
     env,
     transport: options.transport,
+    now: options.now,
   });
+  // A cached token carries the grant it was minted with. When that grant is
+  // short, the permission may have been accepted since, so one bounded refresh
+  // is spent finding out rather than leaving the reviewer locked out for the
+  // remaining life of the token.
+  if (
+    credential.status === "ok" &&
+    credential.permissions &&
+    !hasPullRequestRead(credential.permissions)
+  ) {
+    const refreshed = await getInstallationToken(source.repository, {
+      env,
+      transport: options.transport,
+      now: options.now,
+      refresh: true,
+    });
+    if (refreshed.status === "ok") credential = refreshed;
+  }
   if (credential.status !== "ok") {
     // Failing open here would let anyone decide whenever GitHub is unreachable,
     // which is precisely when a false gate is least likely to be noticed.
@@ -133,7 +162,7 @@ export async function reviewDecisionEntitlement(
   // otherwise be reported as a transient outage and retried forever. GitHub
   // states the granted permissions when it mints the token, so this is settled
   // from the grant rather than guessed from a status code.
-  if (credential.permissions && !PULL_REQUEST_READ_LEVELS.has(credential.permissions.pull_requests)) {
+  if (credential.permissions && !hasPullRequestRead(credential.permissions)) {
     return missingAppPermission();
   }
 
@@ -150,9 +179,14 @@ export async function reviewDecisionEntitlement(
       `${GITHUB_API}/repos/${source.repository}/pulls/${source.changeNumber}`,
       { method: "GET", headers }
     );
-    // A refusal here is a permission answer even when the grant looked right:
-    // an installation can be edited between minting a token and using it.
-    if (pull.status === 403) return missingAppPermission();
+    // GitHub answers 403 for a primary or secondary rate limit, an IP allow
+    // list, and organisation policy as well as for a permission it will not
+    // exercise. The grant said this was allowed, so a refusal is only called a
+    // permission problem when the response itself establishes one; everything
+    // else is the conservative answer, which asks for a retry that can work.
+    if (pull.status === 403) {
+      return classifyForbidden(pull.headers);
+    }
     if (pull.status !== 200) {
       return unavailable(`pull request lookup returned ${pull.status}`);
     }
@@ -238,6 +272,31 @@ export async function reviewDecisionEntitlement(
 
 /** Levels of `Pull requests` that permit reading one. */
 const PULL_REQUEST_READ_LEVELS = new Set(["read", "write", "admin"]);
+
+function hasPullRequestRead(permissions: InstallationPermissions): boolean {
+  return PULL_REQUEST_READ_LEVELS.has(permissions.pull_requests);
+}
+
+/**
+ * What a 403 on the pull-request lookup actually means.
+ *
+ * Only `x-accepted-github-permissions` naming the permission is treated as
+ * evidence of one, because GitHub sends that header precisely to say which
+ * grant the request needed. A rate limit is recognised so it is never mistaken
+ * for configuration, and anything unexplained resolves to the conservative
+ * answer: telling somebody to change their App when the real problem is a rate
+ * limit sends them to do work that will not help.
+ */
+function classifyForbidden(headers: SafeResponseHeaders | undefined): EntitlementVerdict {
+  const accepted = headers?.["x-accepted-github-permissions"];
+  if (accepted && /\bpull_requests\b/.test(accepted)) {
+    return missingAppPermission();
+  }
+  if (headers?.["retry-after"] || headers?.["x-ratelimit-remaining"] === "0") {
+    return unavailable("pull request lookup was rate limited");
+  }
+  return unavailable("pull request lookup returned 403");
+}
 
 /**
  * A configuration answer, deliberately not an outage answer.

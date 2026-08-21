@@ -138,7 +138,8 @@ unpublished and retrying is worth doing:
 | `installation_lookup_failed` | GitHub could not confirm the installation; usually transient |
 | `token_request_failed` | GitHub would not issue an installation token |
 | `check_write_forbidden` | The App lacks `Checks: Read and write`, or the installation was removed |
-| `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Publishing is unaffected; only deciding is refused |
+| `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Reported when the installation's own grant is short, or when GitHub names that permission in `x-accepted-github-permissions`. Publishing is unaffected; only deciding is refused |
+| `verification_unavailable` | GitHub could not answer. A rate limit, an IP allow list, or an organisation policy answers `403` without naming a permission, and none of those are fixed by editing the App, so they are reported as something to retry rather than something to configure |
 | `check_write_invalid` | GitHub rejected the payload — a genuine bug worth reporting |
 | `check_write_failed` | GitHub refused the write for some other reason |
 | `configuration_invalid` | `FRONTEND_URL` is not a valid URL, so the check cannot be addressed |
@@ -254,9 +255,14 @@ installation accepts it.
 5. Confirm the installation now lists **Pull requests: Read**.
 
 The server reads the granted permissions from the token GitHub mints, so no
-restart or configuration change is needed once the installation accepts. The
-next decision attempt uses the new grant, though a token minted in the previous
-hour is cached until it expires.
+restart or configuration change is needed once the installation accepts.
+
+A token lives about an hour and carries the grant it was minted with, so a
+decision refused for a missing permission also asks GitHub for a fresh token
+rather than trusting the cached answer. That extra look is allowed once per
+repository per minute, so a run of refused decisions cannot turn into a run of
+token requests. In practice the permission takes effect within about a minute
+of being accepted, not within an hour.
 
 ### Verifying on a private repository
 

@@ -60,11 +60,51 @@ export type InstallationTokenResult =
   | { status: "not_installed" }
   | { status: "error"; code: CredentialFailureCode; detail: string };
 
-/** Injectable so tests never reach the network. */
+/**
+ * Response headers a caller may act on, lower-cased.
+ *
+ * Deliberately an allow-list rather than the whole response. A caller needs to
+ * tell a refusal about permission from a refusal about rate, and nothing else
+ * about the response is any of its business — keeping the rest out means a
+ * header that later carries something sensitive cannot leak through here.
+ */
+export type SafeResponseHeaders = Partial<
+  Record<"x-ratelimit-remaining" | "retry-after" | "x-accepted-github-permissions", string>
+>;
+
+export const SAFE_RESPONSE_HEADERS = [
+  "x-ratelimit-remaining",
+  "retry-after",
+  "x-accepted-github-permissions",
+] as const;
+
+/** The allow-listed headers from a real response, and nothing else. */
+export function readSafeHeaders(source: {
+  get(name: string): string | null;
+}): SafeResponseHeaders {
+  const headers: SafeResponseHeaders = {};
+  for (const name of SAFE_RESPONSE_HEADERS) {
+    const value = source.get(name);
+    if (typeof value === "string" && value.length) headers[name] = value;
+  }
+  return headers;
+}
+
+/**
+ * Injectable so tests never reach the network.
+ *
+ * `headers` is optional: a transport that does not report them leaves a caller
+ * with no evidence, which must resolve to the conservative answer rather than a
+ * confident one.
+ */
 export type HttpTransport = (
   url: string,
   init: { method: string; headers: Record<string, string>; body?: string }
-) => Promise<{ status: number; json: () => Promise<unknown> }>;
+) => Promise<{
+  status: number;
+  json: () => Promise<unknown>;
+  headers?: SafeResponseHeaders;
+}>;
 
 interface CachedToken {
   token: string;
@@ -74,8 +114,21 @@ interface CachedToken {
 
 const tokenCache = new Map<string, CachedToken>();
 
+/**
+ * How often a caller may discard a cached token to pick up a changed grant.
+ *
+ * A token lives about an hour and carries the permissions granted when it was
+ * minted, so an installation that accepts a new permission would otherwise
+ * stay locked out until the token expired. Discarding on demand fixes that and
+ * would let a stream of refused decisions mint a token per request, so it is
+ * allowed once per repository per interval and is a no-op in between.
+ */
+export const FORCED_REFRESH_INTERVAL_MS = 60_000;
+const forcedRefreshAt = new Map<string, number>();
+
 export function resetGitHubAppCacheForTests(): void {
   tokenCache.clear();
+  forcedRefreshAt.clear();
 }
 
 /**
@@ -154,12 +207,25 @@ export async function getInstallationToken(
     env?: NodeJS.ProcessEnv;
     transport?: HttpTransport;
     now?: Date;
+    /**
+     * Discard any cached token first, so a grant changed since it was minted is
+     * seen. Rate-limited: ignored if this repository already forced one within
+     * the interval, so a burst of callers cannot turn into a burst of tokens.
+     */
+    refresh?: boolean;
   } = {}
 ): Promise<InstallationTokenResult> {
   const config = readGitHubAppConfig(options.env);
   if (!config) return { status: "not_configured" };
 
   const now = options.now ?? new Date();
+  if (options.refresh) {
+    const last = forcedRefreshAt.get(repository) ?? 0;
+    if (now.getTime() - last >= FORCED_REFRESH_INTERVAL_MS) {
+      forcedRefreshAt.set(repository, now.getTime());
+      tokenCache.delete(repository);
+    }
+  }
   const cached = tokenCache.get(repository);
   if (cached && cached.expiresAtMs - TOKEN_REFRESH_MARGIN_MS > now.getTime()) {
     return {
@@ -174,7 +240,11 @@ export async function getInstallationToken(
     options.transport ??
     (async (url, init) => {
       const response = await fetch(url, init);
-      return { status: response.status, json: () => response.json() };
+      return {
+        status: response.status,
+        json: () => response.json(),
+        headers: readSafeHeaders(response.headers),
+      };
     });
 
   try {
