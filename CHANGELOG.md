@@ -27,6 +27,9 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- `/health` reports the commit the running process was built from, read from `RENDER_GIT_COMMIT` or `GIT_COMMIT`. Whether a deployment is current was previously inferred from uptime, which only ever shows that something restarted and never what it restarted into
+- A half-linked identity — a GitHub account id stored without its login — no longer puts the literal string `null` in the permission request path. GitHub answered 404 and the reviewer was told they lacked repository access when what they had was an incomplete link
+
 - Repository permission is now established for the linked GitHub account rather than for a login. The check was made by name while self-approval was refused by numeric id, so a renamed account, a reassigned login, or a stale identity row could point the two halves of the gate at different accounts. The permission response's own account id is compared with the linked id and a mismatch fails closed; the stored login is refreshed only once the id matches
 - Decisions record the entitlement they were allowed on. The route calculated it and discarded it, so the history could not say which GitHub account decided, whether permission was verified, or whether the deployment was running unenforced — while the documentation claimed it could. The evidence is written in the same transaction as the decision, in both PostgreSQL and memory storage, and a PostgreSQL contract test asserts no decision can exist without it
 

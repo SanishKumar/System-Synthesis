@@ -130,6 +130,11 @@ async function main() {
       status: degraded ? "degraded" : "ok",
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
+      // Which build is answering. Whether production is running the current
+      // commit has been guessed at from uptime three times now, and uptime only
+      // ever proves that something restarted, never what it restarted into.
+      // Render supplies RENDER_GIT_COMMIT; GIT_COMMIT covers everywhere else.
+      commit: process.env.RENDER_GIT_COMMIT || process.env.GIT_COMMIT || "unknown",
       persistence: persistence.mode,
       dbAvailable: isDbAvailable(),
       // Named for what it is: whether the shared store is carrying the

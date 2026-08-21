@@ -94,7 +94,12 @@ export async function reviewDecisionEntitlement(
     };
   }
 
-  if (!reviewer.githubUserId) {
+  // Both halves, because the permission question is asked by login and the
+  // answer is checked against the id. A row carrying only one of them would put
+  // the string "null" in the request path and come back as a refusal that names
+  // the wrong reason — the reviewer would be told they lack access when what
+  // they actually have is an incomplete link.
+  if (!reviewer.githubUserId || !reviewer.githubLogin) {
     return {
       status: "refused",
       code: "identity_required",

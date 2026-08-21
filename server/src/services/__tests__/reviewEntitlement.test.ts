@@ -268,6 +268,26 @@ describe("permission is established for the linked account, not for a name", () 
       evidence: { githubLogin: "new-name", githubUserId: String(REVIEWER_ID) },
     });
   });
+  it("refuses a half-linked identity rather than asking GitHub about a null login", async () => {
+    // An id with no login would be interpolated into the permission path as the
+    // literal string. GitHub answers 404, which this would otherwise report as
+    // insufficient permission — telling the reviewer they lack access when what
+    // they have is an incomplete link.
+    const asked: string[] = [];
+    const verdict = await reviewDecisionEntitlement(
+      review(),
+      { githubUserId: String(REVIEWER_ID), githubLogin: null },
+      {
+        env,
+        transport: async (url, init) => {
+          asked.push(url);
+          return transportFor()(url, init);
+        },
+      }
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "identity_required" });
+    expect(asked.filter((url) => url.includes("/collaborators/"))).toEqual([]);
+  });
 
   it("carries the permission level GitHub reported into the evidence", async () => {
     const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
