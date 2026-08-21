@@ -453,3 +453,97 @@ spec:
     expect(coverage(declared, "api").ingress).toBe("uncovered");
   });
 });
+
+describe("the current importer states coverage for every workload it produces", () => {
+  /**
+   * The invariant the legacy compatibility fallback depends on.
+   *
+   * Validation treats an absent coverage field as `unstated` and makes no
+   * finding from it, which is right for a graph an older importer stored. It
+   * would be silently wrong for a current one: a regression that stopped
+   * emitting these fields would not fail a rule test, because the rules would
+   * simply go quiet. Pinning the contract here is what keeps `unstated` a
+   * statement about old graphs rather than a way for new ones to say nothing.
+   */
+  const STATED = new Set(["covered", "uncovered", "unknown"]);
+
+  const policy = (spec: string, name = "restrict") => `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${name}
+spec:
+${spec}
+`;
+
+  /** Every node that stands for a pod, which is every node but an Ingress. */
+  const workloads = (result: ReturnType<typeof importAt>) =>
+    result.graph.nodes.filter((node) => node.data.sourceProperties?.kind !== "Ingress");
+
+  const cases: Array<[string, ReturnType<typeof importAt>]> = [
+    [
+      "no policies declared anywhere",
+      importAt(workload("api", "node:22"), workload("primary", "postgres:16", { kind: "StatefulSet" })),
+    ],
+    [
+      "a policy selecting one workload and not another",
+      importAt(
+        workload("api", "node:22"),
+        workload("primary", "postgres:16", { kind: "StatefulSet" }),
+        policy("  podSelector:\n    matchLabels:\n      app: api\n  policyTypes:\n    - Ingress")
+      ),
+    ],
+    [
+      "an egress-only policy",
+      importAt(
+        workload("primary", "postgres:16", { kind: "StatefulSet" }),
+        policy("  podSelector:\n    matchLabels:\n      app: primary\n  policyTypes:\n    - Egress")
+      ),
+    ],
+    [
+      "a selector this adapter cannot evaluate",
+      importAt(
+        workload("primary", "postgres:16", { kind: "StatefulSet" }),
+        policy(
+          "  podSelector:\n    matchExpressions:\n      - key: tier\n        operator: Exists\n  policyTypes:\n    - Ingress"
+        )
+      ),
+    ],
+    [
+      "workloads in separate namespaces",
+      importAt(
+        workload("api", "node:22", { namespace: "shop" }),
+        workload("api", "node:22", { namespace: "staging" }),
+        policy("  podSelector: {}\n  policyTypes:\n    - Ingress")
+      ),
+    ],
+    [
+      "every workload kind",
+      importAt(
+        workload("api", "node:22"),
+        workload("primary", "postgres:16", { kind: "StatefulSet" }),
+        workload("agent", "node-exporter:1", { kind: "DaemonSet" }),
+        workload("once", "ghcr.io/acme/jobs:1", { kind: "Job" })
+      ),
+    ],
+  ];
+
+  it.each(cases)("states both directions with %s", (_name, result) => {
+    const nodes = workloads(result);
+    expect(nodes.length).toBeGreaterThan(0);
+    for (const node of nodes) {
+      expect(STATED).toContain(node.data.sourceProperties?.ingressPolicyCoverage);
+      expect(STATED).toContain(node.data.sourceProperties?.egressPolicyCoverage);
+    }
+  });
+
+  it("never emits the compatibility state from a current import", () => {
+    // `unstated` is not a value this adapter writes. It is what validation calls
+    // an absent field, and only a graph from before version 2 has one.
+    for (const [, result] of cases) {
+      for (const node of result.graph.nodes) {
+        expect(node.data.sourceProperties?.ingressPolicyCoverage).not.toBe("unstated");
+        expect(node.data.sourceProperties?.egressPolicyCoverage).not.toBe("unstated");
+      }
+    }
+  });
+});

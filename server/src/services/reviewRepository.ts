@@ -96,7 +96,11 @@ export function importStatus(review: {
   const base = graphSourceIdentity(review.baseGraph);
   const head = graphSourceIdentity(review.headGraph);
   const adapter = base.adapter && base.adapter === head.adapter ? base.adapter : null;
-  const version = base.version !== null && base.version === head.version ? base.version : null;
+  // A version only means something alongside the adapter that numbers it. Two
+  // adapters sitting on the same number share no contract, so a shared version
+  // is reported only once a shared adapter is.
+  const version =
+    adapter && base.version !== null && base.version === head.version ? base.version : null;
   const current = adapter ? CURRENT_IMPORT_VERSIONS[adapter] ?? null : null;
   return {
     importAdapter: adapter,

@@ -321,6 +321,18 @@ describe("analyzer provenance", () => {
       baseGraph: sourced("docker-compose", COMPOSE_CURRENT),
       headGraph: sourced("kubernetes", K8S_CURRENT),
     })).toMatchObject({ importAdapter: null, importVersion: null, importOutdated: true });
+    // Two adapters that happen to sit on the same number share nothing. There
+    // is no "v2" contract spanning them, so reporting one would name a version
+    // with no adapter behind it.
+    expect(importStatus({
+      baseGraph: sourced("docker-compose", 2),
+      headGraph: sourced("kubernetes", 2),
+    })).toEqual({
+      importAdapter: null,
+      importVersion: null,
+      currentImportVersion: null,
+      importOutdated: true,
+    });
     // Nor can two versions of one adapter.
     expect(importStatus({
       baseGraph: sourced("kubernetes", K8S_CURRENT - 1),
