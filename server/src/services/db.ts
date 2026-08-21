@@ -171,6 +171,12 @@ const MIGRATION_SQL = `
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     last_used_at    TIMESTAMPTZ,
     revoked_at      TIMESTAMPTZ,
+    -- What was established about the connecting account when the credential
+    -- was issued. Null on a row written before connections were verified.
+    verified_github_user_id TEXT,
+    verified_github_login   TEXT,
+    verified_permission     TEXT,
+    verified_at             TIMESTAMPTZ,
     UNIQUE(owner_id, provider, repository)
   );
 

@@ -4,6 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../services/db.js", () => ({ getPool: () => null }));
 
+// Authority over the repository is proved in its own suite. Here it is granted,
+// so these tests stay about issuance, rotation, revocation and owner isolation.
+vi.mock("../../services/repositoryAuthority.js", () => ({
+  verifyRepositoryAuthority: async () => ({
+    status: "verified",
+    authority: {
+      githubUserId: "9002",
+      githubLogin: "octo-admin",
+      permission: "admin",
+      verifiedAt: "2026-08-21T00:00:00.000Z",
+    },
+  }),
+}));
+
 import reviewIntegrationsRouter from "../reviewIntegrations.js";
 import {
   authenticateReviewIntegrationToken,

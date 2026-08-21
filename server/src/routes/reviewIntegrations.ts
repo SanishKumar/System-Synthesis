@@ -5,6 +5,8 @@ import {
   listReviewIntegrations,
   revokeReviewIntegration,
 } from "../services/reviewIntegrationRepository.js";
+import { verifyRepositoryAuthority } from "../services/repositoryAuthority.js";
+import { linkedGitHubIdentity } from "./auth.js";
 
 const router = Router();
 const integrationIdSchema = z.string().uuid();
@@ -55,10 +57,26 @@ router.post("/", async (req, res) => {
   const parsed = createIntegrationSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
   try {
+    // The credential is what makes the App publish a gate on somebody's pull
+    // request, so authority over the repository is established before one
+    // exists. A refusal writes nothing and reveals nothing: no row, no token,
+    // and no part of GitHub's answer beyond a code this deployment chose.
+    const authority = await verifyRepositoryAuthority(
+      parsed.data.repository,
+      await linkedGitHubIdentity(req.user!.userId)
+    );
+    if (authority.status === "refused") {
+      return res.status(authority.httpStatus).json({
+        error: authority.message,
+        code: authority.code,
+      });
+    }
+
     const issued = await createOrRotateReviewIntegration({
       ownerId: req.user!.userId,
       provider: parsed.data.provider,
       repository: parsed.data.repository,
+      verified: authority.authority,
     });
     res.setHeader("Cache-Control", "no-store");
     res.status(201).json({

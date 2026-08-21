@@ -1,5 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+/** Authority is proved at the route; storage tests state it directly. */
+const VERIFIED_AUTHORITY = {
+  githubUserId: "9002",
+  githubLogin: "octo-admin",
+  permission: "admin",
+  verifiedAt: "2026-08-21T00:00:00.000Z",
+};
+
 vi.mock("../db.js", () => ({ getPool: () => null }));
 
 import {
@@ -18,6 +26,7 @@ describe("review integration credentials", () => {
       ownerId: "owner-1",
       provider: "github",
       repository: "Acme/Shop",
+      verified: VERIFIED_AUTHORITY,
     });
 
     expect(issued.ingestionToken).toMatch(/^ssri_[A-Za-z0-9_-]{43}$/);
@@ -37,11 +46,13 @@ describe("review integration credentials", () => {
       ownerId: "owner-1",
       provider: "github",
       repository: "acme/shop",
+      verified: VERIFIED_AUTHORITY,
     });
     const rotated = await createOrRotateReviewIntegration({
       ownerId: "owner-1",
       provider: "github",
       repository: "ACME/SHOP",
+      verified: VERIFIED_AUTHORITY,
     });
 
     expect(rotated.integration.id).toBe(first.integration.id);
@@ -59,6 +70,7 @@ describe("review integration credentials", () => {
       ownerId: "owner-1",
       provider: "github",
       repository: "acme/shop",
+      verified: VERIFIED_AUTHORITY,
     });
 
     await expect(

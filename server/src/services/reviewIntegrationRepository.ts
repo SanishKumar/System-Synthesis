@@ -13,6 +13,15 @@ export interface ReviewIntegrationRecord {
   updatedAt: string;
   lastUsedAt: string | null;
   revokedAt: string | null;
+  /**
+   * The GitHub account whose administration of this repository was confirmed
+   * when the credential was issued. Null on a row written before connections
+   * were verified, which is a state to notice rather than to trust.
+   */
+  verifiedGithubUserId: string | null;
+  verifiedGithubLogin: string | null;
+  verifiedPermission: string | null;
+  verifiedAt: string | null;
 }
 
 interface StoredReviewIntegration extends ReviewIntegrationRecord {
@@ -56,6 +65,10 @@ function rowToStoredIntegration(row: any): StoredReviewIntegration {
     updatedAt: timestamp(row.updated_at),
     lastUsedAt: row.last_used_at ? timestamp(row.last_used_at) : null,
     revokedAt: row.revoked_at ? timestamp(row.revoked_at) : null,
+    verifiedGithubUserId: row.verified_github_user_id ?? null,
+    verifiedGithubLogin: row.verified_github_login ?? null,
+    verifiedPermission: row.verified_permission ?? null,
+    verifiedAt: row.verified_at ? timestamp(row.verified_at) : null,
   };
 }
 
@@ -67,6 +80,17 @@ export async function createOrRotateReviewIntegration(input: {
   ownerId: string;
   provider: ReviewIntegrationProvider;
   repository: string;
+  /**
+   * Proof that the connecting account administers this repository. Required,
+   * because a credential issued without it is one the App will act on for
+   * somebody who may have no standing on the repository at all.
+   */
+  verified: {
+    githubUserId: string;
+    githubLogin: string;
+    permission: string;
+    verifiedAt: string;
+  };
 }): Promise<IssuedReviewIntegration> {
   const repository = normalizeRepositoryIdentity(input.repository);
   const token = `${TOKEN_MARKER}${randomBytes(32).toString("base64url")}`;
@@ -77,13 +101,18 @@ export async function createOrRotateReviewIntegration(input: {
   if (pool) {
     const result = await pool.query(
       `INSERT INTO architecture_review_integrations (
-         id, owner_id, provider, repository, token_hash, token_prefix
-       ) VALUES ($1, $2, $3, $4, $5, $6)
+         id, owner_id, provider, repository, token_hash, token_prefix,
+         verified_github_user_id, verified_github_login, verified_permission, verified_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        ON CONFLICT (owner_id, provider, repository) DO UPDATE
        SET token_hash = EXCLUDED.token_hash,
            token_prefix = EXCLUDED.token_prefix,
            revoked_at = NULL,
-           updated_at = NOW()
+           updated_at = NOW(),
+           verified_github_user_id = EXCLUDED.verified_github_user_id,
+           verified_github_login = EXCLUDED.verified_github_login,
+           verified_permission = EXCLUDED.verified_permission,
+           verified_at = EXCLUDED.verified_at
        RETURNING *`,
       [
         randomUUID(),
@@ -92,6 +121,10 @@ export async function createOrRotateReviewIntegration(input: {
         repository,
         tokenHash,
         tokenPrefix,
+        input.verified.githubUserId,
+        input.verified.githubLogin,
+        input.verified.permission,
+        input.verified.verifiedAt,
       ]
     );
     return {
@@ -118,6 +151,12 @@ export async function createOrRotateReviewIntegration(input: {
     updatedAt: now,
     lastUsedAt: existing?.lastUsedAt || null,
     revokedAt: null,
+    // Memory storage records the same proof as PostgreSQL. The two disagreeing
+    // about what was verified is its own defect.
+    verifiedGithubUserId: input.verified.githubUserId,
+    verifiedGithubLogin: input.verified.githubLogin,
+    verifiedPermission: input.verified.permission,
+    verifiedAt: input.verified.verifiedAt,
   };
   memoryIntegrations.set(stored.id, stored);
   return { integration: publicRecord(stored), ingestionToken: token };

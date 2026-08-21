@@ -239,6 +239,14 @@ collaborator who owns no part of the changed architecture can still decide.
 Permission is read at the moment of the decision and not re-checked afterwards.
 See [known limitations](./KNOWN_LIMITATIONS.md).
 
+## 6b. Connecting a repository requires admin on it
+
+The ingestion credential is what makes the App publish a gate on a pull request, so `/integrations` confirms with GitHub that the account connecting a repository administers it before issuing one. That means the App must be installed on the repository **first** — connecting it here cannot grant access the App does not have — and the person connecting it must have linked a GitHub account with `admin` permission there.
+
+Write and maintain are refused. Pushing to a repository and deciding what may publish checks on it are different acts, and only the second is being granted.
+
+A refusal names what to change: `identity_required`, `identity_mismatch`, `app_not_installed`, `app_not_configured`, `repository_permission_insufficient`, or `repository_verification_unavailable` when GitHub could not answer. Nothing is stored and no token is returned on any of them.
+
 ## 7. Updating an existing installation
 
 An App registered before `Pull requests: Read` was required keeps working for

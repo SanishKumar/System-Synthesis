@@ -2,6 +2,14 @@ import express from "express";
 import type { Server } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+/** Authority is proved at the route; storage tests state it directly. */
+const VERIFIED_AUTHORITY = {
+  githubUserId: "9002",
+  githubLogin: "octo-admin",
+  permission: "admin",
+  verifiedAt: "2026-08-21T00:00:00.000Z",
+};
+
 vi.mock("../../services/db.js", () => ({ getPool: () => null }));
 
 import { dockerComposeAdapter } from "@system-synthesis/architecture-core";
@@ -117,6 +125,7 @@ async function issueToken(repository = REPOSITORY): Promise<string> {
     ownerId: "owner-1",
     provider: "github",
     repository,
+    verified: VERIFIED_AUTHORITY,
   })).ingestionToken;
 }
 

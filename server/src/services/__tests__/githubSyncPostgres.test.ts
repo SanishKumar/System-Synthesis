@@ -380,4 +380,64 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       expect(orphaned.rows).toEqual([]);
     });
   });
+
+  /**
+   * What a connection recorded about the account that made it, against real
+   * SQL.
+   *
+   * Memory storage keeps an object; PostgreSQL round-trips the same proof
+   * through four columns and an upsert that has to carry them on conflict as
+   * well as on insert. Asserting it only in memory would show the object was
+   * built, not that a rotation keeps it.
+   */
+  describe("repository connection authority", () => {
+    const VERIFIED = {
+      githubUserId: "9002",
+      githubLogin: "octo-admin",
+      permission: "admin",
+      verifiedAt: "2026-08-21T00:00:00.000Z",
+    };
+
+    it("stores what was verified, and keeps it across a rotation", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/authority-${Date.now()}`;
+
+      const created = await integrations.createOrRotateReviewIntegration({
+        ownerId: OWNER,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      expect(created.integration).toMatchObject({
+        verifiedGithubUserId: "9002",
+        verifiedGithubLogin: "octo-admin",
+        verifiedPermission: "admin",
+      });
+      expect(created.integration.verifiedAt).toBeTruthy();
+
+      // Rotating re-proves authority, so the record must carry the new proof
+      // rather than the one the row was created with.
+      const rotated = await integrations.createOrRotateReviewIntegration({
+        ownerId: OWNER,
+        provider: "github",
+        repository,
+        verified: { ...VERIFIED, githubLogin: "renamed-admin" },
+      });
+      expect(rotated.integration.verifiedGithubLogin).toBe("renamed-admin");
+      expect(rotated.ingestionToken).not.toBe(created.ingestionToken);
+    });
+
+    it("leaves no connection row behind when authority was never established", async () => {
+      // The route refuses before reaching storage, so a repository nobody
+      // proved authority over has nothing stored against it at all.
+      const { db } = await load();
+      const pool = db.getPool()!;
+      const orphaned = await pool.query(
+        `SELECT id FROM architecture_review_integrations
+          WHERE revoked_at IS NULL AND verified_github_user_id IS NULL
+            AND created_at > NOW() - INTERVAL '1 hour'`
+      );
+      expect(orphaned.rows).toEqual([]);
+    });
+  });
 });
