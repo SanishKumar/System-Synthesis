@@ -30,6 +30,8 @@ export type EntitlementBasis =
   | "verified";
 
 export type EntitlementRefusal =
+  /** The App exists but was never granted what verification needs. */
+  | "app_permission_missing"
   | "identity_required"
   /** The login on file resolved to a different account than the one linked. */
   | "identity_mismatch"
@@ -125,6 +127,16 @@ export async function reviewDecisionEntitlement(
     };
   }
 
+  // Asked before anything is requested. Reading the author of a pull request
+  // needs `Pull requests: read`, and an installation without it answers exactly
+  // as a private repository with a missing resource does, so the failure would
+  // otherwise be reported as a transient outage and retried forever. GitHub
+  // states the granted permissions when it mints the token, so this is settled
+  // from the grant rather than guessed from a status code.
+  if (credential.permissions && !PULL_REQUEST_READ_LEVELS.has(credential.permissions.pull_requests)) {
+    return missingAppPermission();
+  }
+
   const transport = options.transport ?? defaultTransport();
   const headers = {
     Authorization: `Bearer ${credential.token}`,
@@ -138,6 +150,9 @@ export async function reviewDecisionEntitlement(
       `${GITHUB_API}/repos/${source.repository}/pulls/${source.changeNumber}`,
       { method: "GET", headers }
     );
+    // A refusal here is a permission answer even when the grant looked right:
+    // an installation can be edited between minting a token and using it.
+    if (pull.status === 403) return missingAppPermission();
     if (pull.status !== 200) {
       return unavailable(`pull request lookup returned ${pull.status}`);
     }
@@ -219,6 +234,28 @@ export async function reviewDecisionEntitlement(
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : "verification failed");
   }
+}
+
+/** Levels of `Pull requests` that permit reading one. */
+const PULL_REQUEST_READ_LEVELS = new Set(["read", "write", "admin"]);
+
+/**
+ * A configuration answer, deliberately not an outage answer.
+ *
+ * Telling somebody to try again shortly when an operator has to change the App
+ * and an organisation owner has to approve the change is advice that can never
+ * come true.
+ */
+function missingAppPermission(): EntitlementVerdict {
+  return {
+    status: "refused",
+    code: "app_permission_missing",
+    message:
+      "This deployment's GitHub App cannot read pull requests, so it cannot establish " +
+      "who opened this one. An administrator has to add the Pull requests: Read " +
+      "permission to the App and approve the updated permissions for the installation. " +
+      "Retrying will not help until that is done.",
+  };
 }
 
 function unavailable(detail: string): EntitlementVerdict {

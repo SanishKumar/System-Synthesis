@@ -34,8 +34,28 @@ export type CredentialFailureCode =
   | "token_request_failed"
   | "github_unreachable";
 
+/**
+ * What an installation is actually allowed to do, as GitHub reports it when it
+ * mints the token.
+ *
+ * Keys are GitHub's own permission names (`checks`, `pull_requests`,
+ * `metadata`) and values are `read` or `write`. Carried so a caller can tell a
+ * permission that was never granted from a request that failed, which are
+ * different problems with different remedies: one needs an operator to change
+ * the App, the other needs waiting.
+ *
+ * Absent when the response did not describe them, which is not the same as an
+ * empty set and must not be read as one.
+ */
+export type InstallationPermissions = Record<string, string>;
+
 export type InstallationTokenResult =
-  | { status: "ok"; token: string; expiresAt: string }
+  | {
+      status: "ok";
+      token: string;
+      expiresAt: string;
+      permissions?: InstallationPermissions;
+    }
   | { status: "not_configured" }
   | { status: "not_installed" }
   | { status: "error"; code: CredentialFailureCode; detail: string };
@@ -49,6 +69,7 @@ export type HttpTransport = (
 interface CachedToken {
   token: string;
   expiresAtMs: number;
+  permissions?: InstallationPermissions;
 }
 
 const tokenCache = new Map<string, CachedToken>();
@@ -99,6 +120,19 @@ export function createAppJwt(
   );
 }
 
+/**
+ * The permission map from a token response, or undefined when the response did
+ * not carry one. A response that says nothing about permissions is not a
+ * response saying none were granted.
+ */
+function readPermissions(value: unknown): InstallationPermissions | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    (entry): entry is [string, string] => typeof entry[1] === "string"
+  );
+  return Object.fromEntries(entries);
+}
+
 async function readJson(response: {
   json: () => Promise<unknown>;
 }): Promise<Record<string, unknown>> {
@@ -132,6 +166,7 @@ export async function getInstallationToken(
       status: "ok",
       token: cached.token,
       expiresAt: new Date(cached.expiresAtMs).toISOString(),
+      permissions: cached.permissions,
     };
   }
 
@@ -214,8 +249,9 @@ export async function getInstallationToken(
       };
     }
 
-    tokenCache.set(repository, { token, expiresAtMs });
-    return { status: "ok", token, expiresAt };
+    const permissions = readPermissions(body.permissions);
+    tokenCache.set(repository, { token, expiresAtMs, permissions });
+    return { status: "ok", token, expiresAt, permissions };
   } catch (error) {
     const detail = error instanceof Error ? error.message : "installation token request failed";
     // Never surface the underlying request, which carries the signed assertion.

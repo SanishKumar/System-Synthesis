@@ -133,6 +133,29 @@ describe("publishing the decision check", () => {
     expect(String(created?.body?.details_url)).toContain("/reviews/8f2a1c00-0000-4000-8000-000000000001");
   });
 
+  it("publishes from a checks-only installation, which is all publishing needs", async () => {
+    // Verification needs pull-request read; publishing does not. An installation
+    // that cannot authorise a browser decision must still be able to put the
+    // gate on the pull request, or adding the permission would be the price of
+    // any gate at all.
+    const base = transportFor().transport;
+    const transport: HttpTransport = async (url, init) => {
+      if (url.includes("/access_tokens")) {
+        return {
+          status: 201,
+          json: async () => ({
+            token: "ghs_x",
+            expires_at: "2999-01-01T00:00:00Z",
+            permissions: { checks: "write", metadata: "read" },
+          }),
+        };
+      }
+      return base(url, init);
+    };
+    const result = await writeDecisionCheck(review(), { transport, env });
+    expect(result).toEqual({ status: "written", conclusion: "action_required" });
+  });
+
   it("replaces the existing gate instead of adding a second one", async () => {
     const { transport, recorded } = transportFor([{ id: 555, external_id: REVIEW_ID }]);
     const result = await writeDecisionCheck(review({ decision: "approved" }), { transport, env });

@@ -20,14 +20,25 @@ only writes check runs when a review changes.
 | Name | Anything unique, e.g. `System Synthesis Decision Gate` |
 | Homepage URL | Your deployed frontend |
 | Webhook | **Uncheck Active.** No events are consumed |
-| Repository permission | **Checks: Read and write** |
+| Repository permissions | **Checks: Read and write**, **Pull requests: Read** |
 | Where can it be installed | Only on this account, unless you intend to share it |
 
-`Checks: Read and write` is the only permission required. `Metadata: Read-only`
-is added by GitHub automatically. Do not grant contents, pull-request, or
-administration access: the server never reads your source and never merges
-anything, so a broader grant buys nothing and widens the blast radius if the
-private key leaks.
+Two permissions are required, and `Metadata: Read-only` is added by GitHub
+automatically.
+
+`Checks: Read and write` publishes the gate. `Pull requests: Read` is what
+lets the server ask GitHub who opened a pull request, which is how a decision by
+the change's own author is refused. GitHub documents that endpoint under the
+Pull requests permission; the collaborator-permission lookup that establishes
+write access needs only Metadata, which every installation has.
+
+Do not grant contents or administration access. The server never reads your
+source and never merges anything, so a broader grant buys nothing and widens the
+blast radius if the private key leaks.
+
+An installation without `Pull requests: Read` still publishes checks. It cannot
+authorise a browser decision, and says so with `app_permission_missing` rather
+than asking anyone to retry — see [updating an existing installation](#7-updating-an-existing-installation).
 
 Create the App, then **Generate a private key** and download the `.pem`. GitHub
 shows it once. Note the numeric **App ID** from the same page.
@@ -127,6 +138,7 @@ unpublished and retrying is worth doing:
 | `installation_lookup_failed` | GitHub could not confirm the installation; usually transient |
 | `token_request_failed` | GitHub would not issue an installation token |
 | `check_write_forbidden` | The App lacks `Checks: Read and write`, or the installation was removed |
+| `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Publishing is unaffected; only deciding is refused |
 | `check_write_invalid` | GitHub rejected the payload — a genuine bug worth reporting |
 | `check_write_failed` | GitHub refused the write for some other reason |
 | `configuration_invalid` | `FRONTEND_URL` is not a valid URL, so the check cannot be addressed |
@@ -225,3 +237,37 @@ Write access to the repository is the bar. `CODEOWNERS` is not read, so a
 collaborator who owns no part of the changed architecture can still decide.
 Permission is read at the moment of the decision and not re-checked afterwards.
 See [known limitations](./KNOWN_LIMITATIONS.md).
+
+## 7. Updating an existing installation
+
+An App registered before `Pull requests: Read` was required keeps working for
+checks and refuses every decision with `app_permission_missing`. Adding a
+permission is not enough on its own: GitHub holds the change until each
+installation accepts it.
+
+1. **Settings → Developer settings → GitHub Apps → your App → Permissions & events**.
+2. Under **Repository permissions**, set **Pull requests** to **Read-only**.
+3. Save. GitHub then shows the App as having a pending permission request.
+4. For every account or organisation the App is installed on, open
+   **Settings → Applications → Installed GitHub Apps → your App** and accept the
+   new permission. An organisation may require an owner to approve it.
+5. Confirm the installation now lists **Pull requests: Read**.
+
+The server reads the granted permissions from the token GitHub mints, so no
+restart or configuration change is needed once the installation accepts. The
+next decision attempt uses the new grant, though a token minted in the previous
+hour is cached until it expires.
+
+### Verifying on a private repository
+
+Public repositories can answer a pull-request lookup without the permission, so
+they cannot prove this works. Test on a private one:
+
+1. Install the App on a private repository you own.
+2. Run the Action on a pull request there so a review is ingested.
+3. Link a GitHub account at `/integrations` that is **not** the author of that
+   pull request and has write access.
+4. Decide the review in the browser.
+5. A decision that records `basis: verified` proves the permission is live.
+   `app_permission_missing` means step 4 of the update was not completed;
+   `self_approval` means the linked account opened the pull request.

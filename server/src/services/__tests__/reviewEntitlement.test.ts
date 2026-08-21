@@ -19,6 +19,11 @@ const env = {
 };
 
 const AUTHOR = 7001;
+/** The documented least-privilege grant this deployment asks for. */
+const FULL_GRANT = { checks: "write", metadata: "read", pull_requests: "read" };
+/** An installation created before pull-request access was asked for. */
+const CHECKS_ONLY = { checks: "write", metadata: "read" };
+
 const REVIEWER_ID = 9002;
 const REVIEWER = { githubUserId: String(REVIEWER_ID), githubLogin: "octo-reviewer" };
 
@@ -46,11 +51,25 @@ function transportFor(options: {
   resolvedId?: number;
   resolvedLogin?: string;
   omitResolvedUser?: boolean;
+  /** `null` reproduces a response that describes no permissions at all. */
+  permissions?: Record<string, string> | null;
 } = {}): HttpTransport {
   return async (url) => {
     if (url.endsWith("/installation")) return { status: 200, json: async () => ({ id: 42 }) };
     if (url.includes("/access_tokens")) {
-      return { status: 201, json: async () => ({ token: "ghs_x", expires_at: "2999-01-01T00:00:00Z" }) };
+      return {
+        status: 201,
+        json: async () => ({
+          token: "ghs_x",
+          expires_at: "2999-01-01T00:00:00Z",
+          // What GitHub reports as granted. The default is the documented
+          // least-privilege set; a test omitting it is reproducing an
+          // installation that was never given what verification needs.
+          ...(options.permissions === null
+            ? {}
+            : { permissions: options.permissions ?? FULL_GRANT }),
+        }),
+      };
     }
     if (url.includes("/pulls/")) {
       return { status: 200, json: async () => ({ user: { id: options.authorId ?? AUTHOR } }) };
@@ -298,5 +317,95 @@ describe("permission is established for the linked account, not for a name", () 
       status: "allowed",
       evidence: { basis: "verified", permission: "maintain" },
     });
+  });
+});
+
+describe("an installation that cannot read pull requests says so", () => {
+  beforeEach(() => resetGitHubAppCacheForTests());
+
+  it("refuses with a configuration code rather than an outage code", async () => {
+    // The distinction is the point. "Try again shortly" is advice that can never
+    // come true when an administrator has to change the App and an organisation
+    // owner has to approve it.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permissions: CHECKS_ONLY }),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+    expect(verdict).not.toMatchObject({ code: "verification_unavailable" });
+  });
+
+  it("tells the reader what has to change, and that retrying will not do it", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permissions: CHECKS_ONLY }),
+    });
+    const message = verdict.status === "refused" ? verdict.message : "";
+    expect(message).toContain("Pull requests: Read");
+    expect(message).toContain("Retrying will not help");
+  });
+
+  it("does not ask GitHub about a pull request it is not allowed to read", async () => {
+    // Established from the grant, not from a status code, so nothing is spent
+    // discovering what GitHub already said when it minted the token.
+    const asked: string[] = [];
+    await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        asked.push(url);
+        return transportFor({ permissions: CHECKS_ONLY })(url, init);
+      },
+    });
+    expect(asked.filter((url) => url.includes("/pulls/"))).toEqual([]);
+  });
+
+  it("allows the author lookup once pull-request read is granted", async () => {
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: transportFor({ permissions: FULL_GRANT }),
+    });
+    expect(verdict).toMatchObject({ status: "allowed", evidence: { basis: "verified" } });
+  });
+
+  it("needs nothing beyond metadata for the collaborator permission lookup", async () => {
+    // GitHub lists that endpoint under Metadata, which every installation has.
+    // Only the pull-request read is additional, so granting it is sufficient.
+    const asked: string[] = [];
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        asked.push(url);
+        return transportFor({ permissions: FULL_GRANT })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "allowed" });
+    expect(asked.some((url) => url.includes("/collaborators/"))).toBe(true);
+    expect(asked.some((url) => url.includes("/contents/"))).toBe(false);
+  });
+
+  it("treats a forbidden pull-request response as the same configuration answer", async () => {
+    // An installation can be edited between minting a token and using it, so a
+    // grant that looked right is not proof the request will be allowed.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        if (url.includes("/pulls/")) return { status: 403, json: async () => ({}) };
+        return transportFor({ permissions: FULL_GRANT })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
+  });
+
+  it("still reports an outage as an outage", async () => {
+    // A response that says nothing about permissions is not a response saying
+    // none were granted, and a 500 is not a configuration problem.
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env,
+      transport: async (url, init) => {
+        if (url.includes("/pulls/")) return { status: 500, json: async () => ({}) };
+        return transportFor({ permissions: null })(url, init);
+      },
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
   });
 });

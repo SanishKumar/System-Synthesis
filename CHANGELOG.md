@@ -27,6 +27,9 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- The GitHub App now asks for `Pull requests: Read` alongside `Checks: Read and write`. Establishing who opened a pull request reads that endpoint, which GitHub documents under the Pull requests permission, but the setup guide named Checks as the only permission and told operators not to grant pull-request access. On a private repository the lookup would fail and every decision would be refused as though GitHub were unreachable
+- A missing installation permission is reported as `app_permission_missing` rather than `verification_unavailable`, and says what an administrator has to change. It is established from the permissions GitHub reports when it mints the token, so no request is spent discovering it, and check publishing is unaffected — a Checks-only installation still gates pull requests, it just cannot authorise a browser decision
+
 - Kubernetes NetworkPolicy coverage is evaluated rather than assumed. A policy written with `matchExpressions` produced an empty selector, and an empty selector means "every pod in the namespace", so an unrelated policy silently satisfied the protection finding for a sensitive workload. `policyTypes` was ignored entirely, so an egress-only policy counted as inbound protection. Coverage is now recorded per direction, absent `policyTypes` is inferred the way Kubernetes infers it, and a selector the importer cannot evaluate is `unknown` — never covered. Importer version 2
 
 - `/health` reports the commit the running process was built from, read from `RENDER_GIT_COMMIT` or `GIT_COMMIT`. Whether a deployment is current was previously inferred from uptime, which only ever shows that something restarted and never what it restarted into

@@ -16,6 +16,8 @@ const github = {
   installed: true,
   calls: 0,
   onWrite: null as null | (() => Promise<void>),
+  /** What GitHub reports the installation was granted. */
+  permissions: { checks: "write", metadata: "read", pull_requests: "read" } as Record<string, string>,
 };
 
 /** The GitHub account the deciding session has proved, if any. */
@@ -36,7 +38,12 @@ vi.mock("../../services/githubApp.js", async (importOriginal) => {
     ...actual,
     getInstallationToken: async () =>
       github.installed
-        ? { status: "ok", token: "ghs_test", expiresAt: "2999-01-01T00:00:00Z" }
+        ? {
+            status: "ok",
+            token: "ghs_test",
+            expiresAt: "2999-01-01T00:00:00Z",
+            permissions: github.permissions,
+          }
         : { status: "not_installed" },
   };
 });
@@ -52,6 +59,7 @@ import {
 } from "../../services/reviewIntegrationRepository.js";
 import {
   getArchitectureReview,
+  listArchitectureReviewEvents,
   resetMemoryReviewsForTests,
 } from "../../services/reviewRepository.js";
 import { resetGitHubAppCacheForTests } from "../../services/githubApp.js";
@@ -343,6 +351,47 @@ describe("architecture review routes and the decision gate", () => {
       const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
       expect(after?.decision).toBe("pending");
     } finally {
+      identity.linked = { githubUserId: null, githubLogin: null };
+      delete process.env.GITHUB_APP_CLIENT_ID;
+      delete process.env.GITHUB_APP_CLIENT_SECRET;
+    }
+  });
+
+  it("refuses with a configuration answer when the App cannot read pull requests", async () => {
+    // The installation predates the pull-request permission. Nothing is written:
+    // a decision recorded on an entitlement that was never established is the
+    // record this gate exists to avoid.
+    github.installed = true;
+    github.permissions = { checks: "write", metadata: "read" };
+    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc";
+    process.env.GITHUB_APP_CLIENT_SECRET = "shhh";
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-reviewer" };
+    try {
+      const baseUrl = await startApp();
+      const ingested = await ingest(baseUrl);
+      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+
+      const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          decision: "rejected",
+          note: "Publishing a database port is not acceptable.",
+          expectedRevision: before!.revision,
+        }),
+      });
+
+      expect(decided.status).toBe(403);
+      expect(decided.body.code).toBe("app_permission_missing");
+      // Actionable rather than "try again shortly".
+      expect(String(decided.body.error)).toContain("Pull requests: Read");
+
+      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      expect(after?.decision).toBe("pending");
+      expect(after?.revision).toBe(before!.revision);
+      const events = await listArchitectureReviewEvents(ingested.reviewId, OWNER.userId);
+      expect(events.filter((event) => event.eventType === "decision.changed")).toEqual([]);
+    } finally {
+      github.permissions = { checks: "write", metadata: "read", pull_requests: "read" };
       identity.linked = { githubUserId: null, githubLogin: null };
       delete process.env.GITHUB_APP_CLIENT_ID;
       delete process.env.GITHUB_APP_CLIENT_SECRET;
