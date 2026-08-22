@@ -36,6 +36,7 @@ export type RepositoryAuthorityRefusal =
   | "app_not_configured"
   | "app_not_installed"
   | "repository_permission_insufficient"
+  | "app_checks_permission_missing"
   | "repository_verification_unavailable";
 
 /** What was established, recorded so the connection can be accounted for. */
@@ -147,6 +148,20 @@ export async function verifyRepositoryAuthority(
       "Repository access could not be confirmed with GitHub right now. Nothing has been " +
         "connected; try again shortly.",
       503
+    );
+  }
+
+  // A connection whose installation cannot write checks would be issued
+  // successfully and then never publish anything, which looks like the
+  // analysis failing rather than the App being under-permitted. An absent
+  // permission map is unknown rather than empty and is not refused on.
+  if (credential.permissions && credential.permissions.checks !== "write") {
+    return refuse(
+      "app_checks_permission_missing",
+      "The GitHub App is installed on that repository but cannot write checks there, " +
+        "so a connection would never publish a gate. Grant it Checks: Read and write and " +
+        "approve the change for the installation.",
+      409
     );
   }
 

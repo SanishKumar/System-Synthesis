@@ -33,6 +33,17 @@ const github = {
   checkWrites: [] as string[],
   /** How many times the server asked GitHub about repository permission. */
   collaboratorLookups: 0,
+  /** What the installation is granted for checks. */
+  checksPermission: "write" as string,
+  /**
+   * How long a collaborator lookup takes.
+   *
+   * Zero everywhere except the burst test. Without a real delay the first
+   * delivery finishes and writes fresh proof before the others reach the
+   * staleness check, so they never revalidate and the test would pass whether
+   * or not the lookup is shared — which is exactly what it is there to prove.
+   */
+  collaboratorDelayMs: 0,
 };
 
 vi.mock("../../services/githubApp.js", async (importOriginal) => {
@@ -45,7 +56,11 @@ vi.mock("../../services/githubApp.js", async (importOriginal) => {
             status: "ok",
             token: "ghs_test",
             expiresAt: "2999-01-01T00:00:00Z",
-            permissions: { checks: "write", metadata: "read", pull_requests: "read" },
+            permissions: {
+              checks: github.checksPermission,
+              metadata: "read",
+              pull_requests: "read",
+            },
           }
         : { status: "not_installed" },
   };
@@ -57,10 +72,15 @@ import reviewIngestionsRouter from "../reviewIngestions.js";
 import {
   ageVerificationForTests,
   createOrRotateReviewIntegration,
+  downgradeVerificationForTests,
   resetMemoryReviewIntegrationsForTests,
   stripVerificationForTests,
 } from "../../services/reviewIntegrationRepository.js";
-import { AUTHORITY_REVALIDATION_INTERVAL_MS } from "../../middleware/reviewIntegrationAuth.js";
+import {
+  AUTHORITY_FAILURE_BACKOFF_MS,
+  AUTHORITY_REVALIDATION_INTERVAL_MS,
+  resetAuthorityRevalidationForTests,
+} from "../../middleware/reviewIntegrationAuth.js";
 import { resetMemoryReviewsForTests } from "../../services/reviewRepository.js";
 import { resetGitHubAppCacheForTests } from "../../services/githubApp.js";
 
@@ -133,6 +153,9 @@ function installGitHubStub(): void {
     if (url.startsWith("http://127.0.0.1")) return originalFetch(input, init);
     if (url.includes("/collaborators/")) {
       github.collaboratorLookups += 1;
+      if (github.collaboratorDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, github.collaboratorDelayMs));
+      }
       return new Response(
         JSON.stringify({
           permission: github.permission,
@@ -190,6 +213,7 @@ describe("connecting a repository requires authority over it", () => {
     resetMemoryReviewIntegrationsForTests();
     resetMemoryReviewsForTests();
     resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
     github.installed = true;
     github.permission = "admin";
     github.resolvedId = 9002;
@@ -198,6 +222,7 @@ describe("connecting a repository requires authority over it", () => {
     github.permissionHeaders = undefined;
     github.checkWrites = [];
     github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -361,6 +386,7 @@ describe("a credential issued before verification is no longer honoured", () => 
     resetMemoryReviewIntegrationsForTests();
     resetMemoryReviewsForTests();
     resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
     github.installed = true;
     github.permission = "admin";
     github.resolvedId = 9002;
@@ -369,6 +395,7 @@ describe("a credential issued before verification is no longer honoured", () => 
     github.permissionHeaders = undefined;
     github.checkWrites = [];
     github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -447,6 +474,7 @@ describe("authority is established again before it goes stale", () => {
     resetMemoryReviewIntegrationsForTests();
     resetMemoryReviewsForTests();
     resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
     github.installed = true;
     github.permission = "admin";
     github.resolvedId = 9002;
@@ -455,6 +483,7 @@ describe("authority is established again before it goes stale", () => {
     github.permissionHeaders = undefined;
     github.checkWrites = [];
     github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -523,5 +552,215 @@ describe("authority is established again before it goes stale", () => {
     const before = github.collaboratorLookups;
     await ingest(baseUrl, connected.body.ingestionToken);
     expect(github.collaboratorLookups).toBe(before);
+  });
+});
+
+describe("a burst of stale deliveries asks GitHub once", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetMemoryReviewsForTests();
+    resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  async function staleConnection(baseUrl: string): Promise<string> {
+    const connected = await connect(baseUrl, "admin-1");
+    ageVerificationForTests(
+      connected.body.integration.id,
+      new Date(Date.now() - AUTHORITY_REVALIDATION_INTERVAL_MS - 1).toISOString()
+    );
+    return connected.body.ingestionToken;
+  }
+
+  it("shares one collaborator lookup across twenty concurrent deliveries", async () => {
+    // Duplicate and concurrent deliveries are ordinary: a push, a retry and a
+    // re-run arrive together. Without sharing, each finds the same stale proof
+    // and asks GitHub separately, which is how a rate limit is reached.
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    // Held long enough that all twenty are inside the middleware together.
+    github.collaboratorDelayMs = 50;
+    const before = github.collaboratorLookups;
+
+    const deliveries = await Promise.all(
+      Array.from({ length: 20 }, () => ingest(baseUrl, token))
+    );
+
+    expect(github.collaboratorLookups - before).toBe(1);
+    // Every one of them is answered on that single lookup, not refused.
+    expect(deliveries.filter((delivery) => delivery.status < 400).length).toBe(20);
+  });
+
+  it("does not retry a failed revalidation on every delivery", async () => {
+    // A refusal leaves the proof stale, so without a backoff the next delivery
+    // asks again, and a repository whose owner lost access generates a request
+    // per push forever.
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permission = "write";
+
+    const first = await ingest(baseUrl, token);
+    expect(first.status).toBe(403);
+    const afterFirst = github.collaboratorLookups;
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const repeated = await ingest(baseUrl, token);
+      expect(repeated.status).toBeGreaterThanOrEqual(400);
+      expect(github.checkWrites).toEqual([]);
+    }
+    expect(github.collaboratorLookups).toBe(afterFirst);
+  });
+
+  it("holds the backoff for a bounded time rather than indefinitely", () => {
+    // Stated, so restoring access is known to take effect rather than
+    // requiring a restart.
+    expect(AUTHORITY_FAILURE_BACKOFF_MS).toBeGreaterThan(0);
+    expect(AUTHORITY_FAILURE_BACKOFF_MS).toBeLessThan(AUTHORITY_REVALIDATION_INTERVAL_MS);
+  });
+
+  it("refuses to write an answer about a credential that was rotated meanwhile", async () => {
+    // The row this would write to is no longer the row the answer was about.
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    const id = connected.body.integration.id;
+    ageVerificationForTests(
+      id,
+      new Date(Date.now() - AUTHORITY_REVALIDATION_INTERVAL_MS - 1).toISOString()
+    );
+
+    // The rotation lands while the lookup is in flight.
+    let released: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      released = resolve;
+    });
+    const base = globalThis.fetch;
+    let held = false;
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      // Only the delivery in flight waits. The rotation has to get through,
+      // because it is the thing that has to land while the delivery is held.
+      if (!held && String(input).includes("/collaborators/")) {
+        held = true;
+        await gate;
+      }
+      return base(input, init);
+    }) as typeof fetch;
+
+    const delivery = ingest(baseUrl, connected.body.ingestionToken);
+    await connect(baseUrl, "admin-1");
+    released!();
+
+    const answered = await delivery;
+    expect(answered.status).toBe(409);
+    expect(answered.body?.code).toBe("integration_changed");
+    expect(github.checkWrites).toEqual([]);
+  });
+});
+
+describe("what counts as verified is the level, not the presence of a value", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetMemoryReviewsForTests();
+    resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  it("refuses a stored permission below admin", async () => {
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    downgradeVerificationForTests(connected.body.integration.id, "write");
+
+    const ingested = await ingest(baseUrl, connected.body.ingestionToken);
+
+    expect(ingested.status).toBe(403);
+    expect(ingested.body?.code).toBe("integration_unverified");
+    expect(github.checkWrites).toEqual([]);
+  });
+
+  it("refuses a stored timestamp that is not a time", async () => {
+    // Read as infinitely old, an unparseable timestamp would mean revalidate
+    // rather than refuse — which is the wrong answer for a record that cannot
+    // be read at all.
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    ageVerificationForTests(connected.body.integration.id, "whenever");
+
+    const ingested = await ingest(baseUrl, connected.body.ingestionToken);
+
+    expect(ingested.status).toBe(403);
+    expect(ingested.body?.code).toBe("integration_unverified");
+  });
+});
+
+describe("an installation that cannot write checks is not connected", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  it("refuses rather than issuing a credential that could never publish", async () => {
+    // Connecting successfully and then never publishing looks like the analysis
+    // failing, not like the App being under-permitted.
+    github.checksPermission = "read";
+    installGitHubStub();
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    expect(connected.status).toBe(409);
+    expect(connected.body?.code).toBe("app_checks_permission_missing");
+    expect(connected.body?.ingestionToken).toBeUndefined();
+    github.checksPermission = "write";
   });
 });

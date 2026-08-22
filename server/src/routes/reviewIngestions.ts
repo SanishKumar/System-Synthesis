@@ -7,7 +7,10 @@ import {
   type CanonicalArchitectureGraph,
 } from "@system-synthesis/architecture-core";
 import type { SourceProvenance } from "@system-synthesis/shared";
-import { requireReviewIntegration } from "../middleware/reviewIntegrationAuth.js";
+import {
+  requireCurrentRepositoryAuthority,
+  requireReviewIntegration,
+} from "../middleware/reviewIntegrationAuth.js";
 import { reviewIngestionLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
@@ -339,7 +342,14 @@ function responseFor(
   return res.json(body);
 }
 
-router.use(requireReviewIntegration, reviewIngestionLimiter);
+// Authenticate, then rate limit, then confirm authority. The order matters:
+// the authority check talks to GitHub, and putting it behind the limiter is
+// what stops a burst of deliveries from becoming a burst of lookups.
+router.use(
+  requireReviewIntegration,
+  reviewIngestionLimiter,
+  requireCurrentRepositoryAuthority
+);
 
 router.post("/github", async (req, res) => {
   const parsed = ingestionSchema.safeParse(req.body);

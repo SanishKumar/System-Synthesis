@@ -16,7 +16,11 @@ export let pool: pg.Pool | null = null;
  * SQL schema for the boards and snapshots tables.
  * Uses IF NOT EXISTS so it's safe to re-run.
  */
-const MIGRATION_SQL = `
+/**
+ * The schema this build applies, exported so a test can run the real thing
+ * against a real table rather than a copy of it.
+ */
+export const MIGRATION_SQL = `
   CREATE TABLE IF NOT EXISTS boards (
     id            TEXT PRIMARY KEY,
     name          TEXT NOT NULL DEFAULT 'Untitled Board',

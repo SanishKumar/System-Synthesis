@@ -247,6 +247,8 @@ Write and maintain are refused. Pushing to a repository and deciding what may pu
 
 A refusal names what to change: `identity_required`, `identity_mismatch`, `app_not_installed`, `app_not_configured`, `repository_permission_insufficient`, or `repository_verification_unavailable` when GitHub could not answer. Nothing is stored and no token is returned on any of them.
 
+The App also has to be able to write checks on the repository before a connection is issued. An installation without `Checks: Read and write` is refused with `app_checks_permission_missing`, because a credential that connects successfully and then never publishes looks like the analysis failing rather than the App being under-permitted.
+
 ## 6c. Existing credentials must be reconnected
 
 A credential issued before this deployment checked repository authority carries no proof of it, and is refused with `integration_unverified`. There is no backfill: nothing stored can establish who was entitled to a credential issued under the old rules, and guessing would defeat the check.

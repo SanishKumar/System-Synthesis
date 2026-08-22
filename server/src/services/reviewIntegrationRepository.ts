@@ -222,11 +222,17 @@ export function isVerifiedIntegration(
     "verifiedGithubUserId" | "verifiedGithubLogin" | "verifiedPermission" | "verifiedAt"
   >
 ): boolean {
+  // The level and the time are checked, not merely present. A boundary that
+  // accepts any non-empty permission would accept a row saying write, and one
+  // that accepts any non-empty timestamp would read an unparseable value as
+  // infinitely old — which the staleness check turns into "revalidate", not
+  // into a refusal. Only what issuance actually produces is honoured.
   return Boolean(
     integration.verifiedGithubUserId &&
       integration.verifiedGithubLogin &&
-      integration.verifiedPermission &&
-      integration.verifiedAt
+      integration.verifiedPermission === "admin" &&
+      integration.verifiedAt &&
+      Number.isFinite(Date.parse(integration.verifiedAt))
   );
 }
 
@@ -244,27 +250,52 @@ export async function recordIntegrationAuthority(
     githubLogin: string;
     permission: string;
     verifiedAt: string;
-  }
-): Promise<void> {
+  },
+  /**
+   * The proof the caller read before it started. The row is written only if
+   * that still holds, so an answer about a credential that has since been
+   * rotated or revoked cannot overwrite the one that replaced it. A rotation
+   * is caught because issuing a credential writes a fresh proof of its own,
+   * and a revocation because a revoked row is excluded outright.
+   */
+  expected: { previousVerifiedAt: string | null }
+): Promise<boolean> {
   const pool = getPool();
   if (pool) {
-    await pool.query(
+    const updated = await pool.query(
       `UPDATE architecture_review_integrations
          SET verified_github_user_id = $2,
              verified_github_login = $3,
              verified_permission = $4,
              verified_at = $5
-       WHERE id = $1`,
-      [id, verified.githubUserId, verified.githubLogin, verified.permission, verified.verifiedAt]
+       WHERE id = $1
+         AND revoked_at IS NULL
+         AND verified_at IS NOT DISTINCT FROM $6::timestamptz
+       RETURNING id`,
+      [
+        id,
+        verified.githubUserId,
+        verified.githubLogin,
+        verified.permission,
+        verified.verifiedAt,
+        expected.previousVerifiedAt,
+      ]
     );
-    return;
+    return Boolean(updated.rows[0]);
   }
   const stored = memoryIntegrations.get(id);
-  if (!stored) return;
+  if (
+    !stored ||
+    stored.revokedAt ||
+    (stored.verifiedAt ?? null) !== expected.previousVerifiedAt
+  ) {
+    return false;
+  }
   stored.verifiedGithubUserId = verified.githubUserId;
   stored.verifiedGithubLogin = verified.githubLogin;
   stored.verifiedPermission = verified.permission;
   stored.verifiedAt = verified.verifiedAt;
+  return true;
 }
 
 /**
@@ -280,6 +311,12 @@ export function stripVerificationForTests(id: string): void {
   stored.verifiedGithubLogin = null;
   stored.verifiedPermission = null;
   stored.verifiedAt = null;
+}
+
+/** Lowers a connection's recorded permission, which issuance never produces. */
+export function downgradeVerificationForTests(id: string, permission: string): void {
+  const stored = memoryIntegrations.get(id);
+  if (stored) stored.verifiedPermission = permission;
 }
 
 /** Moves a connection's proof back in time, so staleness can be reached. */

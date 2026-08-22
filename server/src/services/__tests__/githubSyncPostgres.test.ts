@@ -534,6 +534,46 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       }
     });
 
+    it("brings the real table back up to date after the columns are removed", async () => {
+      // The migration this build actually ships, against the canonical table,
+      // reduced to the shape a deployment upgrading from the previous release
+      // would have. A copy of the table can only show that ALTER works; this
+      // shows that the statements reach the table they have to reach.
+      const { db } = await load();
+      const pool = db.getPool()!;
+      for (const column of [
+        "verified_github_user_id",
+        "verified_github_login",
+        "verified_permission",
+        "verified_at",
+      ]) {
+        await pool.query(
+          `ALTER TABLE architecture_review_integrations DROP COLUMN IF EXISTS ${column}`
+        );
+      }
+      const removed = await pool.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'architecture_review_integrations'
+            AND column_name LIKE 'verified%'`
+      );
+      expect(removed.rows).toEqual([]);
+
+      await pool.query(db.MIGRATION_SQL);
+
+      const restored = await pool.query(
+        `SELECT column_name FROM information_schema.columns
+          WHERE table_name = 'architecture_review_integrations'
+            AND column_name LIKE 'verified%'
+          ORDER BY column_name`
+      );
+      expect(restored.rows.map((row: { column_name: string }) => row.column_name)).toEqual([
+        "verified_at",
+        "verified_github_login",
+        "verified_github_user_id",
+        "verified_permission",
+      ]);
+    });
+
     it("ships those statements rather than relying on CREATE TABLE", async () => {
       // Reading the migration source, because a fresh schema cannot show the
       // difference between a column declared and a column migrated.

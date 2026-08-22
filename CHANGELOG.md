@@ -27,6 +27,11 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- A burst of deliveries with stale authority now shares one GitHub lookup instead of making one each, and the lookup runs after rate limiting rather than before it. A failed revalidation is not retried for a minute, so a repository whose owner has lost access no longer generates a request per push
+- Recording a revalidation is conditional on the credential still being the one that was read. A rotation or revocation landing while GitHub was being asked would otherwise be overwritten by an answer about the credential it replaced; the request is refused with `integration_changed` instead
+- Being verified now means holding `admin` at a readable time, not merely having non-empty fields. Current issuance produces nothing else, but the authorization boundary should not depend on that
+- Connecting a repository confirms the installation can write checks there, so a connection that could never publish is refused rather than issued
+
 - The verification columns now reach an existing database. They were added only inside `CREATE TABLE IF NOT EXISTS`, which leaves an existing table untouched, so an upgraded deployment would have kept the old shape and failed every connection attempt with a database error. Four `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements ship alongside, matching how every other added column in this schema reaches an existing database, and a PostgreSQL test starts from the old table shape rather than a fresh one
 - Credentials issued before repository authority was checked are refused at authentication. Guarding only new issuance left every credential handed out during the vulnerable window still able to drive the App into publishing. There is no backfill: nothing stored can establish that such a credential was ever legitimate, so its owner reconnects once and proves admin, and the refusal says so rather than failing opaquely
 - Authority is established again when the stored proof is more than an hour old, so a credential no longer outlives the access that justified it. A revalidation that cannot be completed refuses the ingestion and publishes nothing
