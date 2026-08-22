@@ -3,6 +3,7 @@ import {
   isGitHubAppConfigured,
   readSafeHeaders,
   type HttpTransport,
+  type InstallationPermissions,
   type SafeResponseHeaders,
 } from "./githubApp.js";
 
@@ -72,6 +73,11 @@ function defaultTransport(): HttpTransport {
   };
 }
 
+/** Whether an installation may write the check this product exists to publish. */
+function writesChecks(permissions: InstallationPermissions | undefined): boolean {
+  return permissions?.checks === "write";
+}
+
 function refuse(
   code: RepositoryAuthorityRefusal,
   message: string,
@@ -129,7 +135,7 @@ export async function verifyRepositoryAuthority(
     );
   }
 
-  const credential = await getInstallationToken(repository, {
+  let credential = await getInstallationToken(repository, {
     env,
     transport: options.transport,
     now: options.now,
@@ -153,9 +159,33 @@ export async function verifyRepositoryAuthority(
 
   // A connection whose installation cannot write checks would be issued
   // successfully and then never publish anything, which looks like the
-  // analysis failing rather than the App being under-permitted. An absent
-  // permission map is unknown rather than empty and is not refused on.
-  if (credential.permissions && credential.permissions.checks !== "write") {
+  // analysis failing rather than the App being under-permitted.
+  //
+  // A cached token describes the grant it was minted with, so a permission
+  // added since would not show. One bounded look settles that before anything
+  // is refused; the refresh is rate-limited per repository by the token store.
+  if (!writesChecks(credential.permissions) && credential.fromCache) {
+    const refreshed = await getInstallationToken(repository, {
+      env,
+      transport: options.transport,
+      now: options.now,
+      refresh: true,
+    });
+    if (refreshed.status === "ok") credential = refreshed;
+  }
+  // A freshly minted token that says nothing about permissions leaves the
+  // capability unestablished. Issuing on that would be assuming the answer
+  // this deployment could not get.
+  if (!credential.permissions) {
+    return refuse(
+      "repository_verification_unavailable",
+      "GitHub did not say what this App installation is allowed to do, so whether it " +
+        "can publish checks on that repository could not be established. Nothing has " +
+        "been connected; try again shortly.",
+      503
+    );
+  }
+  if (!writesChecks(credential.permissions)) {
     return refuse(
       "app_checks_permission_missing",
       "The GitHub App is installed on that repository but cannot write checks there, " +

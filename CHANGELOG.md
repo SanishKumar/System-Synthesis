@@ -27,6 +27,11 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- A token that says nothing about what the App may do no longer counts as permission to publish. An absent permission map was skipped over and a credential issued anyway; a cached token reporting less than `checks: write` now prompts one bounded refresh, a fresh token without a permission map refuses as unavailable, and a fresh token granting less refuses as `app_checks_permission_missing`
+- A held refusal repeats what was actually established rather than reporting an outage. A reviewer whose admin permission was removed was told for the next minute that GitHub was unavailable, which is advice to wait for something that will not change on its own
+- The compare-and-set that protects a revalidation is exercised against real PostgreSQL: a matching proof writes, a rotated one does not and the rotation survives, and a revoked connection cannot be written to
+- The migration test runs inside a transaction that is always rolled back, and asserts afterwards that a row written before it still holds its evidence. Dropping a column takes its values with it, and this is the table every other test shares
+
 - A burst of deliveries with stale authority now shares one GitHub lookup instead of making one each, and the lookup runs after rate limiting rather than before it. A failed revalidation is not retried for a minute, so a repository whose owner has lost access no longer generates a request per push
 - Recording a revalidation is conditional on the credential still being the one that was read. A rotation or revocation landing while GitHub was being asked would otherwise be overwritten by an answer about the credential it replaced; the request is refused with `integration_changed` instead
 - Being verified now means holding `admin` at a readable time, not merely having non-empty fields. Current issuance produces nothing else, but the authorization boundary should not depend on that

@@ -49,12 +49,22 @@ export const AUTHORITY_FAILURE_BACKOFF_MS = 60 * 1000;
  */
 const revalidating = new Map<string, Promise<AuthorityOutcome>>();
 
-/** When a failed revalidation for an integration may next be retried. */
-const backoffUntil = new Map<string, number>();
+/**
+ * The refusal a failed revalidation produced, held until it may be retried.
+ *
+ * The refusal itself is kept, not just the deadline. A lost admin role and an
+ * unreachable GitHub call for different responses, and answering both with
+ * "try again shortly" for the next minute tells somebody whose permission was
+ * removed to wait for something that will never change on its own.
+ */
+const backoff = new Map<
+  string,
+  { until: number; code: string; message: string; httpStatus: number }
+>();
 
 export function resetAuthorityRevalidationForTests(): void {
   revalidating.clear();
-  backoffUntil.clear();
+  backoff.clear();
 }
 
 type AuthorityOutcome =
@@ -121,7 +131,12 @@ async function refreshAuthority(
     githubLogin: integration.verifiedGithubLogin,
   });
   if (authority.status === "refused") {
-    backoffUntil.set(integration.id, Date.now() + AUTHORITY_FAILURE_BACKOFF_MS);
+    backoff.set(integration.id, {
+      until: Date.now() + AUTHORITY_FAILURE_BACKOFF_MS,
+      code: authority.code,
+      message: authority.message,
+      httpStatus: authority.httpStatus,
+    });
     return {
       status: "refused",
       code: authority.code,
@@ -147,7 +162,7 @@ async function refreshAuthority(
     };
   }
 
-  backoffUntil.delete(integration.id);
+  backoff.delete(integration.id);
   return {
     status: "current",
     integration: {
@@ -189,14 +204,12 @@ export async function requireCurrentRepositoryAuthority(
     return;
   }
 
-  const until = backoffUntil.get(integration.id) ?? 0;
-  if (Date.now() < until) {
-    res.status(503).json({
-      error:
-        "Repository access could not be confirmed on a recent attempt, and has not been " +
-        "retried yet. Nothing has been recorded; try again shortly.",
-      code: "repository_verification_unavailable",
-    });
+  // The same answer the attempt gave, not a generic one. Nothing has changed
+  // since, and repeating what was actually established is more useful than
+  // reporting an outage that is not happening.
+  const held = backoff.get(integration.id);
+  if (held && Date.now() < held.until) {
+    res.status(held.httpStatus).json({ error: held.message, code: held.code });
     return;
   }
 

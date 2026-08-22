@@ -35,6 +35,12 @@ const github = {
   collaboratorLookups: 0,
   /** What the installation is granted for checks. */
   checksPermission: "write" as string,
+  /** What a cached token reports, which may lag the real grant. */
+  cachedChecksPermission: "write" as string,
+  /** Reproduces a token response that says nothing about permissions. */
+  omitPermissions: false,
+  /** How many tokens were minted, so a forced refresh is visible. */
+  tokensMinted: 0,
   /**
    * How long a collaborator lookup takes.
    *
@@ -50,7 +56,30 @@ vi.mock("../../services/githubApp.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../services/githubApp.js")>();
   return {
     ...actual,
-    getInstallationToken: async () =>
+    getInstallationToken: async (_repository: string, options?: { refresh?: boolean }) => {
+      if (!github.installed) return { status: "not_installed" };
+      github.tokensMinted += 1;
+      // A cached token carries the grant it was minted with; a forced refresh
+      // is what picks up a permission added since.
+      const fromCache = !options?.refresh && github.tokensMinted > 1;
+      const granted = fromCache ? github.cachedChecksPermission : github.checksPermission;
+      return {
+        status: "ok",
+        token: "ghs_test",
+        expiresAt: "2999-01-01T00:00:00Z",
+        fromCache,
+        ...(github.omitPermissions
+          ? {}
+          : {
+              permissions: {
+                checks: granted,
+                metadata: "read",
+                pull_requests: "read",
+              },
+            }),
+      };
+    },
+    __unused: () =>
       github.installed
         ? {
             status: "ok",
@@ -223,6 +252,10 @@ describe("connecting a repository requires authority over it", () => {
     github.checkWrites = [];
     github.collaboratorLookups = 0;
     github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -396,6 +429,10 @@ describe("a credential issued before verification is no longer honoured", () => 
     github.checkWrites = [];
     github.collaboratorLookups = 0;
     github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -484,6 +521,10 @@ describe("authority is established again before it goes stale", () => {
     github.checkWrites = [];
     github.collaboratorLookups = 0;
     github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -570,6 +611,10 @@ describe("a burst of stale deliveries asks GitHub once", () => {
     github.checkWrites = [];
     github.collaboratorLookups = 0;
     github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -692,6 +737,10 @@ describe("what counts as verified is the level, not the presence of a value", ()
     github.checkWrites = [];
     github.collaboratorLookups = 0;
     github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -738,6 +787,9 @@ describe("an installation that cannot write checks is not connected", () => {
     resetMemoryReviewIntegrationsForTests();
     resetGitHubAppCacheForTests();
     resetAuthorityRevalidationForTests();
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
+    github.cachedChecksPermission = "write";
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -755,6 +807,7 @@ describe("an installation that cannot write checks is not connected", () => {
     // Connecting successfully and then never publishing looks like the analysis
     // failing, not like the App being under-permitted.
     github.checksPermission = "read";
+    github.cachedChecksPermission = "read";
     installGitHubStub();
     const baseUrl = await startApp();
     const connected = await connect(baseUrl, "admin-1");
@@ -762,5 +815,176 @@ describe("an installation that cannot write checks is not connected", () => {
     expect(connected.body?.code).toBe("app_checks_permission_missing");
     expect(connected.body?.ingestionToken).toBeUndefined();
     github.checksPermission = "write";
+  });
+});
+
+describe("the capability to publish is established, not assumed", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  it("refuses when the token says nothing about what the App may do", async () => {
+    // Silence is not permission. Issuing on an answer GitHub did not give
+    // would be assuming the thing this check exists to establish.
+    github.omitPermissions = true;
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    expect(connected.status).toBe(503);
+    expect(connected.body?.code).toBe("repository_verification_unavailable");
+    expect(connected.body?.ingestionToken).toBeUndefined();
+  });
+
+  it("refuses a fresh token that grants only read on checks", async () => {
+    github.checksPermission = "read";
+    github.cachedChecksPermission = "read";
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    expect(connected.status).toBe(409);
+    expect(connected.body?.code).toBe("app_checks_permission_missing");
+    expect(connected.body?.ingestionToken).toBeUndefined();
+  });
+
+  it("takes one fresh look before refusing a cached grant that lags", async () => {
+    // The permission was granted after the cached token was minted. Refusing on
+    // the stale answer would send an administrator to grant what they already
+    // had.
+    const baseUrl = await startApp();
+    // Warm the cache, then let the cached answer fall behind the real grant.
+    await connect(baseUrl, "admin-1");
+    github.cachedChecksPermission = "read";
+    github.checksPermission = "write";
+
+    const connected = await connect(baseUrl, "admin-1");
+
+    expect(connected.status).toBe(201);
+    expect(typeof connected.body?.ingestionToken).toBe("string");
+  });
+});
+
+describe("a held refusal is repeated, not replaced with an outage", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetMemoryReviewsForTests();
+    resetGitHubAppCacheForTests();
+    resetAuthorityRevalidationForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    github.collaboratorDelayMs = 0;
+    github.checksPermission = "write";
+    github.cachedChecksPermission = "write";
+    github.omitPermissions = false;
+    github.tokensMinted = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  async function staleConnection(baseUrl: string): Promise<string> {
+    const connected = await connect(baseUrl, "admin-1");
+    ageVerificationForTests(
+      connected.body.integration.id,
+      new Date(Date.now() - AUTHORITY_REVALIDATION_INTERVAL_MS - 1).toISOString()
+    );
+    return connected.body.ingestionToken;
+  }
+
+  /** The first refusal, then the one the backoff answers with. */
+  async function twice(baseUrl: string, token: string) {
+    const first = await ingest(baseUrl, token);
+    const second = await ingest(baseUrl, token);
+    return { first, second };
+  }
+
+  it("keeps saying the owner lost admin, rather than that GitHub is unavailable", async () => {
+    // Waiting will not restore a permission somebody removed. Reporting an
+    // outage for the next minute tells them to do exactly that.
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permission = "write";
+
+    const { first, second } = await twice(baseUrl, token);
+
+    expect(first.status).toBe(403);
+    expect(first.body?.code).toBe("repository_permission_insufficient");
+    expect(second.status).toBe(first.status);
+    expect(second.body?.code).toBe(first.body?.code);
+    expect(second.body?.error).toBe(first.body?.error);
+  });
+
+  it("keeps saying the App is not installed", async () => {
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.installed = false;
+
+    const { first, second } = await twice(baseUrl, token);
+
+    expect(first.status).toBe(409);
+    expect(first.body?.code).toBe("app_not_installed");
+    expect(second.status).toBe(409);
+    expect(second.body?.code).toBe("app_not_installed");
+  });
+
+  it("keeps saying GitHub could not answer when that is what happened", async () => {
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permissionStatus = 403;
+    github.permissionHeaders = { "x-ratelimit-remaining": "0" };
+
+    const { first, second } = await twice(baseUrl, token);
+
+    expect(first.status).toBe(503);
+    expect(first.body?.code).toBe("repository_verification_unavailable");
+    expect(second.status).toBe(503);
+    expect(second.body?.code).toBe("repository_verification_unavailable");
+  });
+
+  it("publishes nothing while a refusal is held", async () => {
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permission = "write";
+    await twice(baseUrl, token);
+    expect(github.checkWrites).toEqual([]);
   });
 });

@@ -37,6 +37,13 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
   };
 
   const OWNER = "owner-postgres-contract";
+  /** The proof a verified connection carries. */
+  const VERIFIED = {
+    githubUserId: "9002",
+    githubLogin: "octo-admin",
+    permission: "admin",
+    verifiedAt: "2026-08-21T00:00:00.000Z",
+  };
   const BASE = "a".repeat(40);
   const HEAD = "b".repeat(40);
   const NEXT_HEAD = "c".repeat(40);
@@ -391,12 +398,98 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
    * built, not that a rotation keeps it.
    */
   describe("repository connection authority", () => {
-    const VERIFIED = {
-      githubUserId: "9002",
-      githubLogin: "octo-admin",
-      permission: "admin",
-      verifiedAt: "2026-08-21T00:00:00.000Z",
-    };
+
+    it("writes a revalidation only when the proof it read still stands", async () => {
+      // The compare-and-set exists for a rotation or a revocation landing while
+      // GitHub is being asked. Memory storage checks it in JavaScript; this is
+      // the SQL, including how the timestamp comparison behaves.
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/cas-${Date.now()}`;
+      const owner = `owner-cas-${Date.now()}`;
+
+      const created = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      const id = created.integration.id;
+      const original = created.integration.verifiedAt;
+
+      // The proof the caller read is still the proof on the row.
+      const accepted = await integrations.recordIntegrationAuthority(
+        id,
+        { ...VERIFIED, githubLogin: "renamed-once", verifiedAt: new Date().toISOString() },
+        { previousVerifiedAt: original }
+      );
+      expect(accepted).toBe(true);
+
+      // Reading a proof that is no longer there writes nothing.
+      const stale = await integrations.recordIntegrationAuthority(
+        id,
+        { ...VERIFIED, githubLogin: "should-not-land", verifiedAt: new Date().toISOString() },
+        { previousVerifiedAt: original }
+      );
+      expect(stale).toBe(false);
+
+      const rows = await integrations.listReviewIntegrations(owner);
+      expect(rows[0].verifiedGithubLogin).toBe("renamed-once");
+    });
+
+    it("refuses a revalidation whose credential was rotated meanwhile", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/cas-rotate-${Date.now()}`;
+      const owner = `owner-cas-rotate-${Date.now()}`;
+
+      const created = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      const readProof = created.integration.verifiedAt;
+
+      // Rotating writes a proof of its own, which is what the stale caller's
+      // compare-and-set no longer matches.
+      const rotated = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: { ...VERIFIED, githubLogin: "rotated-admin", verifiedAt: new Date(Date.now() + 1000).toISOString() },
+      });
+
+      const landed = await integrations.recordIntegrationAuthority(
+        rotated.integration.id,
+        { ...VERIFIED, githubLogin: "answer-about-the-old-one", verifiedAt: new Date().toISOString() },
+        { previousVerifiedAt: readProof }
+      );
+
+      expect(landed).toBe(false);
+      const rows = await integrations.listReviewIntegrations(owner);
+      expect(rows[0].verifiedGithubLogin).toBe("rotated-admin");
+    });
+
+    it("refuses a revalidation for a connection that was revoked meanwhile", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/cas-revoke-${Date.now()}`;
+      const owner = `owner-cas-revoke-${Date.now()}`;
+
+      const created = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      await integrations.revokeReviewIntegration(created.integration.id, owner);
+
+      const landed = await integrations.recordIntegrationAuthority(
+        created.integration.id,
+        { ...VERIFIED, verifiedAt: new Date().toISOString() },
+        { previousVerifiedAt: created.integration.verifiedAt }
+      );
+
+      expect(landed).toBe(false);
+    });
 
     it("stores what was verified, and keeps it across a rotation", async () => {
       const integrations = await import("../reviewIntegrationRepository.js");
@@ -427,10 +520,13 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       expect(rotated.ingestionToken).not.toBe(created.ingestionToken);
     });
 
-    it("writes no connection without the evidence that authorised it", async () => {
-      // Scoped to rows this test creates. A window over every recent row would
-      // depend on what other tests left behind — including the upgrade test
-      // below, which drops these columns and takes their values with them.
+    it("stores the evidence that authorised a connection", async () => {
+      // What this proves is narrow and deliberately named for it: the columns
+      // are written, in real SQL. That a refused connection writes no row at
+      // all is a route-level claim, proved where the route runs.
+      //
+      // Scoped to rows this test creates, so it does not depend on what else
+      // has touched the table.
       const { db } = await load();
       const integrations = await import("../reviewIntegrationRepository.js");
       const pool = db.getPool()!;
@@ -555,39 +651,68 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       // reduced to the shape a deployment upgrading from the previous release
       // would have. A copy of the table can only show that ALTER works; this
       // shows that the statements reach the table they have to reach.
+      // Inside a transaction that is always rolled back. Dropping a column takes
+      // its values with it, and this is the table every other test here shares —
+      // including on the second run CI performs against the same database.
+      // Rolling back is what keeps this test from being something later tests
+      // have to work around.
       const { db } = await load();
       const pool = db.getPool()!;
-      for (const column of [
-        "verified_github_user_id",
-        "verified_github_login",
-        "verified_permission",
-        "verified_at",
-      ]) {
-        await pool.query(
-          `ALTER TABLE architecture_review_integrations DROP COLUMN IF EXISTS ${column}`
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = `owner-migration-${Date.now()}`;
+      await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository: `acme/migration-${Date.now()}`,
+        verified: VERIFIED,
+      });
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        for (const column of [
+          "verified_github_user_id",
+          "verified_github_login",
+          "verified_permission",
+          "verified_at",
+        ]) {
+          await client.query(
+            `ALTER TABLE architecture_review_integrations DROP COLUMN IF EXISTS ${column}`
+          );
+        }
+        const removed = await client.query(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'architecture_review_integrations'
+              AND column_name LIKE 'verified%'`
         );
+        expect(removed.rows).toEqual([]);
+
+        await client.query(db.MIGRATION_SQL);
+
+        const restored = await client.query(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_name = 'architecture_review_integrations'
+              AND column_name LIKE 'verified%'
+            ORDER BY column_name`
+        );
+        expect(restored.rows.map((row: { column_name: string }) => row.column_name)).toEqual([
+          "verified_at",
+          "verified_github_login",
+          "verified_github_user_id",
+          "verified_permission",
+        ]);
+      } finally {
+        await client.query("ROLLBACK").catch(() => undefined);
+        client.release();
       }
-      const removed = await pool.query(
-        `SELECT column_name FROM information_schema.columns
-          WHERE table_name = 'architecture_review_integrations'
-            AND column_name LIKE 'verified%'`
-      );
-      expect(removed.rows).toEqual([]);
 
-      await pool.query(db.MIGRATION_SQL);
-
-      const restored = await pool.query(
-        `SELECT column_name FROM information_schema.columns
-          WHERE table_name = 'architecture_review_integrations'
-            AND column_name LIKE 'verified%'
-          ORDER BY column_name`
-      );
-      expect(restored.rows.map((row: { column_name: string }) => row.column_name)).toEqual([
-        "verified_at",
-        "verified_github_login",
-        "verified_github_user_id",
-        "verified_permission",
-      ]);
+      // The row written before the transaction still holds everything it held,
+      // which is the proof that nothing here escaped the rollback.
+      const survivors = await integrations.listReviewIntegrations(owner);
+      expect(survivors).toHaveLength(1);
+      expect(survivors[0].verifiedGithubUserId).toBe(VERIFIED.githubUserId);
+      expect(survivors[0].verifiedPermission).toBe(VERIFIED.permission);
+      expect(survivors[0].verifiedAt).toBeTruthy();
     });
 
     it("ships those statements rather than relying on CREATE TABLE", async () => {
