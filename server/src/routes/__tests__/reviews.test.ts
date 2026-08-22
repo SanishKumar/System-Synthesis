@@ -8,7 +8,9 @@ const VERIFIED_AUTHORITY = {
   githubUserId: "9002",
   githubLogin: "octo-admin",
   permission: "admin",
-  verifiedAt: "2026-08-21T00:00:00.000Z",
+  // Current, so the credential is inside its revalidation window and these
+  // tests stay about what they are about.
+  verifiedAt: new Date().toISOString(),
 };
 
 vi.mock("../../services/db.js", () => ({ getPool: () => null }));

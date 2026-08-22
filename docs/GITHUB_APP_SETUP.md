@@ -247,6 +247,12 @@ Write and maintain are refused. Pushing to a repository and deciding what may pu
 
 A refusal names what to change: `identity_required`, `identity_mismatch`, `app_not_installed`, `app_not_configured`, `repository_permission_insufficient`, or `repository_verification_unavailable` when GitHub could not answer. Nothing is stored and no token is returned on any of them.
 
+## 6c. Existing credentials must be reconnected
+
+A credential issued before this deployment checked repository authority carries no proof of it, and is refused with `integration_unverified`. There is no backfill: nothing stored can establish who was entitled to a credential issued under the old rules, and guessing would defeat the check.
+
+Reconnect each repository at `/integrations`. That proves admin once and issues a replacement token, which the workflow secret then needs updating to.
+
 ## 7. Updating an existing installation
 
 An App registered before `Pull requests: Read` was required keeps working for

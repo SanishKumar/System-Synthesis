@@ -440,4 +440,115 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       expect(orphaned.rows).toEqual([]);
     });
   });
+
+  /**
+   * The upgrade, not the fresh install.
+   *
+   * Every other test here runs against a schema this build created, where the
+   * new columns are present because CREATE TABLE wrote them. Production is the
+   * other case: the table already exists, CREATE TABLE IF NOT EXISTS leaves it
+   * exactly as it was, and only an ALTER reaches it. A suite that never starts
+   * from the old shape cannot tell the two apart, and the first symptom would
+   * have been every connection attempt failing after deploy.
+   */
+  describe("upgrading a database that already has the old table", () => {
+    it("adds the verification columns to a table created without them", async () => {
+      const { db } = await load();
+      const pool = db.getPool()!;
+      const table = `legacy_integrations_${Date.now()}`;
+
+      // The table as the vulnerable build defined it.
+      await pool.query(
+        `CREATE TABLE ${table} (
+           id              TEXT PRIMARY KEY,
+           owner_id        TEXT NOT NULL,
+           provider        TEXT NOT NULL,
+           repository      TEXT NOT NULL,
+           token_hash      TEXT NOT NULL UNIQUE,
+           token_prefix    TEXT NOT NULL,
+           created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+           last_used_at    TIMESTAMPTZ,
+           revoked_at      TIMESTAMPTZ,
+           UNIQUE(owner_id, provider, repository)
+         )`
+      );
+      try {
+        // A credential issued under the old rules, with no proof behind it.
+        await pool.query(
+          `INSERT INTO ${table} (id, owner_id, provider, repository, token_hash, token_prefix)
+           VALUES ('legacy-1', 'someone', 'github', 'victim/repository', 'hash-1', 'ssri_legacy')`
+        );
+
+        // Re-declaring the table must not touch it, which is the trap.
+        await pool.query(`CREATE TABLE IF NOT EXISTS ${table} (id TEXT PRIMARY KEY)`);
+        const beforeAlter = await pool.query(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_name = $1 AND column_name = 'verified_github_user_id'`,
+          [table]
+        );
+        expect(beforeAlter.rows).toEqual([]);
+
+        // The migration this build ships, against the same table.
+        for (const column of [
+          "verified_github_user_id TEXT",
+          "verified_github_login TEXT",
+          "verified_permission TEXT",
+          "verified_at TIMESTAMPTZ",
+        ]) {
+          await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column}`);
+        }
+
+        const afterAlter = await pool.query(
+          `SELECT column_name FROM information_schema.columns
+            WHERE table_name = $1 AND column_name LIKE 'verified%'
+            ORDER BY column_name`,
+          [table]
+        );
+        expect(afterAlter.rows.map((row) => row.column_name)).toEqual([
+          "verified_at",
+          "verified_github_login",
+          "verified_github_user_id",
+          "verified_permission",
+        ]);
+
+        // The insert this build performs now succeeds against the upgraded table,
+        // which is what would have failed on a production deploy without the ALTER.
+        await pool.query(
+          `INSERT INTO ${table} (
+             id, owner_id, provider, repository, token_hash, token_prefix,
+             verified_github_user_id, verified_github_login, verified_permission, verified_at
+           ) VALUES ('new-1', 'admin', 'github', 'acme/shop', 'hash-2', 'ssri_new',
+                     '9002', 'octo-admin', 'admin', NOW())`
+        );
+
+        // The pre-existing row keeps its nulls, which is how it is recognised
+        // as one nobody proved anything about.
+        const legacy = await pool.query(
+          `SELECT verified_github_user_id, verified_at FROM ${table} WHERE id = 'legacy-1'`
+        );
+        expect(legacy.rows[0].verified_github_user_id).toBeNull();
+        expect(legacy.rows[0].verified_at).toBeNull();
+      } finally {
+        await pool.query(`DROP TABLE IF EXISTS ${table}`);
+      }
+    });
+
+    it("ships those statements rather than relying on CREATE TABLE", async () => {
+      // Reading the migration source, because a fresh schema cannot show the
+      // difference between a column declared and a column migrated.
+      const { readFile } = await import("node:fs/promises");
+      const source = await readFile(new URL("../db.ts", import.meta.url), "utf8");
+      for (const column of [
+        "verified_github_user_id",
+        "verified_github_login",
+        "verified_permission",
+        "verified_at",
+      ]) {
+        expect(source).toContain(
+          `ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS ${column}`
+        );
+      }
+    });
+  });
 });

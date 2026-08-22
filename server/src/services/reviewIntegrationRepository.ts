@@ -207,6 +207,87 @@ export async function revokeReviewIntegration(
   return true;
 }
 
+/**
+ * Whether a stored credential carries the proof this deployment now requires.
+ *
+ * A row issued before repository authority was checked has none of it. That
+ * absence is not a detail to tolerate: such a credential was issued to whoever
+ * asked, for whatever repository they named, and it still makes the App publish
+ * there. Nothing about it can be reconstructed after the fact, so it is refused
+ * rather than guessed at, and its owner reconnects to prove authority once.
+ */
+export function isVerifiedIntegration(
+  integration: Pick<
+    ReviewIntegrationRecord,
+    "verifiedGithubUserId" | "verifiedGithubLogin" | "verifiedPermission" | "verifiedAt"
+  >
+): boolean {
+  return Boolean(
+    integration.verifiedGithubUserId &&
+      integration.verifiedGithubLogin &&
+      integration.verifiedPermission &&
+      integration.verifiedAt
+  );
+}
+
+/**
+ * Replaces the proof on a connection after authority was established again.
+ *
+ * The login and the permission are written as GitHub reports them now, not as
+ * they were: an account can be renamed, and a permission can be reduced
+ * without losing admin outright.
+ */
+export async function recordIntegrationAuthority(
+  id: string,
+  verified: {
+    githubUserId: string;
+    githubLogin: string;
+    permission: string;
+    verifiedAt: string;
+  }
+): Promise<void> {
+  const pool = getPool();
+  if (pool) {
+    await pool.query(
+      `UPDATE architecture_review_integrations
+         SET verified_github_user_id = $2,
+             verified_github_login = $3,
+             verified_permission = $4,
+             verified_at = $5
+       WHERE id = $1`,
+      [id, verified.githubUserId, verified.githubLogin, verified.permission, verified.verifiedAt]
+    );
+    return;
+  }
+  const stored = memoryIntegrations.get(id);
+  if (!stored) return;
+  stored.verifiedGithubUserId = verified.githubUserId;
+  stored.verifiedGithubLogin = verified.githubLogin;
+  stored.verifiedPermission = verified.permission;
+  stored.verifiedAt = verified.verifiedAt;
+}
+
+/**
+ * Removes the verification proof from a stored connection.
+ *
+ * Only for reproducing a row as the build before authority checking wrote it.
+ * No current write path produces this shape, which is why it has to be made.
+ */
+export function stripVerificationForTests(id: string): void {
+  const stored = memoryIntegrations.get(id);
+  if (!stored) return;
+  stored.verifiedGithubUserId = null;
+  stored.verifiedGithubLogin = null;
+  stored.verifiedPermission = null;
+  stored.verifiedAt = null;
+}
+
+/** Moves a connection's proof back in time, so staleness can be reached. */
+export function ageVerificationForTests(id: string, verifiedAt: string): void {
+  const stored = memoryIntegrations.get(id);
+  if (stored) stored.verifiedAt = verifiedAt;
+}
+
 export async function authenticateReviewIntegrationToken(
   token: string
 ): Promise<ReviewIntegrationRecord | null> {

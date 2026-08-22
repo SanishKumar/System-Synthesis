@@ -208,6 +208,15 @@ const MIGRATION_SQL = `
       AND external_change_number IS NOT NULL;
   CREATE INDEX IF NOT EXISTS idx_architecture_review_events_review
     ON architecture_review_events(review_id, created_at ASC);
+  -- The columns above reach an existing table only through these. A table
+  -- that already exists is left untouched by CREATE TABLE IF NOT EXISTS, so
+  -- without them an upgraded deployment keeps the old shape and every insert
+  -- naming the new columns fails.
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_github_user_id TEXT;
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_github_login TEXT;
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_permission TEXT;
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+
   CREATE INDEX IF NOT EXISTS idx_architecture_review_integrations_owner
     ON architecture_review_integrations(owner_id, updated_at DESC);
 `;

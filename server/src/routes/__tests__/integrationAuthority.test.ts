@@ -31,6 +31,8 @@ const github = {
   permissionHeaders: undefined as Record<string, string> | undefined,
   /** Every check-run write the server attempted. */
   checkWrites: [] as string[],
+  /** How many times the server asked GitHub about repository permission. */
+  collaboratorLookups: 0,
 };
 
 vi.mock("../../services/githubApp.js", async (importOriginal) => {
@@ -52,7 +54,13 @@ vi.mock("../../services/githubApp.js", async (importOriginal) => {
 import { dockerComposeAdapter } from "@system-synthesis/architecture-core";
 import reviewIntegrationsRouter from "../reviewIntegrations.js";
 import reviewIngestionsRouter from "../reviewIngestions.js";
-import { resetMemoryReviewIntegrationsForTests } from "../../services/reviewIntegrationRepository.js";
+import {
+  ageVerificationForTests,
+  createOrRotateReviewIntegration,
+  resetMemoryReviewIntegrationsForTests,
+  stripVerificationForTests,
+} from "../../services/reviewIntegrationRepository.js";
+import { AUTHORITY_REVALIDATION_INTERVAL_MS } from "../../middleware/reviewIntegrationAuth.js";
 import { resetMemoryReviewsForTests } from "../../services/reviewRepository.js";
 import { resetGitHubAppCacheForTests } from "../../services/githubApp.js";
 
@@ -124,6 +132,7 @@ function installGitHubStub(): void {
     // aimed at the test server has to reach it rather than this stub.
     if (url.startsWith("http://127.0.0.1")) return originalFetch(input, init);
     if (url.includes("/collaborators/")) {
+      github.collaboratorLookups += 1;
       return new Response(
         JSON.stringify({
           permission: github.permission,
@@ -161,7 +170,10 @@ async function connect(
   return { status: response.status, body: await response.json().catch(() => null) };
 }
 
-async function ingest(baseUrl: string, token: string) {
+async function ingest(
+  baseUrl: string,
+  token: string
+): Promise<{ status: number; body: any }> {
   const response = await fetch(`${baseUrl}/api/review-ingestions/github`, {
     method: "POST",
     headers: {
@@ -185,6 +197,7 @@ describe("connecting a repository requires authority over it", () => {
     github.permissionStatus = 200;
     github.permissionHeaders = undefined;
     github.checkWrites = [];
+    github.collaboratorLookups = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
     process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
@@ -340,5 +353,175 @@ describe("connecting a repository requires authority over it", () => {
     const ingested = await ingest(baseUrl, connected.body.ingestionToken);
     expect(ingested.status).toBe(201);
     expect(github.checkWrites.length).toBeGreaterThan(0);
+  });
+});
+
+describe("a credential issued before verification is no longer honoured", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetMemoryReviewsForTests();
+    resetGitHubAppCacheForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  /**
+   * A row exactly as the vulnerable build wrote it: a real, unrevoked
+   * credential with no proof of anything behind it.
+   */
+  async function legacyCredential(): Promise<string> {
+    const issued = await createOrRotateReviewIntegration({
+      ownerId: "legacy-owner",
+      provider: "github",
+      repository: VICTIM,
+      verified: {
+        githubUserId: "9002",
+        githubLogin: "octo-admin",
+        permission: "admin",
+        verifiedAt: new Date().toISOString(),
+      },
+    });
+    // Strip the proof, which is the state every row carried before the
+    // authority check existed.
+    stripVerificationForTests(issued.integration.id);
+    return issued.ingestionToken;
+  }
+
+  it("refuses the credential and publishes no check", async () => {
+    // Guarding only new issuance would leave every credential handed out
+    // during the vulnerable window still able to drive the App.
+    const baseUrl = await startApp();
+    const token = await legacyCredential();
+
+    const ingested = await ingest(baseUrl, token);
+
+    expect(ingested.status).toBe(403);
+    expect(ingested.body?.code).toBe("integration_unverified");
+    expect(github.checkWrites).toEqual([]);
+  });
+
+  it("says that reconnecting is what fixes it", async () => {
+    // The holder already has the token, so naming the remedy discloses
+    // nothing and an opaque 401 would strand a legitimate user.
+    const baseUrl = await startApp();
+    const ingested = await ingest(baseUrl, await legacyCredential());
+    expect(String(ingested.body?.error)).toContain("Reconnect the repository");
+  });
+
+  it("recovers when a verified administrator reconnects, and the old token stays dead", async () => {
+    const baseUrl = await startApp();
+    const legacyToken = await legacyCredential();
+    expect((await ingest(baseUrl, legacyToken)).status).toBe(403);
+
+    // The same owner reconnects, proving admin this time.
+    const reconnected = await connect(baseUrl, "legacy-owner");
+    expect(reconnected.status).toBe(201);
+
+    expect((await ingest(baseUrl, legacyToken)).status).toBe(401);
+    const accepted = await ingest(baseUrl, reconnected.body.ingestionToken);
+    expect(accepted.status).toBe(201);
+    expect(github.checkWrites.length).toBeGreaterThan(0);
+  });
+});
+
+describe("authority is established again before it goes stale", () => {
+  beforeEach(() => {
+    resetMemoryReviewIntegrationsForTests();
+    resetMemoryReviewsForTests();
+    resetGitHubAppCacheForTests();
+    github.installed = true;
+    github.permission = "admin";
+    github.resolvedId = 9002;
+    github.resolvedLogin = "octo-admin";
+    github.permissionStatus = 200;
+    github.permissionHeaders = undefined;
+    github.checkWrites = [];
+    github.collaboratorLookups = 0;
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
+    process.env.GITHUB_APP_ID = "12345";
+    process.env.GITHUB_APP_PRIVATE_KEY = "-----BEGIN RSA PRIVATE KEY-----\nx\n-----END RSA PRIVATE KEY-----";
+    installGitHubStub();
+  });
+
+  afterEach(async () => {
+    globalThis.fetch = originalFetch;
+    delete process.env.GITHUB_APP_ID;
+    delete process.env.GITHUB_APP_PRIVATE_KEY;
+    if (server) await new Promise<void>((resolve) => server!.close(() => resolve()));
+    server = null;
+  });
+
+  /** A verified connection whose proof is older than the interval. */
+  async function staleConnection(baseUrl: string): Promise<string> {
+    const connected = await connect(baseUrl, "admin-1");
+    ageVerificationForTests(
+      connected.body.integration.id,
+      new Date(Date.now() - AUTHORITY_REVALIDATION_INTERVAL_MS - 1).toISOString()
+    );
+    return connected.body.ingestionToken;
+  }
+
+  it("keeps accepting a credential whose owner still administers the repository", async () => {
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    const ingested = await ingest(baseUrl, token);
+    expect(ingested.status).toBe(201);
+    expect(github.checkWrites.length).toBeGreaterThan(0);
+  });
+
+  it("refuses once the owner has lost admin, and publishes nothing", async () => {
+    // The window this closes: a credential outliving the access that
+    // justified it.
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permission = "write";
+
+    const ingested = await ingest(baseUrl, token);
+
+    expect(ingested.status).toBe(403);
+    expect(ingested.body?.code).toBe("repository_permission_insufficient");
+    expect(github.checkWrites).toEqual([]);
+  });
+
+  it("refuses rather than publishing when GitHub cannot answer", async () => {
+    // Fail closed. GitHub being unreachable does not make authority
+    // established.
+    const baseUrl = await startApp();
+    const token = await staleConnection(baseUrl);
+    github.permissionStatus = 403;
+    github.permissionHeaders = { "x-ratelimit-remaining": "0" };
+
+    const ingested = await ingest(baseUrl, token);
+
+    expect(ingested.status).toBe(503);
+    expect(ingested.body?.code).toBe("repository_verification_unavailable");
+    expect(github.checkWrites).toEqual([]);
+  });
+
+  it("does not ask GitHub again while the proof is still current", async () => {
+    // The interval is what keeps this off the hot path of every push.
+    const baseUrl = await startApp();
+    const connected = await connect(baseUrl, "admin-1");
+    const before = github.collaboratorLookups;
+    await ingest(baseUrl, connected.body.ingestionToken);
+    expect(github.collaboratorLookups).toBe(before);
   });
 });
