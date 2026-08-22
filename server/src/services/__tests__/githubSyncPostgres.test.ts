@@ -427,17 +427,33 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       expect(rotated.ingestionToken).not.toBe(created.ingestionToken);
     });
 
-    it("leaves no connection row behind when authority was never established", async () => {
-      // The route refuses before reaching storage, so a repository nobody
-      // proved authority over has nothing stored against it at all.
+    it("writes no connection without the evidence that authorised it", async () => {
+      // Scoped to rows this test creates. A window over every recent row would
+      // depend on what other tests left behind — including the upgrade test
+      // below, which drops these columns and takes their values with them.
       const { db } = await load();
+      const integrations = await import("../reviewIntegrationRepository.js");
       const pool = db.getPool()!;
-      const orphaned = await pool.query(
-        `SELECT id FROM architecture_review_integrations
-          WHERE revoked_at IS NULL AND verified_github_user_id IS NULL
-            AND created_at > NOW() - INTERVAL '1 hour'`
+      const owner = `owner-evidence-${Date.now()}`;
+
+      await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository: `acme/evidence-${Date.now()}`,
+        verified: VERIFIED,
+      });
+
+      const rows = await pool.query(
+        `SELECT verified_github_user_id, verified_github_login,
+                verified_permission, verified_at
+           FROM architecture_review_integrations
+          WHERE owner_id = $1`,
+        [owner]
       );
-      expect(orphaned.rows).toEqual([]);
+      expect(rows.rows).toHaveLength(1);
+      for (const value of Object.values(rows.rows[0])) {
+        expect(value).not.toBeNull();
+      }
     });
   });
 
