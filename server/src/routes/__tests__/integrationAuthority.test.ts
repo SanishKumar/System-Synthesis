@@ -37,6 +37,10 @@ const github = {
   checksPermission: "write" as string,
   /** What a cached token reports, which may lag the real grant. */
   cachedChecksPermission: "write" as string,
+  /** Makes every token report as cached, as a declined refresh does. */
+  alwaysFromCache: false,
+  /** Whether a forced refresh finds the App still installed. */
+  installedOnRefresh: true,
   /** Reproduces a token response that says nothing about permissions. */
   omitPermissions: false,
   /** How many tokens were minted, so a forced refresh is visible. */
@@ -58,10 +62,14 @@ vi.mock("../../services/githubApp.js", async (importOriginal) => {
     ...actual,
     getInstallationToken: async (_repository: string, options?: { refresh?: boolean }) => {
       if (!github.installed) return { status: "not_installed" };
+      // Only the fresh look fails, so the cached token still answers and the
+      // refresh path is the thing under test.
+      if (options?.refresh && !github.installedOnRefresh) return { status: "not_installed" };
       github.tokensMinted += 1;
       // A cached token carries the grant it was minted with; a forced refresh
       // is what picks up a permission added since.
-      const fromCache = !options?.refresh && github.tokensMinted > 1;
+      const fromCache =
+        github.alwaysFromCache || (!options?.refresh && github.tokensMinted > 1);
       const granted = fromCache ? github.cachedChecksPermission : github.checksPermission;
       return {
         status: "ok",
@@ -255,6 +263,8 @@ describe("connecting a repository requires authority over it", () => {
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -432,6 +442,8 @@ describe("a credential issued before verification is no longer honoured", () => 
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -524,6 +536,8 @@ describe("authority is established again before it goes stale", () => {
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -614,6 +628,8 @@ describe("a burst of stale deliveries asks GitHub once", () => {
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -740,6 +756,8 @@ describe("what counts as verified is the level, not the presence of a value", ()
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -788,6 +806,8 @@ describe("an installation that cannot write checks is not connected", () => {
     resetGitHubAppCacheForTests();
     resetAuthorityRevalidationForTests();
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     github.cachedChecksPermission = "write";
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
@@ -835,6 +855,8 @@ describe("the capability to publish is established, not assumed", () => {
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";
@@ -871,6 +893,42 @@ describe("the capability to publish is established, not assumed", () => {
     expect(connected.body?.ingestionToken).toBeUndefined();
   });
 
+  it("reports an uninstalled App as uninstalled, not as a missing permission", async () => {
+    // A failed fresh look used to be discarded, leaving the stale cached grant
+    // to produce app_checks_permission_missing — sending an administrator to
+    // grant a permission on an App that is no longer there.
+    const baseUrl = await startApp();
+    await connect(baseUrl, "admin-1");
+    // The cached token still answers; the App is gone by the time the fresh
+    // look is taken, which is the case that used to be discarded.
+    github.cachedChecksPermission = "read";
+    github.installedOnRefresh = false;
+
+    const connected = await connect(baseUrl, "admin-1");
+
+    expect(connected.status).toBe(409);
+    expect(connected.body?.code).toBe("app_not_installed");
+    expect(connected.body?.ingestionToken).toBeUndefined();
+  });
+
+  it("does not call a grant short on the strength of a look it could not take", async () => {
+    // The refresh is bounded per repository. When it declines it hands back the
+    // same cached answer, which is not a fresh look and must not be read as one.
+    const baseUrl = await startApp();
+    await connect(baseUrl, "admin-1");
+    github.cachedChecksPermission = "read";
+    github.checksPermission = "read";
+    // Every subsequent token, forced or not, comes back marked as cached.
+    github.alwaysFromCache = true;
+
+    const connected = await connect(baseUrl, "admin-1");
+
+    expect(connected.status).toBe(503);
+    expect(connected.body?.code).toBe("repository_verification_unavailable");
+    expect(connected.body?.ingestionToken).toBeUndefined();
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
+  });
   it("takes one fresh look before refusing a cached grant that lags", async () => {
     // The permission was granted after the cached token was minted. Refusing on
     // the stale answer would send an administrator to grant what they already
@@ -906,6 +964,8 @@ describe("a held refusal is repeated, not replaced with an outage", () => {
     github.checksPermission = "write";
     github.cachedChecksPermission = "write";
     github.omitPermissions = false;
+    github.alwaysFromCache = false;
+    github.installedOnRefresh = true;
     github.tokensMinted = 0;
     identity.linked = { githubUserId: "9002", githubLogin: "octo-admin" };
     process.env.GITHUB_APP_ID = "12345";

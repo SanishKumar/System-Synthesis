@@ -178,6 +178,14 @@ export default function ReviewDetailPage() {
   const [events, setEvents] = useState<ReviewEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [mutating, setMutating] = useState(false);
+  /**
+   * Which decision is being sent, if one is.
+   *
+   * `mutating` says something is happening anywhere on the page, which is the
+   * right thing to disable on and the wrong thing to show a spinner from: it
+   * put the spinner on Approve whatever had actually been pressed.
+   */
+  const [decidingAs, setDecidingAs] = useState<"approved" | "rejected" | null>(null);
   const [selectedFinding, setSelectedFinding] = useState<ValidationIssue | null>(null);
   const [justification, setJustification] = useState("");
   const [ticket, setTicket] = useState("");
@@ -389,6 +397,7 @@ export default function ReviewDetailPage() {
       return;
     }
     setMutating(true);
+    setDecidingAs(decision);
     try {
       const response = await authenticatedFetch(
         `${API_URL}/api/reviews/${review.id}/decision`,
@@ -418,6 +427,7 @@ export default function ReviewDetailPage() {
       toast.error(error instanceof Error ? error.message : "Could not save the decision.");
     } finally {
       setMutating(false);
+      setDecidingAs(null);
     }
   };
 
@@ -725,7 +735,12 @@ export default function ReviewDetailPage() {
                     disabled={mutating}
                     className="btn-secondary gap-2 border-red-500/20 text-red-600 hover:border-red-500/40 hover:text-red-600"
                   >
-                    <X className="h-4 w-4" /> Reject
+                    {decidingAs === "rejected" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <X className="h-4 w-4" />
+                    )}
+                    Reject
                   </button>
                   <button
                     onClick={() => void decide("approved")}
@@ -733,7 +748,11 @@ export default function ReviewDetailPage() {
                     className="btn-primary gap-2"
                     title={review.report.status === "fail" ? "Blocking findings remain" : "Approve architecture change"}
                   >
-                    {mutating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                    {decidingAs === "approved" ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Check className="h-4 w-4" />
+                    )}
                     Approve
                   </button>
                 </div>

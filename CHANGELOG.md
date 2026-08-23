@@ -27,6 +27,10 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- A forced token refresh that fails is no longer discarded. An App uninstalled since the cached token was minted, or a GitHub outage, was reported as a missing Checks permission — sending an administrator to grant something on an App that was not there. A refresh that finds the App gone says so, one that cannot complete says that, and one the per-repository bound declines is treated as a look that did not happen rather than as a short grant
+- The decision spinner appears on the button that was pressed. A single shared flag drove it, so rejecting a review spun the Approve button
+- Cross-origin preflight responses carry a ten-minute lifetime. Every authenticated request is preflighted, and without a lifetime the browser re-asked within seconds, roughly doubling the request count of an open review that polls
+
 - A token that says nothing about what the App may do no longer counts as permission to publish. An absent permission map was skipped over and a credential issued anyway; a cached token reporting less than `checks: write` now prompts one bounded refresh, a fresh token without a permission map refuses as unavailable, and a fresh token granting less refuses as `app_checks_permission_missing`
 - A held refusal repeats what was actually established rather than reporting an outage. A reviewer whose admin permission was removed was told for the next minute that GitHub was unavailable, which is advice to wait for something that will not change on its own
 - The compare-and-set that protects a revalidation is exercised against real PostgreSQL: a matching proof writes, a rotated one does not and the rotation survives, and a revoked connection cannot be written to

@@ -171,7 +171,39 @@ export async function verifyRepositoryAuthority(
       now: options.now,
       refresh: true,
     });
-    if (refreshed.status === "ok") credential = refreshed;
+    // Whatever the fresh look found replaces the stale answer, including when
+    // it found that the App is gone. Discarding a failed refresh and falling
+    // back on the cached grant reported an uninstall or an outage as a missing
+    // permission, which sends an administrator to grant something that is not
+    // the problem.
+    if (refreshed.status === "not_installed") {
+      return refuse(
+        "app_not_installed",
+        "The System Synthesis GitHub App is no longer installed on that repository. " +
+          "Install it there first; connecting it here cannot grant access it does not have.",
+        409
+      );
+    }
+    if (refreshed.status !== "ok") {
+      return refuse(
+        "repository_verification_unavailable",
+        "What this App installation is allowed to do could not be confirmed with GitHub " +
+          "right now. Nothing has been connected; try again shortly.",
+        503
+      );
+    }
+    // The refresh is bounded per repository, so it can decline and hand back
+    // the same cached answer. That is not a fresh look, and calling the grant
+    // short on the strength of it would be reporting the stale answer twice.
+    if (refreshed.fromCache) {
+      return refuse(
+        "repository_verification_unavailable",
+        "What this App installation is allowed to do was last confirmed too recently to " +
+          "check again. Nothing has been connected; try again in a minute.",
+        503
+      );
+    }
+    credential = refreshed;
   }
   // A freshly minted token that says nothing about permissions leaves the
   // capability unestablished. Issuing on that would be assuming the answer

@@ -92,6 +92,12 @@ async function main() {
         callback(new Error("Origin is not allowed by CORS policy"));
       },
       credentials: true,
+      // Every authenticated request carries a bearer token, which makes it a
+      // request browsers preflight. Without a lifetime on that answer the
+      // browser re-asks within seconds, so an open review doubles its request
+      // count for a permission that has not changed. Ten minutes is short
+      // enough that an origin removed here stops being reachable promptly.
+      maxAge: 600,
     })
   );
   app.use(express.json({ limit: "1mb", strict: true }));
