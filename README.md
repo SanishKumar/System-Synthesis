@@ -267,6 +267,8 @@ The existing platform provides:
 
 The [threat model](./docs/THREAT_MODEL.md), [failure model](./docs/FAILURE_MODEL.md), [benchmark report](./docs/BENCHMARKS.md), and [ADR-007](./docs/adrs/007-source-derived-pr-architecture-reviews.md) document its guarantees and trade-offs.
 
+Reviews are owned by one account today. [Repository-global identity](./docs/REPOSITORY_GLOBAL_IDENTITY_DESIGN.md) is the proposed — not yet implemented — design for making a repository and a pull request mean the same thing to everyone who administers them, which is what shared team reviews have to sit on.
+
 ## Run locally
 
 Requirements: Node.js 20 or newer and npm. PostgreSQL is required for durable collaboration/history/reviews; Redis is required for multi-instance live distribution.
@@ -328,7 +330,7 @@ CI builds the frontend, extracted core, CLI, bundled action, and backend; runs a
 - `server/` — review persistence/API, authorization, collaboration, history, export
 - `shared/` — graph, role, provenance, and socket types
 - `examples/architecture-review/` — reproducible base/head/policy demo
-- `docs/` — threat/failure models, benchmarks, ADRs, source contract, limitations
+- `docs/` — threat/failure models, benchmarks, ADRs, source contract, limitations, proposed designs
 
 ## Deployment
 
