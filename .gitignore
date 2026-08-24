@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# Build
+.next/
+dist/
+!architecture-action/dist/
+!architecture-action/dist/**
+/.system-synthesis/reports/
+out/
+
+# Environment
+# .env.example is deliberately not ignored: it is the configuration contract and
+# carries placeholders only. Ignoring it kept the template out of the repository
+# entirely, so a clone documented none of the required variables.
+.env
+.env.local
+.env.*.local
+
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+
+# Extras
+IMPLEMENTATION_PLAN.md
+TODO.md
+TASK.md
+TASK_OUTLINE.md
+TASK_TRACKER.md
+canvas_bug_fixes_plan
+
+# Local agent/editor tooling
+.claude/
+
+# Private design notes and work-in-progress plans
+local-notes/
+
+# Vitest JSON report produced by the CI PostgreSQL contract check
+server/pg-report.json
