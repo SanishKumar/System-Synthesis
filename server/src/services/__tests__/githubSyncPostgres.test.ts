@@ -1,4 +1,7 @@
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
+// Safe to import eagerly: this module imports nothing, so unlike the lazily
+// loaded modules below it cannot pull `db.js` into the graph early.
+import { ownerScope } from "../reviewAccess.js";
 
 /**
  * The same synchronization contract as `githubSync.test.ts`, executed against a
@@ -37,6 +40,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
   };
 
   const OWNER = "owner-postgres-contract";
+  const SCOPE = ownerScope(OWNER);
   /** The proof a verified connection carries. */
   const VERIFIED = {
     githubUserId: "9002",
@@ -145,7 +149,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       reason: null,
     });
     expect(discarded).toBeNull();
-    const stored = await repository.getArchitectureReview(review.id, OWNER);
+    const stored = await repository.getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync.status).toBe("pending");
   });
 
@@ -161,7 +165,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       reason: "not_installed",
     });
     expect(discarded).toBeNull();
-    const stored = await repository.getArchitectureReview(review.id, OWNER);
+    const stored = await repository.getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toMatchObject({
       status: "pending",
       headRevision: refreshed.review.headRevision,
@@ -186,7 +190,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
     });
     expect(recorded?.attemptedAt).not.toBeNull();
 
-    const stored = await repository.getArchitectureReview(review.id, OWNER);
+    const stored = await repository.getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toEqual(recorded);
   });
 
@@ -208,7 +212,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
        WHERE id = $1`,
       [review.id]
     );
-    const legacy = (await repository.getArchitectureReview(review.id, OWNER))!;
+    const legacy = (await repository.getArchitectureReview(review.id, SCOPE))!;
     expect(legacy.githubSync).toMatchObject({ status: "pending", conclusion: null });
 
     const recorded = await repository.recordGitHubSyncOutcome(review.id, {
@@ -257,7 +261,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
     });
     expect(lateSkip).toBeNull();
 
-    const stored = await repository.getArchitectureReview(review.id, OWNER);
+    const stored = await repository.getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toMatchObject({ status: "synced", reason: null });
   });
 
@@ -324,6 +328,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       const { review } = await ingest();
       const decided = await repository.updateArchitectureReviewDecision(
         review.id,
+        SCOPE,
         OWNER,
         review.revision,
         "approved",
@@ -332,7 +337,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       );
       expect(decided.status).toBe("updated");
 
-      const events = await repository.listArchitectureReviewEvents(review.id, OWNER);
+      const events = await repository.listArchitectureReviewEvents(review.id, SCOPE);
       const decision = events.find((event) => event.eventType === "decision.changed");
       expect(decision?.data).toMatchObject({ decision: "approved", entitlement: VERIFIED });
     });
@@ -344,13 +349,14 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       const { review } = await ingest();
       await repository.updateArchitectureReviewDecision(
         review.id,
+        SCOPE,
         OWNER,
         review.revision,
         "rejected",
         "Not this shape.",
         { basis: "unenforced", repository: "acme/shop" }
       );
-      const events = await repository.listArchitectureReviewEvents(review.id, OWNER);
+      const events = await repository.listArchitectureReviewEvents(review.id, SCOPE);
       const decision = events.find((event) => event.eventType === "decision.changed");
       const stored = (decision?.data as Record<string, unknown>).entitlement as Record<string, unknown>;
       expect(stored.basis).toBe("unenforced");
@@ -365,6 +371,7 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
       const { review } = await ingest();
       await repository.updateArchitectureReviewDecision(
         review.id,
+        SCOPE,
         OWNER,
         review.revision,
         "approved",

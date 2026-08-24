@@ -14,6 +14,11 @@ import {
 } from "@system-synthesis/architecture-core";
 import { getPool } from "./db.js";
 import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
+import {
+  reachability,
+  reaches,
+  type ReviewAccessScope,
+} from "./reviewAccess.js";
 
 /**
  * Captured once per process. A stored review records the analyzer that produced
@@ -825,22 +830,23 @@ export async function createArchitectureReview(
 }
 
 export async function listArchitectureReviews(
-  ownerId: string,
+  scope: ReviewAccessScope,
   limit = 50
 ): Promise<ArchitectureReviewSummary[]> {
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 1);
     const result = await pool.query(
       `SELECT * FROM architecture_reviews
-       WHERE owner_id = $1
+       WHERE ${reach.sql}
        ORDER BY updated_at DESC
        LIMIT $2`,
-      [ownerId, limit]
+      [reach.parameter, limit]
     );
     return result.rows.map(rowToReview).map(toSummary);
   }
   return [...memoryReviews.values()]
-    .filter((review) => review.ownerId === ownerId)
+    .filter((review) => reaches(scope, review))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, limit)
     .map((review) => toSummary(structuredClone(review)));
@@ -848,43 +854,53 @@ export async function listArchitectureReviews(
 
 export async function getArchitectureReview(
   id: string,
-  ownerId: string
+  scope: ReviewAccessScope
 ): Promise<ArchitectureReviewRecord | null> {
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 2);
     const result = await pool.query(
-      `SELECT * FROM architecture_reviews WHERE id = $1 AND owner_id = $2`,
-      [id, ownerId]
+      `SELECT * FROM architecture_reviews WHERE id = $1 AND ${reach.sql}`,
+      [id, reach.parameter]
     );
     return result.rows[0] ? rowToReview(result.rows[0]) : null;
   }
   const review = memoryReviews.get(id);
-  return review?.ownerId === ownerId ? structuredClone(review) : null;
+  return review && reaches(scope, review) ? structuredClone(review) : null;
 }
 
 export async function listArchitectureReviewEvents(
   reviewId: string,
-  ownerId: string
+  scope: ReviewAccessScope
 ): Promise<ArchitectureReviewEvent[]> {
-  const review = await getArchitectureReview(reviewId, ownerId);
+  const review = await getArchitectureReview(reviewId, scope);
   if (!review) return [];
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 2, "r");
     const result = await pool.query(
       `SELECT e.* FROM architecture_review_events e
        JOIN architecture_reviews r ON r.id = e.review_id
-       WHERE e.review_id = $1 AND r.owner_id = $2
+       WHERE e.review_id = $1 AND ${reach.sql}
        ORDER BY e.created_at ASC, e.id ASC`,
-      [reviewId, ownerId]
+      [reviewId, reach.parameter]
     );
     return result.rows.map(rowToEvent);
   }
   return structuredClone(memoryEvents.get(reviewId) || []);
 }
 
+/**
+ * `scope` decides which row this may touch; `actorId` is recorded as who
+ * touched it. They carry the same account today, and passing one value for
+ * both would read as correct right up until reachability widens — at which
+ * point every event a collaborator wrote would be attributed to the owner, in
+ * the audit trail that exists to say who did what.
+ */
 export async function updateArchitectureReviewAnalysis(
   id: string,
-  ownerId: string,
+  scope: ReviewAccessScope,
+  actorId: string,
   expectedRevision: number,
   policy: ArchitecturePolicy,
   report: ArchitectureChangeReview,
@@ -892,6 +908,7 @@ export async function updateArchitectureReviewAnalysis(
 ): Promise<ReviewMutationResult> {
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 2);
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -906,11 +923,11 @@ export async function updateArchitectureReviewAnalysis(
              decided_at = NULL,
              revision = revision + 1,
              updated_at = NOW()
-         WHERE id = $1 AND owner_id = $2 AND revision = $3
+         WHERE id = $1 AND ${reach.sql} AND revision = $3
          RETURNING *`,
         [
           id,
-          ownerId,
+          reach.parameter,
           expectedRevision,
           JSON.stringify(policy),
           JSON.stringify(report),
@@ -920,8 +937,8 @@ export async function updateArchitectureReviewAnalysis(
       if (!updated.rows[0]) {
         await client.query("ROLLBACK");
         const exists = await pool.query(
-          `SELECT 1 FROM architecture_reviews WHERE id = $1 AND owner_id = $2`,
-          [id, ownerId]
+          `SELECT 1 FROM architecture_reviews WHERE id = $1 AND ${reach.sql}`,
+          [id, reach.parameter]
         );
         return exists.rows[0] ? { status: "conflict" } : { status: "not_found" };
       }
@@ -930,7 +947,7 @@ export async function updateArchitectureReviewAnalysis(
         `INSERT INTO architecture_review_events (
            id, review_id, actor_id, event_type, review_revision, data
          ) VALUES ($1, $2, $3, 'suppression.added', $4, $5)`,
-        [randomUUID(), id, ownerId, review.revision, JSON.stringify(eventData)]
+        [randomUUID(), id, actorId, review.revision, JSON.stringify(eventData)]
       );
       await client.query("COMMIT");
       return { status: "updated", review };
@@ -943,7 +960,7 @@ export async function updateArchitectureReviewAnalysis(
   }
 
   const current = memoryReviews.get(id);
-  if (!current || current.ownerId !== ownerId) return { status: "not_found" };
+  if (!current || !reaches(scope, current)) return { status: "not_found" };
   if (current.revision !== expectedRevision) return { status: "conflict" };
   const now = new Date().toISOString();
   const review: ArchitectureReviewRecord = {
@@ -962,7 +979,7 @@ export async function updateArchitectureReviewAnalysis(
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
-    actorId: ownerId,
+    actorId,
     eventType: "suppression.added",
     reviewRevision: review.revision,
     data: structuredClone(eventData),
@@ -998,20 +1015,22 @@ function comparableReport(report: ArchitectureChangeReview): string {
  */
 export async function recomputeArchitectureReviewAnalysis(
   id: string,
-  ownerId: string,
+  scope: ReviewAccessScope,
+  actorId: string,
   expectedRevision: number,
   report: ArchitectureChangeReview
 ): Promise<ReviewRecomputeResult> {
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 2);
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const existing = await client.query(
         `SELECT * FROM architecture_reviews
-         WHERE id = $1 AND owner_id = $2
+         WHERE id = $1 AND ${reach.sql}
          FOR UPDATE`,
-        [id, ownerId]
+        [id, reach.parameter]
       );
       if (!existing.rows[0]) {
         await client.query("ROLLBACK");
@@ -1033,16 +1052,16 @@ export async function recomputeArchitectureReviewAnalysis(
                  decided_at = NULL,
                  revision = revision + 1,
                  updated_at = NOW()
-             WHERE id = $1 AND owner_id = $2
+             WHERE id = $1 AND ${reach.sql}
              RETURNING *`,
-            [id, ownerId, JSON.stringify(report), CURRENT_ANALYZER_VERSION]
+            [id, reach.parameter, JSON.stringify(report), CURRENT_ANALYZER_VERSION]
           )
         : await client.query(
             `UPDATE architecture_reviews
              SET analyzer_version = $3, updated_at = NOW()
-             WHERE id = $1 AND owner_id = $2
+             WHERE id = $1 AND ${reach.sql}
              RETURNING *`,
-            [id, ownerId, CURRENT_ANALYZER_VERSION]
+            [id, reach.parameter, CURRENT_ANALYZER_VERSION]
           );
       const review = await markSyncPending(client, rowToReview(updated.rows[0]));
       await client.query(
@@ -1052,7 +1071,7 @@ export async function recomputeArchitectureReviewAnalysis(
         [
           randomUUID(),
           id,
-          ownerId,
+          actorId,
           review.revision,
           JSON.stringify(recomputeEventData(current, review, changed)),
         ]
@@ -1068,7 +1087,7 @@ export async function recomputeArchitectureReviewAnalysis(
   }
 
   const current = memoryReviews.get(id);
-  if (!current || current.ownerId !== ownerId) return { status: "not_found" };
+  if (!current || !reaches(scope, current)) return { status: "not_found" };
   if (current.revision !== expectedRevision) return { status: "conflict" };
   const changed = comparableReport(current.report) !== comparableReport(report);
   const now = new Date().toISOString();
@@ -1093,7 +1112,7 @@ export async function recomputeArchitectureReviewAnalysis(
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
-    actorId: ownerId,
+    actorId,
     eventType: "review.recomputed",
     reviewRevision: review.revision,
     data: recomputeEventData(current, review, changed),
@@ -1121,9 +1140,17 @@ function recomputeEventData(
   };
 }
 
+/**
+ * `scope` decides which row this may touch. `actorId` is recorded as who
+ * decided, alongside the entitlement evidence that says on what authority.
+ * Reachability is deliberately not that authority: being able to address a
+ * review is not permission to decide it, which is `reviewEntitlement`'s
+ * question and is asked before this is called.
+ */
 export async function updateArchitectureReviewDecision(
   id: string,
-  ownerId: string,
+  scope: ReviewAccessScope,
+  actorId: string,
   expectedRevision: number,
   decision: Exclude<ReviewDecision, "pending">,
   note: string | null,
@@ -1136,6 +1163,7 @@ export async function updateArchitectureReviewDecision(
 ): Promise<ReviewMutationResult> {
   const pool = getPool();
   if (pool) {
+    const reach = reachability(scope, 2);
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
@@ -1146,15 +1174,15 @@ export async function updateArchitectureReviewDecision(
              decided_at = NOW(),
              revision = revision + 1,
              updated_at = NOW()
-         WHERE id = $1 AND owner_id = $2 AND revision = $3
+         WHERE id = $1 AND ${reach.sql} AND revision = $3
          RETURNING *`,
-        [id, ownerId, expectedRevision, decision, note]
+        [id, reach.parameter, expectedRevision, decision, note]
       );
       if (!updated.rows[0]) {
         await client.query("ROLLBACK");
         const exists = await pool.query(
-          `SELECT 1 FROM architecture_reviews WHERE id = $1 AND owner_id = $2`,
-          [id, ownerId]
+          `SELECT 1 FROM architecture_reviews WHERE id = $1 AND ${reach.sql}`,
+          [id, reach.parameter]
         );
         return exists.rows[0] ? { status: "conflict" } : { status: "not_found" };
       }
@@ -1166,7 +1194,7 @@ export async function updateArchitectureReviewDecision(
         [
           randomUUID(),
           id,
-          ownerId,
+          actorId,
           review.revision,
           JSON.stringify({ decision, note, entitlement }),
         ]
@@ -1182,7 +1210,7 @@ export async function updateArchitectureReviewDecision(
   }
 
   const current = memoryReviews.get(id);
-  if (!current || current.ownerId !== ownerId) return { status: "not_found" };
+  if (!current || !reaches(scope, current)) return { status: "not_found" };
   if (current.revision !== expectedRevision) return { status: "conflict" };
   const now = new Date().toISOString();
   const review: ArchitectureReviewRecord = {
@@ -1198,7 +1226,7 @@ export async function updateArchitectureReviewDecision(
   memoryEvents.get(id)!.push({
     id: randomUUID(),
     reviewId: id,
-    actorId: ownerId,
+    actorId,
     eventType: "decision.changed",
     reviewRevision: review.revision,
     // Memory mode records the same evidence as PostgreSQL. The two storage

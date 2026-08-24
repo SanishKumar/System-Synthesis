@@ -25,7 +25,9 @@ import {
   listArchitectureReviews,
   resetMemoryReviewsForTests,
 } from "../../services/reviewRepository.js";
+import { ownerScope } from "../../services/reviewAccess.js";
 
+const SCOPE = ownerScope("owner-1");
 const REPOSITORY = "acme/shop";
 const SOURCE_PATH = "compose.yaml";
 const BASE_SHA = "a".repeat(40);
@@ -202,7 +204,7 @@ describe("GitHub architecture review ingestion", () => {
 
     expect(result.response.status).toBe(403);
     expect(result.json.error).toContain("does not match");
-    await expect(listArchitectureReviews("owner-1")).resolves.toHaveLength(0);
+    await expect(listArchitectureReviews(SCOPE)).resolves.toHaveLength(0);
   });
 
   it("creates one review, treats retries as idempotent, and refreshes a newer head", async () => {
@@ -237,9 +239,9 @@ describe("GitHub architecture review ingestion", () => {
       revision: 2,
       headRevision: SECOND_HEAD_SHA,
     });
-    const reviews = await listArchitectureReviews("owner-1");
+    const reviews = await listArchitectureReviews(SCOPE);
     expect(reviews).toHaveLength(1);
-    const events = await listArchitectureReviewEvents(first.json.reviewId, "owner-1");
+    const events = await listArchitectureReviewEvents(first.json.reviewId, SCOPE);
     expect(events.map((event) => event.eventType)).toEqual([
       "review.created",
       "review.refreshed",
@@ -286,7 +288,7 @@ describe("GitHub architecture review ingestion", () => {
     expect(JSON.stringify(result.json.details)).toContain(
       "edge endpoints must reference nodes in the same graph"
     );
-    await expect(listArchitectureReviews("owner-1")).resolves.toHaveLength(0);
+    await expect(listArchitectureReviews(SCOPE)).resolves.toHaveLength(0);
   });
 
   it("rejects an oversized delivery before authentication or analysis", async () => {
@@ -302,6 +304,6 @@ describe("GitHub architecture review ingestion", () => {
     });
 
     expect(response.status).toBe(413);
-    await expect(listArchitectureReviews("owner-1")).resolves.toHaveLength(0);
+    await expect(listArchitectureReviews(SCOPE)).resolves.toHaveLength(0);
   });
 });

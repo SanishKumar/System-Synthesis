@@ -50,7 +50,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 | Stale browser overwrites a newer review decision | Every review mutation requires the current revision and uses an optimistic transactional update. Stale writes return HTTP 409. |
 | User approves a failing review | Approval is rejected while any unsuppressed blocking finding remains. Rejection requires a note. |
 | Unrelated account connects a repository and drives the App to publish a check on it | Issuing or rotating an ingestion credential requires a linked GitHub identity with admin permission on that repository, confirmed live through the App's installation token and matched on GitHub's immutable numeric account id. Every failure mode refuses: unconfigured App, uninstalled App, missing or mismatched identity, permission below admin, and GitHub unavailable or rate limited. A refusal writes no row and returns no token. |
-| User reads or changes another user's review | Every list, detail, event, suppression, and decision query is scoped to the JWT-derived owner ID. |
+| User reads or changes another user's review | Every list, detail, event, suppression, recompute, and decision path derives its filter from one reachability predicate built from the JWT-derived owner ID, rather than each query restating the condition. Memory storage answers the same question through the same scope. A call that cannot reach a review changes nothing before refusing. |
 | Duplicate delivery corrupts state | Updates are hash-deduplicated in PostgreSQL and Yjs application is idempotent. |
 | LLM invents a validation issue | The deterministic rule engine creates the finding set. LLM output can only explain finding IDs already supplied by the server. |
 | Export embeds credentials | Exporters emit secret placeholders/sensitive variables and never synthesize default production secrets. |
@@ -78,7 +78,7 @@ This model covers the browser client, Express REST API, Socket.IO collaboration 
 - Optional LLM prompts contain deterministic finding text and modeled component metadata; operators must evaluate provider data-handling requirements.
 - Audit records are stored in the same database as application state and are not an immutable external security log.
 - Browser review ownership is per user rather than organization/role based.
-- Repository ingestion credentials are long-lived until rotation/revocation, and repository ownership is not independently verified by a GitHub App or OIDC exchange.
+- Repository ingestion credentials are long-lived until rotation or revocation. Repository authority is established through the GitHub App when a credential is issued and re-established once the stored proof is an hour old, so admin permission withdrawn on GitHub is honoured within that window rather than immediately.
 - The GitHub workflow can upload SARIF and comment only with the repository permissions granted to it; branch protection and required-check configuration are outside the application.
 - Canonical review graphs are durable, but submitted raw Compose source is not retained for independent re-parsing.
 - Exported infrastructure is deterministic for a supported subset, not security-certified deployment code.

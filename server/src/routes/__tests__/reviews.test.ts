@@ -73,9 +73,11 @@ import {
   resetMemoryReviewsForTests,
 } from "../../services/reviewRepository.js";
 import { resetGitHubAppCacheForTests } from "../../services/githubApp.js";
+import { ownerScope } from "../../services/reviewAccess.js";
 import { dockerComposeAdapter } from "@system-synthesis/architecture-core";
 
 const OWNER = { userId: "owner-1", userName: "owner", isGuest: false };
+const SCOPE = ownerScope(OWNER.userId);
 const OTHER = { userId: "owner-2", userName: "intruder", isGuest: false };
 const REPOSITORY = "acme/shop";
 const SOURCE_PATH = "compose.yaml";
@@ -242,7 +244,7 @@ describe("architecture review routes and the decision gate", () => {
     // The gate exists on the pull request, so the review must not claim it has
     // never reached one. It stayed pending forever when ingestion wrote the
     // check without recording the outcome.
-    const stored = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const stored = await getArchitectureReview(ingested.reviewId, SCOPE);
     expect(stored?.githubSync).toMatchObject({
       status: "synced",
       conclusion: "action_required",
@@ -255,7 +257,7 @@ describe("architecture review routes and the decision gate", () => {
     const baseUrl = await startApp();
     const ingested = await ingest(baseUrl);
 
-    const stored = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const stored = await getArchitectureReview(ingested.reviewId, SCOPE);
     expect(stored?.githubSync).toMatchObject({ status: "failed" });
     expect(stored?.githubSync.reason).toBe("check_write_failed");
   });
@@ -265,7 +267,7 @@ describe("architecture review routes and the decision gate", () => {
     const baseUrl = await startApp();
     const ingested = await ingest(baseUrl);
 
-    const stored = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const stored = await getArchitectureReview(ingested.reviewId, SCOPE);
     expect(stored?.githubSync).toMatchObject({
       status: "skipped",
       reason: "not_installed",
@@ -276,7 +278,7 @@ describe("architecture review routes and the decision gate", () => {
   it("answers a decision with the state that reached GitHub, not the pre-publish one", async () => {
     const baseUrl = await startApp();
     const ingested = await ingest(baseUrl);
-    const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
     const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
       method: "PATCH",
@@ -301,7 +303,7 @@ describe("architecture review routes and the decision gate", () => {
   it("answers a recompute with the state that reached GitHub", async () => {
     const baseUrl = await startApp();
     const ingested = await ingest(baseUrl);
-    const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
     const recomputed = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/recompute`, {
       method: "POST",
@@ -346,7 +348,7 @@ describe("architecture review routes and the decision gate", () => {
     try {
       const baseUrl = await startApp();
       const ingested = await ingest(baseUrl);
-      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
       const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
         method: "PATCH",
@@ -359,7 +361,7 @@ describe("architecture review routes and the decision gate", () => {
 
       expect(decided.status).toBe(403);
       expect(decided.body.code).toBe("self_approval");
-      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const after = await getArchitectureReview(ingested.reviewId, SCOPE);
       expect(after?.decision).toBe("pending");
     } finally {
       identity.linked = { githubUserId: null, githubLogin: null };
@@ -380,7 +382,7 @@ describe("architecture review routes and the decision gate", () => {
     try {
       const baseUrl = await startApp();
       const ingested = await ingest(baseUrl);
-      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
       const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
         method: "PATCH",
@@ -396,10 +398,10 @@ describe("architecture review routes and the decision gate", () => {
       // Actionable rather than "try again shortly".
       expect(String(decided.body.error)).toContain("Pull requests: Read");
 
-      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const after = await getArchitectureReview(ingested.reviewId, SCOPE);
       expect(after?.decision).toBe("pending");
       expect(after?.revision).toBe(before!.revision);
-      const events = await listArchitectureReviewEvents(ingested.reviewId, OWNER.userId);
+      const events = await listArchitectureReviewEvents(ingested.reviewId, SCOPE);
       expect(events.filter((event) => event.eventType === "decision.changed")).toEqual([]);
     } finally {
       github.permissions = { checks: "write", metadata: "read", pull_requests: "read" };
@@ -415,7 +417,7 @@ describe("architecture review routes and the decision gate", () => {
     try {
       const baseUrl = await startApp();
       const ingested = await ingest(baseUrl);
-      const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
       const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
         method: "PATCH",
@@ -428,7 +430,7 @@ describe("architecture review routes and the decision gate", () => {
 
       expect(decided.status).toBe(403);
       expect(decided.body.code).toBe("identity_required");
-      const after = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+      const after = await getArchitectureReview(ingested.reviewId, SCOPE);
       expect(after?.decision).toBe("pending");
     } finally {
       delete process.env.GITHUB_APP_CLIENT_ID;
@@ -441,7 +443,7 @@ describe("architecture review routes and the decision gate", () => {
     // check existed, and it must keep working rather than locking everyone out.
     const baseUrl = await startApp();
     const ingested = await ingest(baseUrl);
-    const before = await getArchitectureReview(ingested.reviewId, OWNER.userId);
+    const before = await getArchitectureReview(ingested.reviewId, SCOPE);
 
     const decided = await asOwner(baseUrl, `/api/reviews/${ingested.reviewId}/decision`, {
       method: "PATCH",

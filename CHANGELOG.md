@@ -27,6 +27,7 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Fixed
 
+- The threat model no longer contradicts itself about repository authority. Its mitigation table described admin permission confirmed live through the GitHub App, while its residual risks still stated that repository ownership was never independently verified; the stale half was left behind when the check was added
 - A forced token refresh that fails is no longer discarded. An App uninstalled since the cached token was minted, or a GitHub outage, was reported as a missing Checks permission — sending an administrator to grant something on an App that was not there. A refresh that finds the App gone says so, one that cannot complete says that, and one the per-repository bound declines is treated as a look that did not happen rather than as a short grant
 - The decision spinner appears on the button that was pressed. A single shared flag drove it, so rejecting a review spun the Approve button
 - Cross-origin preflight responses carry a ten-minute lifetime. Every authenticated request is preflighted, and without a lifetime the browser re-asked within seconds, roughly doubling the request count of an open review that polls
@@ -79,6 +80,7 @@ All notable changes are documented here. The project has not tagged a public rel
 
 ### Changed
 
+- Separated who stored a review from who may reach one. Every list, detail, event, suppression, recompute, and decision path now derives its filter from one reachability predicate instead of ten queries each restating `owner_id = $n`, and the account that acts is passed independently of the scope that let it reach the row. Reachability is still owner-only and nothing observable changes; what changes is that widening it later happens in one place rather than ten, and that an audit event cannot quietly credit the storing account for somebody else's action
 - Moved component classification and zone assignment into a shared `componentNature` module so every adapter agrees on what a component is and where exposure may not put it; Compose extraction is unchanged and its pinned fingerprint proves it
 - Repositioned the product around deterministic architecture change intelligence; the collaborative canvas is now a supporting inspection/modeling surface
 - Extracted canonical graph analysis, diffing, validation, source import, and review policy into the reusable `architecture-core` workspace

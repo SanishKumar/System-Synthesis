@@ -154,6 +154,18 @@ Mutations require the current review revision:
 
 A stale mutation receives HTTP 409. Approval receives HTTP 422 while blocking findings remain. Rejection requires a note.
 
+## Reachability and authority
+
+Two different questions decide what a request may do with a stored review, and they are answered in two different places.
+
+*Reachability* is which reviews a caller can address at all. `architecture_reviews.owner_id` records who stored a review; a review access scope records who may reach one. Today the only scope reaches the reviews an account stored itself, so the two coincide and every query still filters on `owner_id`. They are kept apart because they are not the same question: once reachability widens to the collaborators on a repository, a query written against storage attribution grants or refuses the wrong thing while continuing to look correct.
+
+Every list, detail, event, suppression, recompute, and decision path derives its filter from one predicate rather than restating it, and that predicate binds exactly one parameter so a widened condition cannot silently renumber the placeholders around it. The in-memory store answers through the same scope, because a deployment that changes storage backend must not change who can see what.
+
+*Authority* is whether a review that can be reached may be decided. It stays a separate check made against GitHub at the moment it matters. Being able to address a review is deliberately not permission to decide it.
+
+Event actors are recorded independently of both. The account that acted is passed separately from the scope that let it reach the row, so an audit trail cannot credit the storing account for what somebody else did.
+
 ## Import provenance
 
 A graph records the extraction contract that produced it as `source.adapterVersion`. `COMPOSE_ADAPTER_VERSION` is bumped whenever the same Compose source would now yield a different graph: new or removed entities, changed identities, changed classification, or a new relationship source. Version 1 modelled only explicit `depends_on`; version 2 added inferred environment dependencies. A pinned extraction fingerprint fails whenever output changes, so the number cannot drift silently.

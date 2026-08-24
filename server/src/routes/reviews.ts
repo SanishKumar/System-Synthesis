@@ -13,6 +13,7 @@ import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
 import { reviewDecisionEntitlement } from "../services/reviewEntitlement.js";
 import { linkedGitHubIdentity, refreshGitHubLogin } from "./auth.js";
+import { ownerScope, type ReviewAccessScope } from "../services/reviewAccess.js";
 import {
   analyzerStatus,
   importStatus,
@@ -153,11 +154,11 @@ async function publishAndLog(
  */
 async function afterPublishing(
   review: ArchitectureReviewRecord,
-  ownerId: string,
+  scope: ReviewAccessScope,
   published: GitHubSyncState | null
 ): Promise<ArchitectureReviewRecord> {
   try {
-    const current = await getArchitectureReview(review.id, ownerId);
+    const current = await getArchitectureReview(review.id, scope);
     if (current) return current;
   } catch (error) {
     logger.warn("Could not re-read a review after publishing", {
@@ -171,7 +172,7 @@ async function afterPublishing(
 async function mutationResponse(
   res: Response,
   result: ReviewMutationResult,
-  ownerId: string
+  scope: ReviewAccessScope
 ): Promise<Response> {
   if (result.status === "not_found") {
     return res.status(404).json({ error: "Architecture review not found" });
@@ -182,14 +183,14 @@ async function mutationResponse(
     });
   }
   const state = await publishAndLog(result.review);
-  const review = await afterPublishing(result.review, ownerId, state);
+  const review = await afterPublishing(result.review, scope, state);
   return res.json({ ...review, ...analyzerStatus(review), ...importStatus(review) });
 }
 
 router.get("/", async (req, res) => {
   try {
     res.json({
-      reviews: await listArchitectureReviews(req.user!.userId),
+      reviews: await listArchitectureReviews(ownerScope(req.user!.userId)),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -256,7 +257,7 @@ router.get("/:id", async (req, res) => {
   const id = reviewIdSchema.safeParse(req.params.id);
   if (!id.success) return res.status(400).json({ error: "Invalid review identifier" });
   try {
-    const review = await getArchitectureReview(id.data, req.user!.userId);
+    const review = await getArchitectureReview(id.data, ownerScope(req.user!.userId));
     if (!review) return res.status(404).json({ error: "Architecture review not found" });
     res.json({ ...review, ...analyzerStatus(review), ...importStatus(review) });
   } catch (error: any) {
@@ -268,10 +269,11 @@ router.get("/:id/events", async (req, res) => {
   const id = reviewIdSchema.safeParse(req.params.id);
   if (!id.success) return res.status(400).json({ error: "Invalid review identifier" });
   try {
-    const review = await getArchitectureReview(id.data, req.user!.userId);
+    const scope = ownerScope(req.user!.userId);
+    const review = await getArchitectureReview(id.data, scope);
     if (!review) return res.status(404).json({ error: "Architecture review not found" });
     res.json({
-      events: await listArchitectureReviewEvents(id.data, req.user!.userId),
+      events: await listArchitectureReviewEvents(id.data, scope),
     });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
@@ -284,7 +286,8 @@ router.post("/:id/suppressions", async (req, res) => {
   const parsed = addSuppressionSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
   try {
-    const current = await getArchitectureReview(id.data, req.user!.userId);
+    const scope = ownerScope(req.user!.userId);
+    const current = await getArchitectureReview(id.data, scope);
     if (!current) return res.status(404).json({ error: "Architecture review not found" });
     const target = current.report.headValidation.issues.find(
       (finding) =>
@@ -328,6 +331,7 @@ router.post("/:id/suppressions", async (req, res) => {
     );
     const result = await updateArchitectureReviewAnalysis(
       current.id,
+      scope,
       req.user!.userId,
       parsed.data.expectedRevision,
       policy,
@@ -341,7 +345,7 @@ router.post("/:id/suppressions", async (req, res) => {
         expiresAt: suppression.expiresAt,
       }
     );
-    return await mutationResponse(res, result, req.user!.userId);
+    return await mutationResponse(res, result, scope);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }
@@ -353,7 +357,8 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
   const parsed = recomputeSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
   try {
-    const current = await getArchitectureReview(id.data, req.user!.userId);
+    const scope = ownerScope(req.user!.userId);
+    const current = await getArchitectureReview(id.data, scope);
     if (!current) return res.status(404).json({ error: "Architecture review not found" });
     // Stored canonical graphs and policy only: the submitted source is never
     // retained, and re-analysis must not depend on it.
@@ -369,6 +374,7 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
     );
     const result = await recomputeArchitectureReviewAnalysis(
       current.id,
+      scope,
       req.user!.userId,
       parsed.data.expectedRevision,
       report
@@ -384,7 +390,7 @@ router.post("/:id/recompute", reviewCreateLimiter, async (req, res) => {
     // Re-analysis can turn a blocking verdict into a passing one, or return an
     // approved review to pending, so the gate has to follow it.
     const state = await publishAndLog(result.review);
-    const published = await afterPublishing(result.review, req.user!.userId, state);
+    const published = await afterPublishing(result.review, scope, state);
     return res.json({
       ...published,
       ...analyzerStatus(published),
@@ -402,7 +408,8 @@ router.post("/:id/github-sync/retry", reviewCreateLimiter, async (req, res) => {
   try {
     // Owner-scoped, and every published value is derived from the stored review.
     // A caller cannot choose the repository, the commit, or the conclusion.
-    const review = await getArchitectureReview(id.data, req.user!.userId);
+    const scope = ownerScope(req.user!.userId);
+    const review = await getArchitectureReview(id.data, scope);
     if (!review) return res.status(404).json({ error: "Architecture review not found" });
 
     // Republishing the current state, so the semantic revision does not move and
@@ -418,7 +425,7 @@ router.post("/:id/github-sync/retry", reviewCreateLimiter, async (req, res) => {
     // review resolved at the start of the request then describes the previous
     // head, revision and report, and returning it would walk the reader's page
     // backwards onto a commit that is no longer under review.
-    const current = await afterPublishing(review, req.user!.userId, githubSync);
+    const current = await afterPublishing(review, scope, githubSync);
     return res.json({
       ...current,
       ...analyzerStatus(current),
@@ -435,7 +442,8 @@ router.patch("/:id/decision", async (req, res) => {
   const parsed = decisionSchema.safeParse(req.body);
   if (!parsed.success) return badRequest(res, parsed.error);
   try {
-    const current = await getArchitectureReview(id.data, req.user!.userId);
+    const scope = ownerScope(req.user!.userId);
+    const current = await getArchitectureReview(id.data, scope);
     if (!current) return res.status(404).json({ error: "Architecture review not found" });
     if (parsed.data.decision === "approved" && current.report.status === "fail") {
       return res.status(422).json({
@@ -468,13 +476,14 @@ router.patch("/:id/decision", async (req, res) => {
 
     const result = await updateArchitectureReviewDecision(
       current.id,
+      scope,
       req.user!.userId,
       parsed.data.expectedRevision,
       parsed.data.decision,
       parsed.data.note || null,
       entitlement.evidence
     );
-    return await mutationResponse(res, result, req.user!.userId);
+    return await mutationResponse(res, result, scope);
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

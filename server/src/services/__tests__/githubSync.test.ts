@@ -12,6 +12,7 @@ import {
 } from "@system-synthesis/architecture-core";
 import { publishDecisionCheck } from "../githubChecks.js";
 import { resetGitHubAppCacheForTests, type HttpTransport } from "../githubApp.js";
+import { ownerScope } from "../reviewAccess.js";
 import {
   getArchitectureReview,
   ingestArchitectureReview,
@@ -30,6 +31,7 @@ const { privateKey } = generateKeyPairSync("rsa", {
 });
 const env = { GITHUB_APP_ID: "1234", GITHUB_APP_PRIVATE_KEY: privateKey };
 const OWNER = "owner-1";
+const SCOPE = ownerScope(OWNER);
 const HEAD = "b".repeat(40);
 const BASE_SOURCE = `services:\n  web:\n    image: web:1\n    ports: ["3000:3000"]\n  db:\n    image: postgres:16\n`;
 /** Head gives a publicly published service a direct dependency on persistence,
@@ -119,6 +121,7 @@ describe("GitHub synchronization state", () => {
     const { review } = await ingest();
     const decided = await updateArchitectureReviewDecision(
       review.id,
+      SCOPE,
       OWNER,
       review.revision,
       "rejected",
@@ -135,7 +138,7 @@ describe("GitHub synchronization state", () => {
     expect(state.reason).toBe("check_write_forbidden");
 
     // The decision itself is unaffected by GitHub being unreachable.
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored).toMatchObject({ decision: "rejected", decisionNote: "Use the API." });
   });
 
@@ -153,12 +156,12 @@ describe("GitHub synchronization state", () => {
     const { review } = await ingest();
     await publishDecisionCheck(review, { transport: transport({ writeStatus: 403 }), env });
 
-    const current = (await getArchitectureReview(review.id, OWNER))!;
+    const current = (await getArchitectureReview(review.id, SCOPE))!;
     expect(current.githubSync.status).toBe("failed");
 
     const retried = await publishDecisionCheck(current, { transport: transport(), env });
     expect(retried.status).toBe("synced");
-    const after = (await getArchitectureReview(review.id, OWNER))!;
+    const after = (await getArchitectureReview(review.id, SCOPE))!;
     expect(after.revision).toBe(review.revision);
   });
 
@@ -177,7 +180,7 @@ describe("GitHub synchronization state", () => {
     });
 
     expect(discarded).toBeNull();
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync.status).toBe("pending");
   });
 
@@ -198,7 +201,7 @@ describe("GitHub synchronization state", () => {
     expect(discarded).toBeNull();
     // The newer commit still owes an attempt of its own; a stale "nothing was
     // published" must not make its gate look settled.
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toMatchObject({
       status: "pending",
       headRevision: refreshed.review.headRevision,
@@ -236,7 +239,7 @@ describe("GitHub synchronization state", () => {
     expect(state.attemptedAt).not.toBeNull();
 
     // What the caller was handed is what storage holds.
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toEqual(state);
   });
 
@@ -272,7 +275,7 @@ describe("GitHub synchronization state", () => {
     expect(late).toBeNull();
     // Nothing about the review changed between the two attempts, so the gate
     // the successful one wrote is still on the pull request and still correct.
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toMatchObject({ status: "synced", reason: null });
   });
 
@@ -288,7 +291,7 @@ describe("GitHub synchronization state", () => {
     });
 
     expect(late).toBeNull();
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync.status).toBe("synced");
   });
 
@@ -331,7 +334,7 @@ describe("GitHub synchronization state", () => {
       revision: review.revision,
       headRevision: review.headRevision,
     });
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync.status).toBe("synced");
   });
 
@@ -376,7 +379,7 @@ describe("GitHub synchronization state", () => {
       headRevision: review.headRevision,
     });
     // The stored state has to agree, or a refresh would hide the stuck gate.
-    const stored = await getArchitectureReview(review.id, OWNER);
+    const stored = await getArchitectureReview(review.id, SCOPE);
     expect(stored?.githubSync).toMatchObject({
       status: "failed",
       reason: "github_unreachable",

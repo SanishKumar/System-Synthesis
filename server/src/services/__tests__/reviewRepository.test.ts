@@ -24,6 +24,10 @@ import {
   updateArchitectureReviewAnalysis,
   updateArchitectureReviewDecision,
 } from "../reviewRepository.js";
+import { ownerScope, type ReviewAccessScope } from "../reviewAccess.js";
+
+const OWNER_SCOPE = ownerScope("owner-1");
+const OTHER_SCOPE = ownerScope("other-user");
 
 const baseSource = `services:
   api:
@@ -84,14 +88,14 @@ describe("architecture review repository memory fallback", () => {
   it("persists reviews with owner isolation and a creation event", async () => {
     const review = await create();
 
-    await expect(getArchitectureReview(review.id, "owner-1")).resolves.toMatchObject({
+    await expect(getArchitectureReview(review.id, OWNER_SCOPE)).resolves.toMatchObject({
       id: review.id,
       ownerId: "owner-1",
       revision: 1,
       decision: "pending",
     });
-    await expect(getArchitectureReview(review.id, "other-user")).resolves.toBeNull();
-    await expect(listArchitectureReviews("owner-1")).resolves.toEqual([
+    await expect(getArchitectureReview(review.id, OTHER_SCOPE)).resolves.toBeNull();
+    await expect(listArchitectureReviews(OWNER_SCOPE)).resolves.toEqual([
       expect.objectContaining({
         id: review.id,
         analysisStatus: "fail",
@@ -99,7 +103,7 @@ describe("architecture review repository memory fallback", () => {
         semanticChanges: 1,
       }),
     ]);
-    await expect(listArchitectureReviewEvents(review.id, "owner-1")).resolves.toEqual([
+    await expect(listArchitectureReviewEvents(review.id, OWNER_SCOPE)).resolves.toEqual([
       expect.objectContaining({
         eventType: "review.created",
         reviewRevision: 1,
@@ -116,6 +120,7 @@ describe("architecture review repository memory fallback", () => {
     };
     const updated = await updateArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       { suppressions: [] },
@@ -129,6 +134,7 @@ describe("architecture review repository memory fallback", () => {
 
     await expect(updateArchitectureReviewDecision(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       "approved",
@@ -146,6 +152,7 @@ describe("architecture review repository memory fallback", () => {
     };
     const suppressed = await updateArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       {
@@ -161,6 +168,7 @@ describe("architecture review repository memory fallback", () => {
 
     const decided = await updateArchitectureReviewDecision(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       2,
       "approved",
@@ -174,7 +182,7 @@ describe("architecture review repository memory fallback", () => {
         revision: 3,
       },
     });
-    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
     expect(events.map((event) => [
       event.eventType,
       event.reviewRevision,
@@ -227,7 +235,7 @@ describe("analyzer provenance", () => {
       currentAnalyzerVersion: CURRENT_ANALYZER_VERSION,
       analyzerOutdated: false,
     });
-    await expect(listArchitectureReviews("owner-1")).resolves.toEqual([
+    await expect(listArchitectureReviews(OWNER_SCOPE)).resolves.toEqual([
       expect.objectContaining({
         analyzerVersion: CURRENT_ANALYZER_VERSION,
         analyzerOutdated: false,
@@ -393,6 +401,7 @@ describe("analyzer provenance", () => {
 
     const result = await recomputeArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       recomputedReport
@@ -413,6 +422,7 @@ describe("analyzer provenance", () => {
     };
     await updateArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       { suppressions: [] },
@@ -421,6 +431,7 @@ describe("analyzer provenance", () => {
     );
     const approved = await updateArchitectureReviewDecision(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       2,
       "approved",
@@ -431,6 +442,7 @@ describe("analyzer provenance", () => {
 
     const recomputed = await recomputeArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       3,
       // Same verdict, only the review timestamp moves.
@@ -446,7 +458,7 @@ describe("analyzer provenance", () => {
         analyzerVersion: CURRENT_ANALYZER_VERSION,
       },
     });
-    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
     expect(events.at(-1)).toMatchObject({
       eventType: "review.recomputed",
       reviewRevision: 3,
@@ -458,6 +470,7 @@ describe("analyzer provenance", () => {
     const review = await create();
     const recomputed = await recomputeArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       { ...review.report, status: "pass" as const, blockingFindings: [] }
@@ -471,7 +484,7 @@ describe("analyzer provenance", () => {
         analyzerVersion: CURRENT_ANALYZER_VERSION,
       },
     });
-    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
     expect(events.at(-1)).toMatchObject({
       eventType: "review.recomputed",
       reviewRevision: 2,
@@ -483,13 +496,13 @@ describe("analyzer provenance", () => {
     const review = await create();
 
     await expect(
-      recomputeArchitectureReviewAnalysis(review.id, "owner-1", 99, review.report)
+      recomputeArchitectureReviewAnalysis(review.id, OWNER_SCOPE, "owner-1", 99, review.report)
     ).resolves.toEqual({ status: "conflict" });
     await expect(
-      recomputeArchitectureReviewAnalysis(review.id, "other-user", 1, review.report)
+      recomputeArchitectureReviewAnalysis(review.id, OTHER_SCOPE, "other-user", 1, review.report)
     ).resolves.toEqual({ status: "not_found" });
     // A refused recompute must not have touched the row.
-    await expect(getArchitectureReview(review.id, "owner-1")).resolves.toMatchObject({
+    await expect(getArchitectureReview(review.id, OWNER_SCOPE)).resolves.toMatchObject({
       revision: 1,
       decision: "pending",
     });
@@ -499,6 +512,7 @@ describe("analyzer provenance", () => {
     const review = await create();
     const updated = await updateArchitectureReviewAnalysis(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       1,
       { suppressions: [] },
@@ -536,6 +550,7 @@ describe("a decision carries the evidence it was allowed on", () => {
     const review = await create();
     const decided = await updateArchitectureReviewDecision(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       review.revision,
       "approved",
@@ -544,7 +559,7 @@ describe("a decision carries the evidence it was allowed on", () => {
     );
     expect(decided.status).toBe("updated");
 
-    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
     const decision = events.find((event) => event.eventType === "decision.changed");
     expect(decision?.data).toMatchObject({ decision: "approved", entitlement: VERIFIED });
   });
@@ -556,13 +571,14 @@ describe("a decision carries the evidence it was allowed on", () => {
     const review = await create();
     await updateArchitectureReviewDecision(
       review.id,
+      OWNER_SCOPE,
       "owner-1",
       review.revision,
       "rejected",
       "No.",
       { basis: "unenforced", repository: "acme/shop" }
     );
-    const events = await listArchitectureReviewEvents(review.id, "owner-1");
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
     const decision = events.find((event) => event.eventType === "decision.changed");
     expect((decision?.data as Record<string, unknown>).entitlement).toEqual({
       basis: "unenforced",
@@ -570,6 +586,179 @@ describe("a decision carries the evidence it was allowed on", () => {
     });
     expect((decision?.data as Record<string, unknown>).entitlement).not.toMatchObject({
       basis: "verified",
+    });
+  });
+});
+
+describe("reachability at every entry point", () => {
+  beforeEach(() => resetMemoryReviewsForTests());
+
+  // A real report, so a refusal is a refusal about reachability rather than
+  // about a malformed argument the function never got far enough to reject.
+  const { report } = analysis();
+
+  /**
+   * Every way into a stored review, exercised against a scope that does not
+   * reach it.
+   *
+   * Written as a table rather than as six tests because the risk here is
+   * uneven coverage, not a single wrong answer. Reachability that is applied
+   * to `get` and forgotten on `recompute` leaves a review nobody can read and
+   * anybody can rewrite, and each function still looks correct on its own. An
+   * entry point that takes a scope and is missing from this list is the defect
+   * this is here to catch.
+   */
+  const entryPoints: {
+    name: string;
+    call: (id: string, scope: ReviewAccessScope) => Promise<unknown>;
+    outOfReach: unknown;
+  }[] = [
+    {
+      name: "getArchitectureReview",
+      call: (id, scope) => getArchitectureReview(id, scope),
+      outOfReach: null,
+    },
+    {
+      name: "listArchitectureReviews",
+      call: (_id, scope) => listArchitectureReviews(scope),
+      outOfReach: [],
+    },
+    {
+      name: "listArchitectureReviewEvents",
+      call: (id, scope) => listArchitectureReviewEvents(id, scope),
+      outOfReach: [],
+    },
+    {
+      name: "updateArchitectureReviewAnalysis",
+      call: (id, scope) =>
+        updateArchitectureReviewAnalysis(id, scope, "other-user", 1, { suppressions: [] }, report, {}),
+      outOfReach: { status: "not_found" },
+    },
+    {
+      name: "recomputeArchitectureReviewAnalysis",
+      call: (id, scope) =>
+        recomputeArchitectureReviewAnalysis(id, scope, "other-user", 1, report),
+      outOfReach: { status: "not_found" },
+    },
+    {
+      name: "updateArchitectureReviewDecision",
+      call: (id, scope) =>
+        updateArchitectureReviewDecision(id, scope, "other-user", 1, "approved", null, MANUAL_ENTITLEMENT),
+      outOfReach: { status: "not_found" },
+    },
+  ];
+
+  it.each(entryPoints)("$name refuses a scope that does not reach the review", async (entry) => {
+    const review = await create();
+
+    await expect(entry.call(review.id, OTHER_SCOPE)).resolves.toEqual(entry.outOfReach);
+
+    // A refused call must also not have changed anything on the way to
+    // refusing: an unreachable mutation that still bumped the revision would
+    // let a stranger invalidate a decision they could never read.
+    await expect(getArchitectureReview(review.id, OWNER_SCOPE)).resolves.toMatchObject({
+      revision: 1,
+      decision: "pending",
+    });
+  });
+
+  it("still reaches the review for the account that stored it", async () => {
+    // The other half of the same claim. Without it, a scope that reaches
+    // nothing at all would pass every expectation above.
+    const review = await create();
+
+    await expect(getArchitectureReview(review.id, OWNER_SCOPE)).resolves.toMatchObject({
+      id: review.id,
+    });
+    await expect(listArchitectureReviews(OWNER_SCOPE)).resolves.toHaveLength(1);
+    await expect(listArchitectureReviewEvents(review.id, OWNER_SCOPE)).resolves.not.toHaveLength(0);
+    await expect(
+      updateArchitectureReviewDecision(
+        review.id,
+        OWNER_SCOPE,
+        "owner-1",
+        1,
+        "approved",
+        null,
+        MANUAL_ENTITLEMENT
+      )
+    ).resolves.toMatchObject({ status: "updated" });
+  });
+});
+
+describe("event attribution", () => {
+  beforeEach(() => resetMemoryReviewsForTests());
+
+  const { report } = analysis();
+  const ACTOR = "deciding-collaborator";
+
+  /**
+   * The audit trail follows the actor, not the account the review is stored
+   * under.
+   *
+   * These are the same account today, which is exactly why this needs its own
+   * test: a single value used for both reads as correct and passes every other
+   * expectation in this file. Each mutation writes its own event row, so each
+   * is a separate place the owner could have been recorded instead.
+   */
+  it("credits the actor on a suppression, not the storing account", async () => {
+    const review = await create();
+
+    await updateArchitectureReviewAnalysis(
+      review.id,
+      OWNER_SCOPE,
+      ACTOR,
+      1,
+      { suppressions: [] },
+      { ...report, status: "pass" as const, blockingFindings: [] },
+      { ruleId: "example-rule" }
+    );
+
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
+    expect(events.at(-1)).toMatchObject({
+      eventType: "suppression.added",
+      actorId: ACTOR,
+    });
+  });
+
+  it("credits the actor on a recompute, not the storing account", async () => {
+    const review = await create();
+
+    await recomputeArchitectureReviewAnalysis(review.id, OWNER_SCOPE, ACTOR, 1, {
+      ...report,
+      status: "pass" as const,
+      blockingFindings: [],
+    });
+
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
+    expect(events.at(-1)).toMatchObject({
+      eventType: "review.recomputed",
+      actorId: ACTOR,
+    });
+  });
+
+  it("credits the actor on a decision, not the storing account", async () => {
+    const review = await create();
+
+    await updateArchitectureReviewDecision(
+      review.id,
+      OWNER_SCOPE,
+      ACTOR,
+      1,
+      "approved",
+      null,
+      MANUAL_ENTITLEMENT
+    );
+
+    const events = await listArchitectureReviewEvents(review.id, OWNER_SCOPE);
+    expect(events.at(-1)).toMatchObject({
+      eventType: "decision.changed",
+      actorId: ACTOR,
+    });
+    // The review is still stored under its owner: crediting the actor must not
+    // have moved the row to them.
+    await expect(getArchitectureReview(review.id, OWNER_SCOPE)).resolves.toMatchObject({
+      ownerId: "owner-1",
     });
   });
 });
