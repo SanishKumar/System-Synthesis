@@ -547,3 +547,150 @@ ${spec}
     }
   });
 });
+
+describe("kubernetes per-Service exposure evidence", () => {
+  /** A Service with explicit, individually named ports. */
+  function portService(
+    name: string,
+    selector: string,
+    ports: { port: number; targetPort: string; nodePort?: number }[],
+    extras: { type?: string } = {}
+  ): string {
+    const type = extras.type ? `\n  type: ${extras.type}` : "";
+    const rendered = ports
+      .map(
+        (entry) =>
+          `    - port: ${entry.port}\n      targetPort: ${entry.targetPort}` +
+          (entry.nodePort === undefined ? "" : `\n      nodePort: ${entry.nodePort}`)
+      )
+      .join("\n");
+    return `apiVersion: v1
+kind: Service
+metadata:
+  name: ${name}
+spec:${type}
+  selector:
+    app: ${selector}
+  ports:
+${rendered}
+`;
+  }
+
+  const external = portService("api-public", "api", [{ port: 30080, targetPort: "http" }], {
+    type: "LoadBalancer",
+  });
+  const internal = portService("api-internal", "api", [
+    { port: 80, targetPort: "http-internal" },
+  ]);
+
+  function exposureOf(...documents: string[]) {
+    const properties = nodeNamed(importAt(...documents), "api").data.sourceProperties!;
+    return {
+      clusterExposure: properties.clusterExposure,
+      exposedPorts: properties.exposedPorts,
+      serviceNames: properties.serviceNames,
+      serviceTypes: properties.serviceTypes,
+    };
+  }
+
+  it("publishes only the ports of the Services that actually reach past the cluster", () => {
+    // The workload is externally reachable, so it is reported as such. That
+    // does not make the ClusterIP Service's port an exposure: nothing outside
+    // the cluster can address port 80 here, and listing it as published would
+    // describe an opening that does not exist.
+    const evidence = exposureOf(workload("api", "node:22"), external, internal);
+
+    expect(evidence.clusterExposure).toBe("external");
+    expect(evidence.exposedPorts).toEqual(["30080->http"]);
+    expect(evidence.exposedPorts).not.toContain("80->http-internal");
+  });
+
+  it("records every selecting Service even though only some contribute ports", () => {
+    const evidence = exposureOf(workload("api", "node:22"), external, internal);
+
+    expect(evidence.serviceNames).toEqual(["api-internal", "api-public"]);
+    expect(evidence.serviceTypes).toEqual(["ClusterIP", "LoadBalancer"]);
+  });
+
+  it("does not depend on the order the Services were declared", () => {
+    const forwards = exposureOf(workload("api", "node:22"), external, internal);
+    const backwards = exposureOf(workload("api", "node:22"), internal, external);
+
+    expect(backwards).toEqual(forwards);
+  });
+
+  it("keeps the ports of every Service that is itself externally reachable", () => {
+    const second = portService("api-edge", "api", [{ port: 8443, targetPort: "https" }], {
+      type: "LoadBalancer",
+    });
+    const evidence = exposureOf(workload("api", "node:22"), external, second);
+
+    expect(evidence.exposedPorts).toEqual(["30080->http", "8443->https"]);
+  });
+
+  it("publishes nothing for a workload only an internal Service selects", () => {
+    const evidence = exposureOf(workload("api", "node:22"), internal);
+
+    expect(evidence.clusterExposure).toBe("cluster");
+    expect(evidence.exposedPorts).toEqual([]);
+  });
+
+  it("counts a NodePort Service's own ports and not an internal one's", () => {
+    const nodePort = portService(
+      "api-node",
+      "api",
+      [{ port: 8080, targetPort: "http", nodePort: 31000 }],
+      { type: "NodePort" }
+    );
+    const evidence = exposureOf(workload("api", "node:22"), nodePort, internal);
+
+    expect(evidence.clusterExposure).toBe("node");
+    expect(evidence.exposedPorts).toEqual(["8080->http:31000"]);
+  });
+
+  it("counts an unresolved Service's own ports, because its reach is not established", () => {
+    const unresolved = portService("api-templated", "api", [
+      { port: 9090, targetPort: "metrics" },
+    ], { type: "${SERVICE_TYPE}" });
+    const evidence = exposureOf(workload("api", "node:22"), unresolved, internal);
+
+    expect(evidence.clusterExposure).toBe("unknown");
+    expect(evidence.exposedPorts).toEqual(["9090->metrics"]);
+  });
+
+  it("exposes only the ports of the Service an Ingress actually routes to", () => {
+    const routed = portService("api-routed", "api", [{ port: 8080, targetPort: "http" }]);
+    const route = `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api-routed
+                port:
+                  number: 8080
+`;
+    const evidence = exposureOf(workload("api", "node:22"), routed, internal, route);
+
+    // The Ingress makes `api-routed` external. The unrelated ClusterIP Service
+    // beside it is not on that route and publishes nothing.
+    expect(evidence.clusterExposure).toBe("external");
+    expect(evidence.exposedPorts).toEqual(["8080->http"]);
+  });
+
+  it("states one port once when two reachable Services declare the same one", () => {
+    const twin = portService("api-mirror", "api", [{ port: 30080, targetPort: "http" }], {
+      type: "LoadBalancer",
+    });
+    const evidence = exposureOf(workload("api", "node:22"), external, twin);
+
+    expect(evidence.exposedPorts).toEqual(["30080->http"]);
+  });
+});

@@ -14,6 +14,11 @@ import { canonicalGraphFingerprint } from "../provenance.js";
  * policy documents are here for that reason too: an egress-only policy, one
  * that selects by label, and one whose selector this adapter cannot evaluate,
  * so each of the three coverage states is walked rather than assumed.
+ *
+ * `api` is selected by two Services at once — one the Ingress routes to, and
+ * one internal — because port evidence is per Service. A fixture where every
+ * workload has a single Service cannot tell a correct exposure list from one
+ * that pools every selecting Service's ports together.
  */
 const FIXTURE = `apiVersion: apps/v1
 kind: Deployment
@@ -53,6 +58,18 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-internal
+  namespace: shop
+spec:
+  selector:
+    app: api
+  ports:
+    - port: 80
+      targetPort: http-internal
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -219,7 +236,7 @@ spec:
           image: ghcr.io/acme/api:1.4
 `;
 
-const PINNED_FINGERPRINT = "bf96915522327ba4";
+const PINNED_FINGERPRINT = "c37cdff6e2766062";
 
 const { graph } = kubernetesAdapter.import(
   [{ path: "k8s/shop.yaml", content: FIXTURE }],
@@ -269,6 +286,17 @@ describe("kubernetes extraction is versioned", () => {
     // An Ingress puts the workload behind it past the boundary.
     expect(node("api", "Deployment").data.sourceProperties?.clusterExposure).toBe("external");
     expect(node("api", "Deployment").data.zone).toBe("dmz");
+    // Two Services select `api`. Both are recorded, and only the one the
+    // Ingress routes to publishes a port: the internal Service's 80 is not an
+    // opening merely because something else exposes the same workload.
+    expect(node("api", "Deployment").data.sourceProperties?.serviceNames).toEqual([
+      "api",
+      "api-internal",
+    ]);
+    expect(node("api", "Deployment").data.sourceProperties?.exposedPorts).toEqual(["8080"]);
+    expect(node("api", "Deployment").data.sourceProperties?.exposedPorts).not.toContain(
+      "80->http-internal"
+    );
     // A DaemonSet claims no replica count.
     expect(node("agent", "DaemonSet").data.instances).toBeUndefined();
     expect(node("nightly", "CronJob").data.nodeType).toBe("service");

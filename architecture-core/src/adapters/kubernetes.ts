@@ -63,7 +63,7 @@ const ADAPTER_ID = "kubernetes";
  * `architecture-core/src/__tests__/kubernetesVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const K8S_ADAPTER_VERSION = 2;
+export const K8S_ADAPTER_VERSION = 3;
 
 const MAX_MANIFEST_BYTES = 2_000_000;
 const MAX_RESOURCES = 1_000;
@@ -460,15 +460,52 @@ function referenceHosts(value: string): string[] {
   return [...hosts];
 }
 
-interface WorkloadReach {
+/**
+ * One Service that selects a workload, with the reach that Service itself
+ * carries.
+ *
+ * Kept per Service rather than flattened onto the workload because a port is
+ * published by the Service declaring it and by no other. A workload selected
+ * by a LoadBalancer and a ClusterIP is externally reachable, but only the
+ * LoadBalancer's ports are reachable from outside — folding both into one list
+ * describes an opening that does not exist.
+ */
+interface SelectingService {
+  name: string;
+  declaredType: string;
   exposure: ClusterExposure;
-  serviceTypes: string[];
-  serviceNames: string[];
   ports: ClusterPortBinding[];
 }
 
+interface WorkloadReach {
+  services: SelectingService[];
+}
+
 function emptyReach(): WorkloadReach {
-  return { exposure: "cluster", serviceTypes: [], serviceNames: [], ports: [] };
+  return { services: [] };
+}
+
+/** The strongest reach any selecting Service carries. */
+function strongestExposure(services: SelectingService[]): ClusterExposure {
+  return services.reduce<ClusterExposure>(
+    (strongest, service) =>
+      EXPOSURE_RANK[service.exposure] > EXPOSURE_RANK[strongest] ? service.exposure : strongest,
+    "cluster"
+  );
+}
+
+/**
+ * The bindings that carry this workload past the cluster boundary.
+ *
+ * Only Services whose own reach leaves the cluster contribute. A ClusterIP
+ * port is not an exposure, and it does not become one because some other
+ * Service publishes the same workload.
+ */
+function exposedPortEvidence(services: SelectingService[]): string[] {
+  const formatted = services
+    .filter((service) => isReachableFromOutsideCluster(service.exposure))
+    .flatMap((service) => service.ports.map(formatClusterPort));
+  return [...new Set(formatted)].sort();
 }
 
 function tileAt(index: number): { x: number; y: number } {
@@ -486,7 +523,8 @@ function makeWorkloadNode(
   const address = resourceAddress(resource);
   const workloadImages = images(resource);
   const type = classifyByIdentity(`${resource.name} ${workloadImages.join(" ")}`.toLowerCase());
-  const reachable = isReachableFromOutsideCluster(reach.exposure);
+  const exposure = strongestExposure(reach.services);
+  const reachable = isReachableFromOutsideCluster(exposure);
   const instances = replicas(resource);
   return {
     id: stableEntityId("node", ADAPTER_ID, address),
@@ -507,13 +545,12 @@ function makeWorkloadNode(
         namespace: resource.namespace,
         images: [...workloadImages].sort(),
         containerPorts: containerPorts(resource),
-        clusterExposure: reach.exposure,
-        serviceTypes: [...new Set(reach.serviceTypes)].sort(),
-        serviceNames: [...new Set(reach.serviceNames)].sort(),
-        // Only the bindings that carry the workload past the cluster boundary.
-        // A ClusterIP port is not an exposure and listing it as one would make
-        // every workload look published.
-        exposedPorts: reachable ? reach.ports.map(formatClusterPort).sort() : [],
+        clusterExposure: exposure,
+        // Every Service selecting this workload is recorded, including the
+        // internal ones that contribute no exposed port.
+        serviceTypes: [...new Set(reach.services.map((service) => service.declaredType))].sort(),
+        serviceNames: [...new Set(reach.services.map((service) => service.name))].sort(),
+        exposedPorts: exposedPortEvidence(reach.services),
         hasReadinessProbe: hasProbe(resource, "readinessProbe"),
         hasLivenessProbe: hasProbe(resource, "livenessProbe"),
         // Absent policies and unrestricted workloads are different claims: the
@@ -803,16 +840,15 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
         const address = resourceAddress(workload);
         const current = reachByWorkload.get(address) || emptyReach();
         reachByWorkload.set(address, {
-          exposure:
-            EXPOSURE_RANK[exposure] > EXPOSURE_RANK[current.exposure]
-              ? exposure
-              : current.exposure,
-          serviceTypes: [
-            ...current.serviceTypes,
-            typeof declaredType === "string" ? declaredType : "ClusterIP",
+          services: [
+            ...current.services,
+            {
+              name: service.name,
+              declaredType: typeof declaredType === "string" ? declaredType : "ClusterIP",
+              exposure,
+              ports,
+            },
           ],
-          serviceNames: [...current.serviceNames, service.name],
-          ports: [...current.ports, ...ports],
         });
       }
     }

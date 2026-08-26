@@ -27,6 +27,7 @@ Notable user-visible changes are documented here. The project has not yet cut a 
 
 - Corrected Docker Compose port exposure classification for loopback, host-specific, unresolved, IPv4, IPv6, range, protocol, and long-syntax bindings.
 - Corrected Kubernetes NetworkPolicy selector and direction semantics, including explicit unknown coverage for selectors that cannot be evaluated safely.
+- Corrected Kubernetes exposure evidence so a workload reports only the ports of Services that are themselves reachable from outside the cluster. An internal ClusterIP port is no longer listed as published because a different Service exposes the same workload.
 - Prevented stale GitHub synchronization attempts from overwriting newer decisions or revisions and made check-run updates idempotent per review and commit.
 - Prevented source-formatting changes from appearing as architecture changes and preserved legacy importer uncertainty instead of manufacturing findings.
 - Improved persistence migrations, PostgreSQL compare-and-set coverage, Redis lifecycle health, deployment identity reporting, and failure diagnostics.
