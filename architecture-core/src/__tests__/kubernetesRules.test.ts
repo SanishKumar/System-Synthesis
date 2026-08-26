@@ -338,6 +338,7 @@ spec:
       .map((finding) => finding.description);
 
     expect(message).toContain("by a Service");
+    expect(message).not.toContain("Service Service");
     expect(message).not.toContain("ClusterIP");
   });
 });

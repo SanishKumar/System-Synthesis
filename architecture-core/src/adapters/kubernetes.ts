@@ -56,6 +56,12 @@ const ADAPTER_ID = "kubernetes";
  * direction, and a selector this adapter cannot evaluate is `unknown` rather
  * than covered.
  *
+ * Version 3 made Service-port evidence follow the Service that actually
+ * publishes a workload. Version 4 kept the port named by each Ingress backend
+ * and separated exposing Services from Services that only select the workload.
+ * Version 5 makes definite reach from an Ingress or literal external address
+ * outrank an unresolved Service property, while retaining only the routed port.
+ *
  * Separate from COMPOSE_ADAPTER_VERSION on purpose. Each adapter is its own
  * extraction contract and a graph records which adapter produced it, so the two
  * numbers move independently.
@@ -63,7 +69,7 @@ const ADAPTER_ID = "kubernetes";
  * `architecture-core/src/__tests__/kubernetesVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const K8S_ADAPTER_VERSION = 4;
+export const K8S_ADAPTER_VERSION = 5;
 
 const MAX_MANIFEST_BYTES = 2_000_000;
 const MAX_RESOURCES = 1_000;
@@ -922,13 +928,23 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
       const declaredPorts = servicePorts(service);
       // A Service already external by its own type publishes everything it
       // declares, and an Ingress additionally routing one of those ports does
-      // not close the others. Only a Service that is external *because* of an
-      // Ingress is narrowed to what that Ingress named.
+      // not close the others. A Service that is internal or unresolved on its
+      // own is narrowed to what the Ingress definitively publishes.
       let ports = declaredPorts;
-      if (!isReachableFromOutsideCluster(intrinsic) && routes?.length) {
+      if ((intrinsic === "cluster" || intrinsic === "unknown") && routes?.length) {
         ports = [];
         for (const route of routes) {
-          if (route.port === undefined) continue;
+          if (route.port === undefined) {
+            diagnostics.push({
+              code: "k8s.ingress.missing_backend_port",
+              severity: "warning",
+              message: `Ingress "${route.ingress.name}" routes to Service "${service.name}" without naming the required Service port. No port is reported as published for this route.`,
+              file: route.ingress.file,
+              sourceAddress: `${resourceAddress(route.ingress)}.backend.${service.name}`,
+              line: route.ingress.line,
+            });
+            continue;
+          }
           const matched = declaredPorts.filter((binding) => portAnswersTo(binding, route.port!));
           if (matched.length) {
             ports.push(...matched);

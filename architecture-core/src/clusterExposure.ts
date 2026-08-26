@@ -46,19 +46,25 @@ export interface ServiceReachInput {
 
 export function clusterExposure(service: ServiceReachInput): ClusterExposure {
   const declared = service.type?.trim();
-  if (declared && isUnresolved(declared)) return "unknown";
-  if (service.externalIPs?.some((address) => isUnresolved(address))) return "unknown";
+  const externalIPs = service.externalIPs || [];
 
-  // An address the cluster answers on directly is external regardless of type,
-  // including on a Service that otherwise reads as internal.
-  if (service.externalIPs?.length) return "external";
+  // Definite reach outranks an unresolved property beside it. A literal address
+  // or an Ingress route proves that traffic crosses the cluster boundary even
+  // when `spec.type` is templated. Treating the template first would downgrade
+  // known exposure to "unknown" and, for Ingress, lose the backend-port
+  // narrowing that depends on the route being the source of exposure.
+  if (externalIPs.some((address) => !isUnresolved(address))) return "external";
   if (service.routedByIngress) return "external";
 
+  // These literal types establish reach on their own. An unresolved
+  // `externalIPs` entry beside one cannot make that known opening disappear.
+  if (declared === "LoadBalancer") return "external";
+  if (declared === "NodePort") return "node";
+
+  if (declared && isUnresolved(declared)) return "unknown";
+  if (externalIPs.some((address) => isUnresolved(address))) return "unknown";
+
   switch (declared || "ClusterIP") {
-    case "LoadBalancer":
-      return "external";
-    case "NodePort":
-      return "node";
     case "ClusterIP":
     // An ExternalName Service is a DNS alias out of the cluster. It publishes
     // nothing of the workload, so it grants no inbound reach.

@@ -146,6 +146,18 @@ spec:
         - name: agent
           image: quay.io/prometheus/node-exporter:v1.8.2
 ---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  namespace: shop
+spec:
+  type: \${AGENT_SERVICE_TYPE}
+  selector:
+    app: agent
+  ports:
+    - port: 9100
+---
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -185,6 +197,13 @@ spec:
                 name: api
                 port:
                   number: 8080
+          - path: /sessions
+            pathType: Prefix
+            backend:
+              service:
+                name: sessions
+                port:
+                  number: 6379
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -240,7 +259,7 @@ spec:
           image: ghcr.io/acme/api:1.4
 `;
 
-const PINNED_FINGERPRINT = "855d9c5ed5bd802a";
+const PINNED_FINGERPRINT = "4387a395680b1059";
 
 const { graph } = kubernetesAdapter.import(
   [{ path: "k8s/shop.yaml", content: FIXTURE }],
@@ -278,6 +297,7 @@ describe("kubernetes extraction is versioned", () => {
       "environment",
       "environment",
       "routes",
+      "routes",
     ]);
   });
 
@@ -285,8 +305,10 @@ describe("kubernetes extraction is versioned", () => {
     // A published datastore stays private: what it is decides its zone.
     expect(node("primary", "StatefulSet").data.zone).toBe("private");
     expect(node("primary", "StatefulSet").data.sourceProperties?.clusterExposure).toBe("external");
-    // An unresolved Service type is not folded into cluster-internal.
-    expect(node("sessions", "Deployment").data.sourceProperties?.clusterExposure).toBe("unknown");
+    // An Ingress proves external reach even when the Service's own type is
+    // unresolved, and only the backend port is claimed.
+    expect(node("sessions", "Deployment").data.sourceProperties?.clusterExposure).toBe("external");
+    expect(node("sessions", "Deployment").data.sourceProperties?.exposedPorts).toEqual(["6379"]);
     // An Ingress puts the workload behind it past the boundary.
     expect(node("api", "Deployment").data.sourceProperties?.clusterExposure).toBe("external");
     expect(node("api", "Deployment").data.zone).toBe("dmz");
@@ -310,7 +332,9 @@ describe("kubernetes extraction is versioned", () => {
     expect(node("api", "Deployment").data.sourceProperties?.exposedServiceTypes).toEqual([
       "ClusterIP",
     ]);
-    // A DaemonSet claims no replica count.
+    // An unresolved Service type with no independent route is not folded into
+    // cluster-internal. A DaemonSet still claims no replica count.
+    expect(node("agent", "DaemonSet").data.sourceProperties?.clusterExposure).toBe("unknown");
     expect(node("agent", "DaemonSet").data.instances).toBeUndefined();
     expect(node("nightly", "CronJob").data.nodeType).toBe("service");
     // Namespaces are separate: the staging copy is its own component and the

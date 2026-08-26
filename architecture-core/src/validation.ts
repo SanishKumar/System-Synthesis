@@ -395,7 +395,9 @@ function clusterReach(node: SerializedNode): string {
  */
 function describeServices(node: SerializedNode): string {
   const types = [...new Set(sourceStringArray(node, "exposedServiceTypes"))];
-  return types.length ? types.join(", ") : "Service";
+  if (!types.length) return "a Service";
+  if (types.length === 1) return `a ${types[0]} Service`;
+  return `Services of types ${types.join(", ")}`;
 }
 
 const exposedPersistenceWorkload: ArchitectureRule = {
@@ -416,7 +418,7 @@ const exposedPersistenceWorkload: ArchitectureRule = {
       return [issue(
         this,
         node.id,
-        `The ${node.data.label} persistence workload is published outside the cluster by a ${describeServices(node)} Service${ports.length ? `: ${ports.join(", ")}` : ""}.`,
+        `The ${node.data.label} persistence workload is published outside the cluster by ${describeServices(node)}${ports.length ? `: ${ports.join(", ")}` : ""}.`,
         [node.id]
       )];
     });
@@ -441,7 +443,7 @@ const exposedSensitiveWorkload: ArchitectureRule = {
       return [issue(
         this,
         node.id,
-        `The ${node.data.label} ${node.data.nodeType} is published outside the cluster by a ${describeServices(node)} Service${ports.length ? `: ${ports.join(", ")}` : ""}.`,
+        `The ${node.data.label} ${node.data.nodeType} is published outside the cluster by ${describeServices(node)}${ports.length ? `: ${ports.join(", ")}` : ""}.`,
         [node.id]
       )];
     });

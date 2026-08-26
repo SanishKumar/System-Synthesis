@@ -195,6 +195,17 @@ describe("kubernetes reach", () => {
     expect(nodeNamed(result, "api").data.sourceProperties?.clusterExposure).toBe("external");
   });
 
+  it("does not let an unresolved Service type hide a literal external address", () => {
+    const result = importAt(
+      workload("api", "node:22"),
+      service("api", "api", {
+        type: "${SERVICE_TYPE}",
+        externalIPs: "203.0.113.10",
+      })
+    );
+    expect(nodeNamed(result, "api").data.sourceProperties?.clusterExposure).toBe("external");
+  });
+
   it("does not fold an unresolved Service type into internal", () => {
     const result = importAt(
       workload("api", "node:22"),
@@ -815,6 +826,43 @@ spec:
     const { properties } = propertiesOf(workload("api", "node:22"), balanced, routeTo("number: 8080"));
 
     expect(properties.exposedPorts).toEqual(["8080", "9090"]);
+  });
+
+  it("lets an Ingress establish reach even when the Service type is unresolved", () => {
+    const templated = multiPortService(
+      "api",
+      "\n  type: ${SERVICE_TYPE}",
+      "    - port: 8080\n      targetPort: 8080\n    - port: 9090\n      targetPort: 9090"
+    );
+    const { properties } = propertiesOf(
+      workload("api", "node:22"),
+      templated,
+      routeTo("number: 8080")
+    );
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual(["8080"]);
+  });
+
+  it("diagnoses an Ingress backend that omits its required Service port", () => {
+    const missingPort = `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  defaultBackend:
+    service:
+      name: api
+`;
+    const { properties, diagnostics } = propertiesOf(
+      workload("api", "node:22"),
+      twoPorts,
+      missingPort
+    );
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual([]);
+    expect(diagnostics.map((entry) => entry.code)).toContain("k8s.ingress.missing_backend_port");
   });
 
   it("claims no port when the Ingress names one the Service does not declare", () => {
