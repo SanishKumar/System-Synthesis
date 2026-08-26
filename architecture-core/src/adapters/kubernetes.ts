@@ -63,7 +63,7 @@ const ADAPTER_ID = "kubernetes";
  * `architecture-core/src/__tests__/kubernetesVersion.test.ts` pins extraction
  * output so a change cannot land without a decision about this number.
  */
-export const K8S_ADAPTER_VERSION = 3;
+export const K8S_ADAPTER_VERSION = 4;
 
 const MAX_MANIFEST_BYTES = 2_000_000;
 const MAX_RESOURCES = 1_000;
@@ -402,26 +402,89 @@ function servicePorts(resource: K8sResource): ClusterPortBinding[] {
   });
 }
 
-/** Service names an Ingress routes traffic to, within its own namespace. */
-function ingressBackends(resource: K8sResource): string[] {
-  const names = new Set<string>();
-  const defaultBackend = getIn(resource.body, ["spec", "defaultBackend", "service", "name"]);
-  if (typeof defaultBackend === "string") names.add(defaultBackend);
+/**
+ * One Service an Ingress routes to, with the port it names.
+ *
+ * The port is what makes this a reference rather than a name. An Ingress route
+ * publishes the one port it names, so discarding it and remembering only the
+ * Service turns every other port that Service declares into a reported
+ * opening nothing routes to.
+ */
+interface IngressBackend {
+  service: string;
+  /** As written: a number or a port name. Absent when the manifest names none. */
+  port?: string;
+}
+
+/** A `backend` block in either the current or the pre-1.19 spelling. */
+function readBackend(backend: unknown): IngressBackend | undefined {
+  if (!isRecord(backend)) return undefined;
+
+  const name = getIn(backend, ["service", "name"]);
+  if (typeof name === "string") {
+    const byNumber = getIn(backend, ["service", "port", "number"]);
+    const byName = getIn(backend, ["service", "port", "name"]);
+    const port =
+      typeof byNumber === "number" || typeof byNumber === "string"
+        ? String(byNumber)
+        : typeof byName === "string"
+          ? byName
+          : undefined;
+    return { service: name, ...(port === undefined ? {} : { port }) };
+  }
+
+  // The pre-1.19 spelling still appears in committed manifests, and carries its
+  // port in the same flattened shape.
+  const legacyName = getIn(backend, ["serviceName"]);
+  if (typeof legacyName === "string") {
+    const legacyPort = getIn(backend, ["servicePort"]);
+    const port =
+      typeof legacyPort === "number" || typeof legacyPort === "string"
+        ? String(legacyPort)
+        : undefined;
+    return { service: legacyName, ...(port === undefined ? {} : { port }) };
+  }
+
+  return undefined;
+}
+
+/** Service references an Ingress routes traffic to, within its own namespace. */
+function ingressBackends(resource: K8sResource): IngressBackend[] {
+  const backends: IngressBackend[] = [];
+
+  const modernDefault = readBackend(getIn(resource.body, ["spec", "defaultBackend"]));
+  if (modernDefault) backends.push(modernDefault);
+  // `spec.backend` is where the pre-1.19 spelling put its default backend.
+  const legacyDefault = readBackend(getIn(resource.body, ["spec", "backend"]));
+  if (legacyDefault) backends.push(legacyDefault);
+
   const rules = getIn(resource.body, ["spec", "rules"]);
   if (Array.isArray(rules)) {
     for (const rule of rules.filter(isRecord)) {
       const paths = getIn(rule, ["http", "paths"]);
       if (!Array.isArray(paths)) continue;
       for (const entry of paths.filter(isRecord)) {
-        const name = getIn(entry, ["backend", "service", "name"]);
-        if (typeof name === "string") names.add(name);
-        // The pre-1.19 spelling still appears in committed manifests.
-        const legacy = getIn(entry, ["backend", "serviceName"]);
-        if (typeof legacy === "string") names.add(legacy);
+        const backend = readBackend(getIn(entry, ["backend"]));
+        if (backend) backends.push(backend);
       }
     }
   }
-  return [...names].sort();
+
+  return backends;
+}
+
+/**
+ * The distinct Services an Ingress routes to. Several paths may reach the same
+ * Service on different ports; as a set of destinations that is still one edge
+ * and one name.
+ */
+function backendServiceNames(resource: K8sResource): string[] {
+  return [...new Set(ingressBackends(resource).map((backend) => backend.service))].sort();
+}
+
+/** Whether a declared Service port answers to what an Ingress named. */
+function portAnswersTo(binding: ClusterPortBinding, reference: string): boolean {
+  return binding.port === reference || binding.name === reference;
 }
 
 /** Every literal string a container could resolve a dependency address from. */
@@ -502,10 +565,15 @@ function strongestExposure(services: SelectingService[]): ClusterExposure {
  * Service publishes the same workload.
  */
 function exposedPortEvidence(services: SelectingService[]): string[] {
-  const formatted = services
-    .filter((service) => isReachableFromOutsideCluster(service.exposure))
-    .flatMap((service) => service.ports.map(formatClusterPort));
+  const formatted = exposingServices(services).flatMap((service) =>
+    service.ports.map(formatClusterPort)
+  );
   return [...new Set(formatted)].sort();
+}
+
+/** The selecting Services whose own reach leaves the cluster. */
+function exposingServices(services: SelectingService[]): SelectingService[] {
+  return services.filter((service) => isReachableFromOutsideCluster(service.exposure));
 }
 
 function tileAt(index: number): { x: number; y: number } {
@@ -524,6 +592,7 @@ function makeWorkloadNode(
   const workloadImages = images(resource);
   const type = classifyByIdentity(`${resource.name} ${workloadImages.join(" ")}`.toLowerCase());
   const exposure = strongestExposure(reach.services);
+  const exposing = exposingServices(reach.services);
   const reachable = isReachableFromOutsideCluster(exposure);
   const instances = replicas(resource);
   return {
@@ -546,10 +615,15 @@ function makeWorkloadNode(
         images: [...workloadImages].sort(),
         containerPorts: containerPorts(resource),
         clusterExposure: exposure,
-        // Every Service selecting this workload is recorded, including the
-        // internal ones that contribute no exposed port.
+        // Every Service selecting this workload, including the internal ones
+        // that contribute no exposure at all.
         serviceTypes: [...new Set(reach.services.map((service) => service.declaredType))].sort(),
         serviceNames: [...new Set(reach.services.map((service) => service.name))].sort(),
+        // The subset that actually carries it past the cluster boundary. Kept
+        // apart from the lists above so a finding can name what published a
+        // workload without naming an internal Service that merely selects it.
+        exposedServiceTypes: [...new Set(exposing.map((service) => service.declaredType))].sort(),
+        exposedServiceNames: [...new Set(exposing.map((service) => service.name))].sort(),
         exposedPorts: exposedPortEvidence(reach.services),
         hasReadinessProbe: hasProbe(resource, "readinessProbe"),
         hasLivenessProbe: hasProbe(resource, "livenessProbe"),
@@ -590,7 +664,7 @@ function makeIngressNode(
       sourceProperties: {
         kind: resource.kind,
         namespace: resource.namespace,
-        backendServices: ingressBackends(resource),
+        backendServices: backendServiceNames(resource),
         hosts: Array.isArray(getIn(resource.body, ["spec", "rules"]))
           ? [
               ...new Set(
@@ -800,12 +874,18 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
       workloads.map((workload) => [resourceAddress(workload), workloadLabels(workload)])
     );
 
-    // An Ingress routes to a Service by name inside its own namespace.
-    const ingressRouted = new Set(
-      ingresses.flatMap((ingress) =>
-        ingressBackends(ingress).map((name) => qualifiedName(ingress.namespace, name))
-      )
-    );
+    // An Ingress routes to a Service by name inside its own namespace, naming
+    // the one port it publishes. Both halves are kept: the presence of a key
+    // says the Service is routed, and its references say which ports.
+    const ingressRoutes = new Map<string, { ingress: K8sResource; port?: string }[]>();
+    for (const ingress of ingresses) {
+      for (const backend of ingressBackends(ingress)) {
+        const key = qualifiedName(ingress.namespace, backend.service);
+        const routes = ingressRoutes.get(key) || [];
+        routes.push({ ingress, port: backend.port });
+        ingressRoutes.set(key, routes);
+      }
+    }
 
     const reachByWorkload = new Map<string, WorkloadReach>(
       workloads.map((workload) => [resourceAddress(workload), emptyReach()])
@@ -830,12 +910,42 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
 
       const declaredType = getIn(service.body, ["spec", "type"]);
       const externalIPs = stringList(getIn(service.body, ["spec", "externalIPs"]));
-      const exposure = clusterExposure({
+      const routes = ingressRoutes.get(serviceKey);
+      const declared = {
         type: typeof declaredType === "string" ? declaredType : undefined,
         externalIPs,
-        routedByIngress: ingressRouted.has(serviceKey),
-      });
-      const ports = servicePorts(service);
+      };
+      // What the Service opens on its own, before any Ingress is considered.
+      const intrinsic = clusterExposure({ ...declared, routedByIngress: false });
+      const exposure = clusterExposure({ ...declared, routedByIngress: Boolean(routes?.length) });
+
+      const declaredPorts = servicePorts(service);
+      // A Service already external by its own type publishes everything it
+      // declares, and an Ingress additionally routing one of those ports does
+      // not close the others. Only a Service that is external *because* of an
+      // Ingress is narrowed to what that Ingress named.
+      let ports = declaredPorts;
+      if (!isReachableFromOutsideCluster(intrinsic) && routes?.length) {
+        ports = [];
+        for (const route of routes) {
+          if (route.port === undefined) continue;
+          const matched = declaredPorts.filter((binding) => portAnswersTo(binding, route.port!));
+          if (matched.length) {
+            ports.push(...matched);
+            continue;
+          }
+          // Falling back to every declared port here would turn a manifest
+          // error into a report of openings nothing routes to.
+          diagnostics.push({
+            code: "k8s.ingress.unknown_backend_port",
+            severity: "warning",
+            message: `Ingress "${route.ingress.name}" routes to port "${route.port}" of Service "${service.name}", which declares no such port. No port is reported as published for this route.`,
+            file: route.ingress.file,
+            sourceAddress: `${resourceAddress(route.ingress)}.backend.${service.name}`,
+            line: route.ingress.line,
+          });
+        }
+      }
       for (const workload of matched) {
         const address = resourceAddress(workload);
         const current = reachByWorkload.get(address) || emptyReach();
@@ -891,7 +1001,7 @@ export const kubernetesAdapter: ArchitectureSourceAdapter = {
     // inferred reference and outranks one for the same pair.
     for (const ingress of ingresses) {
       const from = resourceAddress(ingress);
-      for (const backend of ingressBackends(ingress)) {
+      for (const backend of backendServiceNames(ingress)) {
         const targets = workloadsByService.get(qualifiedName(ingress.namespace, backend));
         if (!targets?.length) {
           diagnostics.push({

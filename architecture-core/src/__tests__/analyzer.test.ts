@@ -48,8 +48,11 @@ describe("analyzer identity", () => {
     // This number is the part nothing computes: it records a change in what a
     // rule means while its identity stays the same, which is why it has to be
     // asserted rather than derived. Version 4 is the Kubernetes NetworkPolicy
-    // rule, which kept its id and severity and changed its verdict.
-    expect(ANALYZER_VERSION).toBe(4);
+    // rule, which kept its id and severity and changed its verdict. Version 5
+    // is the Kubernetes exposure findings naming the Service that actually
+    // published a workload: same rules, same severities, different evidence
+    // from one unchanged graph.
+    expect(ANALYZER_VERSION).toBe(5);
   });
 
   it("pins the deterministic rule set", () => {

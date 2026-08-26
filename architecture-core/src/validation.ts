@@ -383,8 +383,18 @@ function clusterReach(node: SerializedNode): string {
   return typeof value === "string" ? value : "cluster";
 }
 
+/**
+ * What kind of Service published this workload.
+ *
+ * Read from `exposedServiceTypes`, which lists only the Services whose own
+ * reach leaves the cluster. It deliberately does not fall back to
+ * `serviceTypes`: that list names every Service selecting the workload, so a
+ * graph extracted before exposure was tracked per Service would let a finding
+ * report that a ClusterIP published something when a separate LoadBalancer
+ * did. An older graph says "Service" and claims nothing further.
+ */
 function describeServices(node: SerializedNode): string {
-  const types = [...new Set(sourceStringArray(node, "serviceTypes"))];
+  const types = [...new Set(sourceStringArray(node, "exposedServiceTypes"))];
   return types.length ? types.join(", ") : "Service";
 }
 

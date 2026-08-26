@@ -274,3 +274,70 @@ describe("kubernetes rules stay out of a Compose review", () => {
     ).toEqual([]);
   });
 });
+
+describe("exposure findings name the Service that published the workload", () => {
+  function messagesFor(head: string[]): string[] {
+    const review = reviewArchitectureChange(
+      graph([BASE], "base"),
+      graph(head, "head"),
+      {},
+      REVIEWED_AT
+    );
+    return review.headValidation.issues
+      .filter((finding) => EXPOSURE_RULES.has(finding.ruleId))
+      .map((finding) => finding.description);
+  }
+
+  it("names only the Service that leaves the cluster, not one that merely selects", () => {
+    const internal = `apiVersion: v1
+kind: Service
+metadata:
+  name: primary-internal
+spec:
+  selector:
+    app: primary
+  ports:
+    - port: 5432
+`;
+    const [message] = messagesFor([
+      deployment("primary", "postgres:16", "StatefulSet"),
+      internal,
+      service("primary", "LoadBalancer"),
+    ]);
+
+    expect(message).toContain("LoadBalancer");
+    // The ClusterIP selects the same workload and published nothing. Naming it
+    // here would report an opening it does not provide.
+    expect(message).not.toContain("ClusterIP");
+  });
+
+  it("says only \"Service\" for a graph extracted before exposure was tracked per Service", () => {
+    // Strip the field a v4 graph would not carry, leaving the over-broad list
+    // an older graph does carry. The wording must not fall back to it.
+    const head = graph(
+      [deployment("primary", "postgres:16", "StatefulSet"), service("primary", "LoadBalancer")],
+      "head"
+    );
+    const legacy = {
+      ...head,
+      nodes: head.nodes.map((entry) => ({
+        ...entry,
+        data: {
+          ...entry.data,
+          sourceProperties: {
+            ...entry.data.sourceProperties,
+            serviceTypes: ["ClusterIP", "LoadBalancer"],
+            exposedServiceTypes: undefined,
+          },
+        },
+      })),
+    };
+    const legacyReview = reviewArchitectureChange(graph([BASE], "base"), legacy as typeof head, {}, REVIEWED_AT);
+    const [message] = legacyReview.headValidation.issues
+      .filter((finding) => EXPOSURE_RULES.has(finding.ruleId))
+      .map((finding) => finding.description);
+
+    expect(message).toContain("by a Service");
+    expect(message).not.toContain("ClusterIP");
+  });
+});

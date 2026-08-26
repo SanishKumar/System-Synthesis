@@ -18,7 +18,9 @@ import { canonicalGraphFingerprint } from "../provenance.js";
  * `api` is selected by two Services at once — one the Ingress routes to, and
  * one internal — because port evidence is per Service. A fixture where every
  * workload has a single Service cannot tell a correct exposure list from one
- * that pools every selecting Service's ports together.
+ * that pools every selecting Service's ports together. The routed Service
+ * declares two ports while the Ingress names one, for the same reason: a
+ * single-port Service cannot show whether the route narrowed anything.
  */
 const FIXTURE = `apiVersion: apps/v1
 kind: Deployment
@@ -58,6 +60,8 @@ spec:
   ports:
     - port: 8080
       targetPort: 8080
+    - name: metrics
+      port: 9090
 ---
 apiVersion: v1
 kind: Service
@@ -236,7 +240,7 @@ spec:
           image: ghcr.io/acme/api:1.4
 `;
 
-const PINNED_FINGERPRINT = "c37cdff6e2766062";
+const PINNED_FINGERPRINT = "855d9c5ed5bd802a";
 
 const { graph } = kubernetesAdapter.import(
   [{ path: "k8s/shop.yaml", content: FIXTURE }],
@@ -293,10 +297,19 @@ describe("kubernetes extraction is versioned", () => {
       "api",
       "api-internal",
     ]);
+    // The Ingress names 8080. The Service's own 9090 is not on that route, and
+    // the internal Service's 80 is not on any.
     expect(node("api", "Deployment").data.sourceProperties?.exposedPorts).toEqual(["8080"]);
     expect(node("api", "Deployment").data.sourceProperties?.exposedPorts).not.toContain(
       "80->http-internal"
     );
+    expect(node("api", "Deployment").data.sourceProperties?.exposedPorts).not.toContain("9090");
+    // Only the routed Service publishes. It is a ClusterIP, which is correct
+    // here and is exactly what a finding may name — unlike the internal one.
+    expect(node("api", "Deployment").data.sourceProperties?.exposedServiceNames).toEqual(["api"]);
+    expect(node("api", "Deployment").data.sourceProperties?.exposedServiceTypes).toEqual([
+      "ClusterIP",
+    ]);
     // A DaemonSet claims no replica count.
     expect(node("agent", "DaemonSet").data.instances).toBeUndefined();
     expect(node("nightly", "CronJob").data.nodeType).toBe("service");

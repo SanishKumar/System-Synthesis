@@ -27,8 +27,18 @@ import { DEFAULT_RULES, type ArchitectureRule } from "./validation.js";
  * where coverage could not be established or was never recorded. Same id, same
  * severity, different verdict from the same graph — which is precisely what the
  * rule-set fingerprint cannot see and this number exists to record.
+ *
+ * Version 5 changed the evidence the Kubernetes exposure findings carry. They
+ * name the Service that published a workload from `exposedServiceTypes` rather
+ * than from every Service selecting it, so a workload behind a LoadBalancer and
+ * a ClusterIP is no longer reported as published by the ClusterIP. This is not
+ * a rewording, which is why it is here rather than being left to the rule-set
+ * fingerprint: given one unchanged stored graph the analyzer now produces
+ * different text, and a graph extracted before that field existed drops to a
+ * plain "Service" instead of reusing a list that could name the wrong one. Rule
+ * identities and severities are untouched, and the same findings still fire.
  */
-export const ANALYZER_VERSION = 4;
+export const ANALYZER_VERSION = 5;
 
 /**
  * Stable digest of the rule identities and default severities that decide a

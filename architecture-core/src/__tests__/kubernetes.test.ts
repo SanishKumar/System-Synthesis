@@ -694,3 +694,151 @@ spec:
     expect(evidence.exposedPorts).toEqual(["30080->http"]);
   });
 });
+
+describe("kubernetes Ingress backend ports", () => {
+  function multiPortService(name: string, spec: string, ports: string): string {
+    return `apiVersion: v1
+kind: Service
+metadata:
+  name: ${name}
+spec:${spec}
+  selector:
+    app: api
+  ports:
+${ports}
+`;
+  }
+
+  /** Two numeric ports on one internal Service. */
+  const twoPorts = multiPortService(
+    "api",
+    "",
+    "    - port: 8080\n      targetPort: 8080\n    - port: 9090\n      targetPort: 9090"
+  );
+
+  /** The same two ports, named. */
+  const namedPorts = multiPortService(
+    "api",
+    "",
+    "    - name: web\n      port: 8080\n    - name: metrics\n      port: 9090"
+  );
+
+  function routeTo(port: string, service = "api"): string {
+    return `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: ${service}
+                port:
+                  ${port}
+`;
+  }
+
+  function propertiesOf(...documents: string[]) {
+    const result = importAt(...documents);
+    return {
+      properties: nodeNamed(result, "api").data.sourceProperties!,
+      diagnostics: result.diagnostics,
+    };
+  }
+
+  it("exposes only the numeric Service port the Ingress routes to", () => {
+    // The Ingress is what makes this ClusterIP Service external, and it named
+    // one port. The other is still only reachable from inside the cluster.
+    const { properties } = propertiesOf(workload("api", "node:22"), twoPorts, routeTo("number: 8080"));
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual(["8080"]);
+  });
+
+  it("exposes only the named Service port the Ingress routes to", () => {
+    const { properties } = propertiesOf(workload("api", "node:22"), namedPorts, routeTo("name: web"));
+
+    expect(properties.exposedPorts).toEqual(["8080"]);
+  });
+
+  it("reads a defaultBackend the same way as a rule path", () => {
+    const fallback = `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  defaultBackend:
+    service:
+      name: api
+      port:
+        number: 9090
+`;
+    const { properties } = propertiesOf(workload("api", "node:22"), twoPorts, fallback);
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual(["9090"]);
+  });
+
+  it("reads the pre-1.19 serviceName and servicePort spelling", () => {
+    const legacy = `apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: public
+spec:
+  rules:
+    - http:
+        paths:
+          - path: /
+            backend:
+              serviceName: api
+              servicePort: 9090
+`;
+    const { properties } = propertiesOf(workload("api", "node:22"), twoPorts, legacy);
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual(["9090"]);
+  });
+
+  it("keeps every port of a Service that is external without the Ingress", () => {
+    // A LoadBalancer publishes all of its ports. An Ingress additionally
+    // routing one of them does not narrow what the LoadBalancer already opened.
+    const balanced = multiPortService(
+      "api",
+      "\n  type: LoadBalancer",
+      "    - port: 8080\n      targetPort: 8080\n    - port: 9090\n      targetPort: 9090"
+    );
+    const { properties } = propertiesOf(workload("api", "node:22"), balanced, routeTo("number: 8080"));
+
+    expect(properties.exposedPorts).toEqual(["8080", "9090"]);
+  });
+
+  it("claims no port when the Ingress names one the Service does not declare", () => {
+    // Substituting every declared port here would turn a manifest error into a
+    // report of two openings that were never routed.
+    const { properties, diagnostics } = propertiesOf(
+      workload("api", "node:22"),
+      twoPorts,
+      routeTo("number: 7000")
+    );
+
+    expect(properties.clusterExposure).toBe("external");
+    expect(properties.exposedPorts).toEqual([]);
+    expect(diagnostics.map((entry) => entry.code)).toContain("k8s.ingress.unknown_backend_port");
+  });
+
+  it("separates the Services that expose a workload from the ones that select it", () => {
+    const internal = multiPortService("api-internal", "", "    - port: 80");
+    const balanced = multiPortService("api-public", "\n  type: LoadBalancer", "    - port: 8080");
+    const { properties } = propertiesOf(workload("api", "node:22"), internal, balanced);
+
+    expect(properties.serviceNames).toEqual(["api-internal", "api-public"]);
+    expect(properties.serviceTypes).toEqual(["ClusterIP", "LoadBalancer"]);
+    expect(properties.exposedServiceNames).toEqual(["api-public"]);
+    expect(properties.exposedServiceTypes).toEqual(["LoadBalancer"]);
+  });
+});
