@@ -27,6 +27,8 @@ The first release of the pull-request architecture review. `v0.1.0` predates the
 
 ### Fixed
 
+- Canvas components can be selected together and moved as one. Holding Ctrl or Cmd extends a selection and Shift-dragging draws a selection box; dragging any selected component moves the whole group, and every component's new position is saved rather than only the one under the pointer. Deleting now removes the whole selection instead of a single component.
+
 - Corrected Docker Compose port exposure classification for loopback, host-specific, unresolved, IPv4, IPv6, range, protocol, and long-syntax bindings.
 - Corrected Kubernetes NetworkPolicy selector and direction semantics, including explicit unknown coverage for selectors that cannot be evaluated safely.
 - Corrected Kubernetes exposure evidence so a workload reports only the ports actually reachable from outside the cluster: an internal ClusterIP port is no longer listed because a separate Service exposes the same workload, and an Ingress publishes only the Service port it routes to. Definite reach from an Ingress or literal external address is no longer hidden by an unresolved Service property, and findings name only the Service that published the workload.

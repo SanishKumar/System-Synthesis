@@ -85,7 +85,7 @@ Alongside the derived reviews there is a collaborative canvas for the architectu
 
 ![The architecture canvas showing a modelled e-commerce platform with gateway, services, and datastores](docs/canvas.png)
 
-Multiplayer editing, per-user undo, auto layout, and export. Every workspace keeps its own version history.
+Multiplayer editing, per-user undo, auto layout, and export. Hold <kbd>Ctrl</kbd> (or <kbd>⌘</kbd>) to select several components, or <kbd>Shift</kbd>-drag to draw a selection box; dragging any of them moves the whole selection together. Every workspace keeps its own version history.
 
 ![Architecture history listing saved workspaces with component and connection counts](docs/history.png)
 

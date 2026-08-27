@@ -236,11 +236,19 @@ export default function CanvasBoard({
         if (isTyping) return;
 
         const state = useBoardStore.getState();
-        const selectedId = state.selectedNodeId;
+        // Everything the canvas shows as selected, not only the one the
+        // inspector is pointed at. Deleting one of five highlighted nodes and
+        // leaving the rest is the behaviour a multiple selection makes look
+        // broken.
+        const selectedNodes = state.nodes.filter((node) => node.selected);
+        const targets = selectedNodes.length
+          ? selectedNodes.map((node) => node.id)
+          : state.selectedNodeId
+            ? [state.selectedNodeId]
+            : [];
 
-        // Delete selected node first
-        if (selectedId) {
-          state.deleteNode(selectedId);
+        if (targets.length) {
+          for (const id of targets) state.deleteNode(id);
           state.setSelectedNodeId(null);
           state.setSidebarMode("none");
           return;
@@ -606,6 +614,15 @@ export default function CanvasBoard({
         fitView
         fitViewOptions={{ padding: 0.2 }}
         connectOnClick={!readOnly && isConnectMode}
+        // Stated rather than inherited. The library picks between Meta and
+        // Control from the platform it thinks it is on, which leaves the
+        // modifier that extends a selection depending on browser detection —
+        // and a canvas where holding Control simply replaces the selection
+        // gives no hint that selecting a second node was ever possible.
+        multiSelectionKeyCode={["Meta", "Control"]}
+        // Shift-dragging the pane draws a selection box. Plain dragging still
+        // pans, so the gesture people already use is unchanged.
+        selectionKeyCode="Shift"
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
         edgesReconnectable={!readOnly}
