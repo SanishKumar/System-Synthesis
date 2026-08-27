@@ -29,7 +29,10 @@ const CHECKS_ONLY = { checks: "write", metadata: "read" };
 const REVIEWER_ID = 9002;
 const REVIEWER = { githubUserId: String(REVIEWER_ID), githubLogin: "octo-reviewer" };
 
-function review(external = true): Pick<ArchitectureReviewRecord, "externalSource"> {
+function review(
+  external = true,
+  policy: ArchitectureReviewRecord["policy"] = {}
+): Pick<ArchitectureReviewRecord, "externalSource" | "policy"> {
   return {
     externalSource: external
       ? {
@@ -42,7 +45,8 @@ function review(external = true): Pick<ArchitectureReviewRecord, "externalSource
           workflowRunUrl: null,
         }
       : null,
-  } as Pick<ArchitectureReviewRecord, "externalSource">;
+    policy,
+  } as Pick<ArchitectureReviewRecord, "externalSource" | "policy">;
 }
 
 /** GitHub answering about the pull request and the reviewer's standing. */
@@ -55,6 +59,13 @@ function transportFor(options: {
   omitResolvedUser?: boolean;
   /** `null` reproduces a response that describes no permissions at all. */
   permissions?: Record<string, string> | null;
+  /**
+   * Accounts the repository's collaborator listing reports. Each entry is the
+   * cumulative permission block GitHub returns for that endpoint.
+   */
+  collaborators?: Array<{ permissions: Record<string, boolean> }>;
+  /** Anything other than 200 leaves "is anyone else here" unanswered. */
+  collaboratorsStatus?: number;
 } = {}): HttpTransport {
   return async (url) => {
     if (url.endsWith("/installation")) return { status: 200, json: async () => ({ id: 42 }) };
@@ -75,6 +86,14 @@ function transportFor(options: {
     }
     if (url.includes("/pulls/")) {
       return { status: 200, json: async () => ({ user: { id: options.authorId ?? AUTHOR } }) };
+    }
+    // The listing, not the single-account permission lookup below it.
+    if (url.includes("/collaborators?")) {
+      return {
+        status: options.collaboratorsStatus ?? 200,
+        json: async () =>
+          options.collaborators ?? [{ permissions: { push: true, admin: true } }],
+      };
     }
     if (url.includes("/collaborators/")) {
       return {
@@ -113,6 +132,9 @@ describe("who may decide a review", () => {
         githubLogin: "octo-reviewer",
         permission: "write",
         checkedAt: expect.any(String),
+        // Recorded on every verified decision, so that a decision made by
+        // somebody other than the author says so rather than merely omitting it.
+        selfApproved: false,
       },
     });
   });
@@ -702,5 +724,139 @@ describe("minting a token is single-flight per repository", () => {
     const verdict = await reviewDecisionEntitlement(review(), REVIEWER, { env, transport });
     expect(verdict).toMatchObject({ status: "refused", code: "app_permission_missing" });
     expect(state.minted).toBe(1);
+  });
+});
+
+describe("an author deciding their own change", () => {
+  beforeEach(() => resetGitHubAppCacheForTests());
+
+  /** The reviewer is also the author of the pull request. */
+  const asAuthor = { authorId: REVIEWER_ID };
+  type Collaborator = { permissions: Record<string, boolean> };
+  const solo: Collaborator[] = [{ permissions: { push: true, admin: true } }];
+  const team: Collaborator[] = [
+    { permissions: { push: true, admin: true } },
+    { permissions: { push: true } },
+    // Read-only, so not a reviewer and not counted.
+    { permissions: { pull: true } },
+    { permissions: { maintain: true } },
+  ];
+
+  function decide(policy: unknown, transport: ReturnType<typeof transportFor>) {
+    return reviewDecisionEntitlement(review(true, policy as never), REVIEWER, { env, transport });
+  }
+
+  const soleReviewer = { decision: { selfApproval: "sole_reviewer" } };
+  const adminOverride = { decision: { selfApproval: "admin_override" } };
+
+  it("refuses by default, with no policy expressed at all", async () => {
+    await expect(decide({}, transportFor(asAuthor))).resolves.toMatchObject({
+      status: "refused",
+      code: "self_approval",
+    });
+  });
+
+  it("refuses when the policy names the default explicitly", async () => {
+    const verdict = await decide(
+      { decision: { selfApproval: "forbidden" } },
+      transportFor(asAuthor)
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "self_approval" });
+  });
+
+  it("allows a sole reviewer, and records that nobody else could have decided", async () => {
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "admin", collaborators: solo })
+    );
+    expect(verdict).toMatchObject({
+      status: "allowed",
+      evidence: {
+        basis: "self_sole_reviewer",
+        selfApproved: true,
+        eligibleReviewers: 1,
+        githubUserId: String(REVIEWER_ID),
+      },
+    });
+  });
+
+  it("refuses a sole-reviewer claim the moment somebody else can decide", async () => {
+    // Three of the four listed accounts can change the repository; the fourth
+    // is read-only and is not a reviewer.
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "admin", collaborators: team })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "self_approval" });
+    expect((verdict as { message: string }).message).toContain("3 accounts");
+  });
+
+  it("refuses rather than assuming solitude when the listing cannot be read", async () => {
+    // Failing open here would make every GitHub outage a licence to self-approve.
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "admin", collaboratorsStatus: 500 })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("does not let an exception grant standing the author does not have", async () => {
+    // Read-only on the repository. No self-approval policy makes that enough.
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "read", collaborators: solo })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "insufficient_permission" });
+  });
+
+  it("allows an administrator override, and states how many reviewers it skipped", async () => {
+    const verdict = await decide(
+      adminOverride,
+      transportFor({ ...asAuthor, permission: "admin", collaborators: team })
+    );
+    expect(verdict).toMatchObject({
+      status: "allowed",
+      evidence: { basis: "self_admin_override", selfApproved: true, eligibleReviewers: 3 },
+    });
+  });
+
+  it("refuses an override to someone who is not an administrator", async () => {
+    const verdict = await decide(
+      adminOverride,
+      transportFor({ ...asAuthor, permission: "write", collaborators: team })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "self_approval" });
+    expect((verdict as { message: string }).message).toContain("write");
+  });
+
+  it("still grants an administrator override when the reviewer count is unknown", async () => {
+    // The override rests on administrator standing, which was established. The
+    // count is context, so its absence withholds the context and not the grant.
+    const verdict = await decide(
+      adminOverride,
+      transportFor({ ...asAuthor, permission: "admin", collaboratorsStatus: 502 })
+    );
+    expect(verdict).toMatchObject({
+      status: "allowed",
+      evidence: { basis: "self_admin_override" },
+    });
+    if (verdict.status !== "allowed") throw new Error("expected the override to be allowed");
+    expect(verdict.evidence.eligibleReviewers).toBeUndefined();
+  });
+
+  it("still refuses an author whose linked account no longer owns that login", async () => {
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "admin", collaborators: solo, resolvedId: 12345 })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "identity_mismatch" });
+  });
+
+  it("records a decision by somebody else as not self-approved, whatever the policy", async () => {
+    const verdict = await decide(soleReviewer, transportFor({ permission: "write" }));
+    expect(verdict).toMatchObject({
+      status: "allowed",
+      evidence: { basis: "verified", selfApproved: false },
+    });
   });
 });

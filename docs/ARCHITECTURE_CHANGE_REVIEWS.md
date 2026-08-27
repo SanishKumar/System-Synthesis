@@ -110,6 +110,28 @@ Expired, malformed, or blank-justification suppressions do not apply.
 
 The GitHub Action reads policy from the base commit. A pull request therefore cannot change the policy that evaluates that same pull request. A merged policy change governs later reviews.
 
+### Who may decide
+
+Proposing a change and certifying it are different acts, so by default the author of a pull request cannot decide its review however much permission they hold. Two exceptions exist, named in the same base-commit policy:
+
+```json
+{ "decision": { "selfApproval": "forbidden" } }
+```
+
+| Value | Meaning |
+| --- | --- |
+| `forbidden` | The default. The author is always refused |
+| `sole_reviewer` | The author may decide only while GitHub confirms no other account holds write access |
+| `admin_override` | An administrator may decide their own change even where other reviewers exist |
+
+`sole_reviewer` exists because refusing is not always protecting anything: a repository with one contributor has no separation of duties to preserve, and a gate nobody can pass is a wall. It is not a stored property of the repository — the count is re-established against GitHub on every decision, so it stops applying the moment a second person is given access, and a listing that cannot be read refuses rather than assuming solitude.
+
+`admin_override` does weaken the gate, which is why it must be asked for, is checked against live administrator permission, and is recorded distinctly.
+
+Neither exception bypasses anything else. The author still has to hold write access, still has to be the account their linked login resolves to, and is refused for either failure exactly as any other reviewer would be.
+
+The decision is recorded with the basis it was granted on — `verified`, `self_sole_reviewer`, or `self_admin_override` — alongside `selfApproved` and, where it was established, how many accounts could have decided instead. A self-approval is therefore never indistinguishable from a peer review after the fact.
+
 ## Resolving compose-path
 
 The Action reads the configured `compose-path` at both the base and head commit and treats the two absences differently.

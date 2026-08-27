@@ -66,6 +66,28 @@ export interface ArchitectureRulePolicy {
   blockMerge?: boolean;
 }
 
+/**
+ * Whether the author of a change may certify it, and on what grounds.
+ *
+ * Proposing a change and certifying it are different acts, so the default
+ * refuses the author however much permission they hold. Two exceptions exist
+ * because refusing is not always protecting anything:
+ *
+ * - `sole_reviewer` allows it only where the provider confirms nobody else
+ *   holds deciding permission. There is no separation of duties to preserve in
+ *   a repository of one, and refusing there is a wall rather than a gate.
+ * - `admin_override` allows an administrator to decide their own change even
+ *   where others could have. This genuinely weakens the gate, which is why it
+ *   has to be asked for, is checked against live permission, and is recorded
+ *   under its own basis rather than looking like a peer review afterwards.
+ */
+export type SelfApprovalPolicy = "forbidden" | "sole_reviewer" | "admin_override";
+
+export interface DecisionPolicy {
+  /** Defaults to `forbidden`. */
+  selfApproval?: SelfApprovalPolicy;
+}
+
 export interface ArchitecturePolicy {
   /** Severities that block when a finding is newly introduced. */
   failOn?: ValidationSeverity[];
@@ -73,6 +95,11 @@ export interface ArchitecturePolicy {
   includeExistingFindings?: boolean;
   rules?: Record<string, ArchitectureRulePolicy>;
   suppressions?: RuleSuppression[];
+  /**
+   * Who may decide a review. Read from the base commit like every other policy
+   * value, so a pull request cannot widen the rule that governs it.
+   */
+  decision?: DecisionPolicy;
 }
 
 export interface ArchitectureChangeReview {

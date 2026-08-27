@@ -54,6 +54,9 @@ const policySchema = z.object({
     blockMerge: z.boolean().optional(),
   }).strict()).optional(),
   suppressions: z.array(suppressionSchema).max(250).optional(),
+  decision: z.object({
+    selfApproval: z.enum(["forbidden", "sole_reviewer", "admin_override"]).optional(),
+  }).strict().optional(),
 }).strict();
 const sourcePathSchema = z.string()
   .trim()
