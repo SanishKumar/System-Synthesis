@@ -1,8 +1,10 @@
 # Changelog
 
-Notable user-visible changes are documented here. The public `v0.1.0` tag predates the current Action and analysis contracts, so the work below remains under **Unreleased** until the next release.
+Notable user-visible changes are documented here. This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## v0.2.0 — 2026-08-27
+
+The first release of the pull-request architecture review. `v0.1.0` predates the current importer, analyzer, ingestion, and synchronization contracts; pin `v0.2.0` or later.
 
 ### Added
 
