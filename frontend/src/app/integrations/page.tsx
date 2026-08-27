@@ -176,7 +176,7 @@ export default function IntegrationsPage() {
   };
 
   const workflowSnippet = `- name: Review architecture change
-  uses: SanishKumar/System-Synthesis@<full-commit-sha>
+  uses: SanishKumar/System-Synthesis@v0.2.0
   with:
     compose-path: compose.yaml
     base-revision: \${{ github.event.pull_request.base.sha }}
@@ -269,7 +269,7 @@ export default function IntegrationsPage() {
                       className="input font-mono text-xs"
                       value={repository}
                       onChange={(event) => setRepository(event.target.value)}
-                      placeholder="SanishKumar/System-Synthesis"
+                      placeholder="your-org/your-repository"
                       autoComplete="off"
                     />
                     <button
