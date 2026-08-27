@@ -101,7 +101,7 @@ The root [`action.yml`](./action.yml) is a bundled Node 24 action. Consumer repo
 ```yaml
 - name: Architecture review
   id: architecture
-  uses: your-org/System-Synthesis@<pinned-commit-sha>
+  uses: SanishKumar/System-Synthesis@13a8f43ea454f595f381fbdac6bc64fc6bb29551
   continue-on-error: true
   with:
     compose-path: compose.yaml
