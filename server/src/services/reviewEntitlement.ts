@@ -324,7 +324,12 @@ export async function reviewDecisionEntitlement(
             "decide their own change, and your access is " + level.permission + ".",
         };
       }
-      const eligible = await countDecidingReviewers(source.repository, transport, headers);
+      const reviewerSet = await countDecidingReviewers(
+        source.repository,
+        reviewer.githubUserId,
+        transport,
+        headers
+      );
       return {
         status: "allowed",
         evidence: {
@@ -334,7 +339,9 @@ export async function reviewDecisionEntitlement(
           // a count that could not be established does not withhold it. It is
           // recorded when known because "how many reviewers were skipped" is
           // the question this basis exists to answer.
-          ...(eligible === undefined ? {} : { eligibleReviewers: eligible }),
+          ...(reviewerSet === undefined
+            ? {}
+            : { eligibleReviewers: reviewerSet.count }),
         },
       };
     }
@@ -342,29 +349,38 @@ export async function reviewDecisionEntitlement(
     // sole_reviewer: the exception only holds while it is true, so it is
     // established against GitHub on every decision rather than assumed from
     // how the repository looked when it was connected.
-    const eligible = await countDecidingReviewers(source.repository, transport, headers);
-    if (eligible === undefined) {
+    const reviewerSet = await countDecidingReviewers(
+      source.repository,
+      reviewer.githubUserId,
+      transport,
+      headers
+    );
+    if (reviewerSet === undefined) {
       return unavailable("could not establish whether another reviewer exists");
     }
-    // GitHub just established that this account can decide, so a listing that
-    // contains no deciding account is internally inconsistent and cannot prove
-    // that this account is the only one.
-    if (eligible === 0) {
+    // GitHub just established that this account can decide. A listing that
+    // omits that immutable account id is internally inconsistent and cannot
+    // prove solitude, even if it happens to contain exactly one other writer.
+    if (!reviewerSet.includesReviewer) {
       return unavailable("collaborator listing did not include the deciding account");
     }
-    if (eligible > 1) {
+    if (reviewerSet.count > 1) {
       return {
         status: "refused",
         code: "self_approval",
         message:
           "You opened this pull request. This repository allows its author to decide " +
-          `only while nobody else can, and ${eligible} accounts now have write access ` +
+          `only while nobody else can, and ${reviewerSet.count} accounts now have write access ` +
           "to it. Someone other than the author has to decide this change.",
       };
     }
     return {
       status: "allowed",
-      evidence: { ...evidence, basis: "self_sole_reviewer", eligibleReviewers: eligible },
+      evidence: {
+        ...evidence,
+        basis: "self_sole_reviewer",
+        eligibleReviewers: reviewerSet.count,
+      },
     };
   } catch (error) {
     return unavailable(error instanceof Error ? error.message : "verification failed");
@@ -443,11 +459,13 @@ function missingAppPermission(): EntitlementVerdict {
  */
 async function countDecidingReviewers(
   repository: string,
+  reviewerId: string,
   transport: HttpTransport,
   headers: Record<string, string>
-): Promise<number | undefined> {
+): Promise<{ count: number; includesReviewer: boolean } | undefined> {
   try {
     let deciding = 0;
+    let includesReviewer = false;
     // A large repository can span more than one page. Reading only the first
     // 100 can manufacture solitude when a second writer sorts onto a later
     // page, which is the one direction this check must never get wrong.
@@ -458,19 +476,43 @@ async function countDecidingReviewers(
       );
       if (response.status !== 200) return undefined;
       const collaborators = (await response.json().catch(() => null)) as
-        | Array<{ permissions?: Record<string, unknown>; role_name?: unknown }>
+        | Array<{
+            id?: unknown;
+            permissions?: Record<string, unknown>;
+            role_name?: unknown;
+          }>
         | null;
       if (!Array.isArray(collaborators)) return undefined;
-      deciding += collaborators.filter((entry) => {
+      for (const entry of collaborators) {
         // `permissions` is the shape GitHub returns for this endpoint; the
         // boolean flags are cumulative, so push covers maintain and admin.
         const permissions = entry.permissions;
+        let mayDecide: boolean | undefined;
         if (permissions && typeof permissions === "object") {
-          return Boolean(permissions.push || permissions.maintain || permissions.admin);
+          const flags = [permissions.push, permissions.maintain, permissions.admin];
+          if (flags.some((flag) => typeof flag === "boolean")) {
+            mayDecide = flags.some((flag) => flag === true);
+          } else if (
+            typeof permissions.pull === "boolean" ||
+            typeof permissions.triage === "boolean"
+          ) {
+            mayDecide = false;
+          }
         }
-        return typeof entry.role_name === "string" && DECIDING_PERMISSIONS.has(entry.role_name);
-      }).length;
-      if (collaborators.length < 100) return deciding;
+        if (mayDecide === undefined && typeof entry.role_name === "string") {
+          mayDecide = DECIDING_PERMISSIONS.has(entry.role_name);
+        }
+        // A response entry that cannot be classified must not be treated as a
+        // non-reviewer: doing so could manufacture a one-person repository.
+        if (mayDecide === undefined) return undefined;
+        if (!mayDecide) continue;
+        if (typeof entry.id !== "number") return undefined;
+        deciding += 1;
+        if (String(entry.id) === reviewerId) includesReviewer = true;
+      }
+      if (collaborators.length < 100) {
+        return { count: deciding, includesReviewer };
+      }
     }
     // Refuse rather than trust an incomplete count in an exceptionally large
     // or unstable listing.

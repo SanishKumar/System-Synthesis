@@ -38,7 +38,7 @@ blast radius if the private key leaks.
 
 An installation without `Pull requests: Read` still publishes checks. It cannot
 authorise a browser decision, and says so with `app_permission_missing` rather
-than asking anyone to retry — see [updating an existing installation](#7-updating-an-existing-installation).
+than asking anyone to retry — see [updating an existing installation](#updating-an-existing-installation).
 
 Create the App, then **Generate a private key** and download the `.pem`. GitHub
 shows it once. Note the numeric **App ID** from the same page.
@@ -239,7 +239,7 @@ collaborator who owns no part of the changed architecture can still decide.
 Permission is read at the moment of the decision and not re-checked afterwards.
 See [known limitations](./KNOWN_LIMITATIONS.md).
 
-## 6b. Connecting a repository requires admin on it
+## Connecting a repository requires admin access
 
 The ingestion credential is what makes the App publish a gate on a pull request, so `/integrations` confirms with GitHub that the account connecting a repository administers it before issuing one. That means the App must be installed on the repository **first** — connecting it here cannot grant access the App does not have — and the person connecting it must have linked a GitHub account with `admin` permission there.
 
@@ -249,13 +249,13 @@ A refusal names what to change: `identity_required`, `identity_mismatch`, `app_n
 
 The App also has to be able to write checks on the repository before a connection is issued. An installation without `Checks: Read and write` is refused with `app_checks_permission_missing`, because a credential that connects successfully and then never publishes looks like the analysis failing rather than the App being under-permitted.
 
-## 6c. Existing credentials must be reconnected
+## Reconnecting credentials issued before authority checks
 
 A credential issued before this deployment checked repository authority carries no proof of it, and is refused with `integration_unverified`. There is no backfill: nothing stored can establish who was entitled to a credential issued under the old rules, and guessing would defeat the check.
 
 Reconnect each repository at `/integrations`. That proves admin once and issues a replacement token, which the workflow secret then needs updating to.
 
-## 7. Updating an existing installation
+## Updating an existing installation
 
 An App registered before `Pull requests: Read` was required keeps working for
 checks and refuses every decision with `app_permission_missing`. Adding a

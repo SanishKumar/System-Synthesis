@@ -63,9 +63,11 @@ function transportFor(options: {
    * Accounts the repository's collaborator listing reports. Each entry is the
    * cumulative permission block GitHub returns for that endpoint.
    */
-  collaborators?: Array<{ permissions: Record<string, boolean> }>;
+  collaborators?: Array<{ id?: number; permissions: Record<string, boolean> }>;
   /** Explicit pages for pagination tests; omitted pages are empty. */
-  collaboratorPages?: Array<Array<{ permissions: Record<string, boolean> }>>;
+  collaboratorPages?: Array<
+    Array<{ id?: number; permissions: Record<string, boolean> }>
+  >;
   /** Anything other than 200 leaves "is anyone else here" unanswered. */
   collaboratorsStatus?: number;
 } = {}): HttpTransport {
@@ -737,14 +739,16 @@ describe("an author deciding their own change", () => {
 
   /** The reviewer is also the author of the pull request. */
   const asAuthor = { authorId: REVIEWER_ID };
-  type Collaborator = { permissions: Record<string, boolean> };
-  const solo: Collaborator[] = [{ permissions: { push: true, admin: true } }];
+  type Collaborator = { id?: number; permissions: Record<string, boolean> };
+  const solo: Collaborator[] = [
+    { id: REVIEWER_ID, permissions: { push: true, admin: true } },
+  ];
   const team: Collaborator[] = [
-    { permissions: { push: true, admin: true } },
-    { permissions: { push: true } },
+    { id: REVIEWER_ID, permissions: { push: true, admin: true } },
+    { id: 1002, permissions: { push: true } },
     // Read-only, so not a reviewer and not counted.
     { permissions: { pull: true } },
-    { permissions: { maintain: true } },
+    { id: 1003, permissions: { maintain: true } },
   ];
 
   function decide(policy: unknown, transport: ReturnType<typeof transportFor>) {
@@ -816,6 +820,39 @@ describe("an author deciding their own change", () => {
     const verdict = await decide(
       soleReviewer,
       transportFor({ ...asAuthor, permission: "admin", collaborators: [] })
+    );
+    expect(verdict).toMatchObject({
+      status: "refused",
+      code: "verification_unavailable",
+    });
+  });
+
+  it("does not call a different sole writer proof that the author is alone", async () => {
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({
+        ...asAuthor,
+        permission: "admin",
+        collaborators: [{ id: 2002, permissions: { push: true } }],
+      })
+    );
+    expect(verdict).toMatchObject({
+      status: "refused",
+      code: "verification_unavailable",
+    });
+  });
+
+  it("refuses an unclassifiable collaborator instead of silently excluding it", async () => {
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({
+        ...asAuthor,
+        permission: "admin",
+        collaborators: [
+          ...solo,
+          { id: 2002, permissions: {} },
+        ],
+      })
     );
     expect(verdict).toMatchObject({
       status: "refused",
