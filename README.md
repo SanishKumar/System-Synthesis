@@ -6,7 +6,7 @@ No model decides the verdict.
 
 [![CI](https://github.com/SanishKumar/System-Synthesis/actions/workflows/ci.yml/badge.svg)](https://github.com/SanishKumar/System-Synthesis/actions/workflows/ci.yml)
 [![Node](https://img.shields.io/badge/node-24-3c873a)](https://nodejs.org)
-[![License](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 
 ![A pull request that publishes a database port, reviewed in System Synthesis: topology before and after, the semantic delta, deterministic findings with file and line evidence, and the merge gate](docs/demo.gif)
 
@@ -58,7 +58,7 @@ Every pull request the analyzer has compared, newest first, and what each one is
 
 Connecting issues a repository-scoped credential for GitHub Actions. Tokens are shown once, stored only as hashes, and never sent to fork pull requests.
 
-Deciding a review is bound to a real identity: linking proves which GitHub account you are, and the decision gate checks write access on that repository at the moment you decide. A pull request cannot approve itself.
+Deciding a review is bound to a real identity: linking proves which GitHub account you are, and the decision gate checks write access on that repository at the moment you decide. Self-approval is refused by default; the base-branch policy may name a solo-maintainer or administrator exception, and either one is recorded distinctly.
 
 ```yaml
 - name: Architecture review
@@ -259,4 +259,4 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) and [SECURITY.md](./SECURITY.md).
 
 ## License
 
-[MIT](./LICENSE)
+[Apache License 2.0](./LICENSE)

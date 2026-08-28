@@ -64,6 +64,8 @@ function transportFor(options: {
    * cumulative permission block GitHub returns for that endpoint.
    */
   collaborators?: Array<{ permissions: Record<string, boolean> }>;
+  /** Explicit pages for pagination tests; omitted pages are empty. */
+  collaboratorPages?: Array<Array<{ permissions: Record<string, boolean> }>>;
   /** Anything other than 200 leaves "is anyone else here" unanswered. */
   collaboratorsStatus?: number;
 } = {}): HttpTransport {
@@ -89,10 +91,13 @@ function transportFor(options: {
     }
     // The listing, not the single-account permission lookup below it.
     if (url.includes("/collaborators?")) {
+      const page = Number(new URL(url).searchParams.get("page") ?? "1");
       return {
         status: options.collaboratorsStatus ?? 200,
         json: async () =>
-          options.collaborators ?? [{ permissions: { push: true, admin: true } }],
+          options.collaboratorPages?.[page - 1] ??
+          options.collaborators ??
+          [{ permissions: { push: true, admin: true } }],
       };
     }
     if (url.includes("/collaborators/")) {
@@ -789,6 +794,33 @@ describe("an author deciding their own change", () => {
     );
     expect(verdict).toMatchObject({ status: "refused", code: "self_approval" });
     expect((verdict as { message: string }).message).toContain("3 accounts");
+  });
+
+  it("does not manufacture solitude from only the first collaborator page", async () => {
+    const readOnlyPage = Array.from({ length: 100 }, () => ({
+      permissions: { pull: true },
+    }));
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({
+        ...asAuthor,
+        permission: "admin",
+        collaboratorPages: [readOnlyPage, team.slice(0, 2)],
+      })
+    );
+    expect(verdict).toMatchObject({ status: "refused", code: "self_approval" });
+    expect((verdict as { message: string }).message).toContain("2 accounts");
+  });
+
+  it("refuses when the listing contradicts the permission GitHub just reported", async () => {
+    const verdict = await decide(
+      soleReviewer,
+      transportFor({ ...asAuthor, permission: "admin", collaborators: [] })
+    );
+    expect(verdict).toMatchObject({
+      status: "refused",
+      code: "verification_unavailable",
+    });
   });
 
   it("refuses rather than assuming solitude when the listing cannot be read", async () => {

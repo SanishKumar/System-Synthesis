@@ -1,6 +1,7 @@
 import type {
   ArchitecturePolicy,
   RuleSuppression,
+  SelfApprovalPolicy,
 } from "@system-synthesis/architecture-core";
 import type { ValidationSeverity } from "@system-synthesis/shared";
 
@@ -8,6 +9,12 @@ const SEVERITIES = new Set<ValidationSeverity>([
   "critical",
   "warning",
   "info",
+]);
+
+const SELF_APPROVAL_POLICIES = new Set<SelfApprovalPolicy>([
+  "forbidden",
+  "sole_reviewer",
+  "admin_override",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -123,6 +130,26 @@ export function parseArchitecturePolicy(content: string): ArchitecturePolicy {
       throw new Error("Policy suppressions must be an array.");
     }
     policy.suppressions = value.suppressions.map(parseSuppression);
+  }
+  if (value.decision !== undefined) {
+    if (!isRecord(value.decision)) {
+      throw new Error("Policy decision must be an object.");
+    }
+    const decision: NonNullable<ArchitecturePolicy["decision"]> = {};
+    if (value.decision.selfApproval !== undefined) {
+      if (
+        typeof value.decision.selfApproval !== "string" ||
+        !SELF_APPROVAL_POLICIES.has(
+          value.decision.selfApproval as SelfApprovalPolicy
+        )
+      ) {
+        throw new Error(
+          "Policy decision.selfApproval must be forbidden, sole_reviewer, or admin_override."
+        );
+      }
+      decision.selfApproval = value.decision.selfApproval as SelfApprovalPolicy;
+    }
+    policy.decision = decision;
   }
   return policy;
 }

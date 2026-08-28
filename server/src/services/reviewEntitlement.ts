@@ -346,6 +346,12 @@ export async function reviewDecisionEntitlement(
     if (eligible === undefined) {
       return unavailable("could not establish whether another reviewer exists");
     }
+    // GitHub just established that this account can decide, so a listing that
+    // contains no deciding account is internally inconsistent and cannot prove
+    // that this account is the only one.
+    if (eligible === 0) {
+      return unavailable("collaborator listing did not include the deciding account");
+    }
     if (eligible > 1) {
       return {
         status: "refused",
@@ -441,24 +447,34 @@ async function countDecidingReviewers(
   headers: Record<string, string>
 ): Promise<number | undefined> {
   try {
-    const response = await transport(
-      `${GITHUB_API}/repos/${repository}/collaborators?affiliation=all&per_page=100`,
-      { method: "GET", headers }
-    );
-    if (response.status !== 200) return undefined;
-    const collaborators = (await response.json().catch(() => null)) as
-      | Array<{ permissions?: Record<string, unknown>; role_name?: unknown }>
-      | null;
-    if (!Array.isArray(collaborators)) return undefined;
-    return collaborators.filter((entry) => {
-      // `permissions` is the shape GitHub returns for this endpoint; the
-      // boolean flags are cumulative, so push covers maintain and admin.
-      const permissions = entry.permissions;
-      if (permissions && typeof permissions === "object") {
-        return Boolean(permissions.push || permissions.maintain || permissions.admin);
-      }
-      return typeof entry.role_name === "string" && DECIDING_PERMISSIONS.has(entry.role_name);
-    }).length;
+    let deciding = 0;
+    // A large repository can span more than one page. Reading only the first
+    // 100 can manufacture solitude when a second writer sorts onto a later
+    // page, which is the one direction this check must never get wrong.
+    for (let page = 1; page <= 100; page += 1) {
+      const response = await transport(
+        `${GITHUB_API}/repos/${repository}/collaborators?affiliation=all&per_page=100&page=${page}`,
+        { method: "GET", headers }
+      );
+      if (response.status !== 200) return undefined;
+      const collaborators = (await response.json().catch(() => null)) as
+        | Array<{ permissions?: Record<string, unknown>; role_name?: unknown }>
+        | null;
+      if (!Array.isArray(collaborators)) return undefined;
+      deciding += collaborators.filter((entry) => {
+        // `permissions` is the shape GitHub returns for this endpoint; the
+        // boolean flags are cumulative, so push covers maintain and admin.
+        const permissions = entry.permissions;
+        if (permissions && typeof permissions === "object") {
+          return Boolean(permissions.push || permissions.maintain || permissions.admin);
+        }
+        return typeof entry.role_name === "string" && DECIDING_PERMISSIONS.has(entry.role_name);
+      }).length;
+      if (collaborators.length < 100) return deciding;
+    }
+    // Refuse rather than trust an incomplete count in an exceptionally large
+    // or unstable listing.
+    return undefined;
   } catch {
     return undefined;
   }

@@ -62,6 +62,24 @@ describe("GitHub Action review reports", () => {
     })).toThrow("non-empty justification");
   });
 
+  it("carries the base-branch decision policy into browser ingestion", () => {
+    const reports = createActionReview({
+      baseContent: base,
+      headContent: head,
+      sourcePath: "compose.yaml",
+      baseRevision: "base",
+      headRevision: "head",
+      policyContent: JSON.stringify({
+        decision: { selfApproval: "sole_reviewer" },
+      }),
+      reviewedAt: new Date("2026-07-19T10:00:00.000Z"),
+    });
+
+    expect(reports.policy).toMatchObject({
+      decision: { selfApproval: "sole_reviewer" },
+    });
+  });
+
   it("passes when the semantic architecture is unchanged", () => {
     const reports = createActionReview({
       baseContent: base,

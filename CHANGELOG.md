@@ -2,7 +2,7 @@
 
 Notable user-visible changes are documented here. This project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.0 — 2026-08-27
+## v0.2.0 — Unreleased
 
 The first release of the pull-request architecture review. `v0.1.0` predates the current importer, analyzer, ingestion, and synchronization contracts; pin `v0.2.0` or later.
 
@@ -13,6 +13,7 @@ The first release of the pull-request architecture review. `v0.1.0` predates the
 - A Kubernetes manifest adapter and Kubernetes-specific policy rules in `architecture-core`. This adapter is not yet selectable from the CLI, Action, or server.
 - Stable graph algorithms for reachability, trust boundaries, redundancy, cycles, and downstream blast radius.
 - Base-branch policy authority, scoped and expiring suppressions, review decisions, optimistic revisions, and append-only audit events.
+- Explicit, base-branch-controlled self-approval modes for solo maintainers and administrators, with live GitHub verification and distinct audit evidence.
 - GitHub synchronization status and retry controls for browser review decisions.
 - A collaborative architecture canvas backed by Yjs, PostgreSQL snapshots and update logs, Redis distribution, version history, and deterministic infrastructure export.
 - Reproducible convergence tests, live Socket.IO benchmarks, a threat model, a failure model, ADRs, and documented limitations.
