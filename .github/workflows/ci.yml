@@ -16,7 +16,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: 'package-lock.json'
 
@@ -28,6 +28,9 @@ jobs:
         env:
           # Dummy URL required for Next.js build time, overridden at runtime
           NEXT_PUBLIC_SOCKET_URL: http://localhost:4000
+
+      - name: Build frontend development container
+        run: docker build --file frontend/Dockerfile --tag system-synthesis-frontend:ci .
 
   backend-check:
     runs-on: ubuntu-latest
@@ -58,7 +61,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          # Match the bundled Action's declared runtime for consumer smoke tests.
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: 'package-lock.json'
 
@@ -67,8 +71,8 @@ jobs:
 
       # The production tree is what gets deployed, so a high-severity advisory
       # reaching it fails the build rather than waiting to be noticed. Anything
-      # knowingly carried is recorded in docs/KNOWN_LIMITATIONS.md; today that is
-      # one low, development-only advisory, which this does not cover.
+      # knowingly carried is recorded in docs/KNOWN_LIMITATIONS.md. The unpatched
+      # braces advisory affects development tools, which this does not cover.
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=high
 
@@ -77,6 +81,24 @@ jobs:
 
       - name: Verify committed Action bundle matches source
         run: git diff --exit-code -- architecture-action/dist
+
+      - name: Test bundled Action in an isolated consumer
+        run: npm run test:bundle --workspace=architecture-action
+
+      - name: Build backend runtime container
+        run: docker build --file server/Dockerfile --tag system-synthesis-server:ci .
+
+      - name: Verify backend container starts without development dependencies
+        shell: bash
+        run: |
+          docker run --detach --rm --name system-synthesis-smoke \
+            --publish 127.0.0.1:4001:4000 --env NODE_ENV=development system-synthesis-server:ci
+          trap 'docker logs system-synthesis-smoke; docker stop system-synthesis-smoke || true' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://localhost:4001/health > /dev/null; then break; fi
+            sleep 1
+          done
+          curl --fail http://localhost:4001/health
 
       - name: Run architecture core tests
         run: npm test --workspace=architecture-core && npm test --workspace=architecture-cli && npm test --workspace=architecture-action && npm test --workspace=frontend

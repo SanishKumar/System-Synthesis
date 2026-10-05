@@ -178,7 +178,10 @@ export async function reviewDecisionEntitlement(
       now: options.now,
       refresh: true,
     });
-    if (refreshed.status === "ok") credential = refreshed;
+    if (refreshed.status !== "ok" || refreshed.fromCache) {
+      return unavailable("could not refresh the installation's pull-request permission");
+    }
+    credential = refreshed;
   }
   if (credential.status !== "ok") {
     // Failing open here would let anyone decide whenever GitHub is unreachable,

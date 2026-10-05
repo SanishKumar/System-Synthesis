@@ -1,0 +1,17 @@
+# Never send credentials, local state, or host-specific dependencies to Docker.
+.git
+**/node_modules
+**/.next
+**/dist
+**/out
+**/coverage
+**/*.tsbuildinfo
+**/.env
+**/.env.*
+!**/.env.example
+local-notes
+.codex
+.agents
+.aws
+.system-synthesis/reports
+**/*.log

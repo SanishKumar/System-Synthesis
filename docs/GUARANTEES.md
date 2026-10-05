@@ -2,7 +2,7 @@
 
 Every statement here is limited to behaviour checked by a test in this repository. Each one names the test that holds it, so a claim that stops being true fails a build rather than quietly surviving in prose.
 
-Run them with `npm run verify`. The PostgreSQL contract is skipped locally and executed in CI, which fails if those tests skip rather than run.
+Run them with `npm run verify`, then `npm run test:bundle --workspace=architecture-action` for the isolated consumer checks. The PostgreSQL contract is skipped locally and executed in CI, which fails if those tests skip rather than run.
 
 | Guarantee | Evidence |
 | --- | --- |
@@ -13,6 +13,7 @@ Run them with `npm run verify`. The PostgreSQL contract is skipped locally and e
 | A new public-service-to-persistence dependency blocks by rule policy | Core, CLI, and GitHub Action tests |
 | Existing findings do not become new PR failures by default | Base/head finding-set comparison tests |
 | Blank or expired suppressions do not apply | Suppression tests |
+| Accepting a finding exception cannot bypass live reviewer entitlement or self-approval policy, and records its authorization evidence | Review route refusal and suppression-event tests |
 | CLI output and exit contracts are stable across JSON, Markdown, and SARIF | CLI tests and compiled-binary execution |
 | SARIF contains repository-relative file/line evidence | Core/CLI tests |
 | Browser approval is impossible while blocking findings remain | API end-to-end verification |
@@ -46,4 +47,10 @@ Run them with `npm run verify`. The PostgreSQL contract is skipped locally and e
 | An attempt made for a superseded revision cannot overwrite the state of a newer one, whether it published or not | Compare-and-set tests for both outcomes and skips |
 | A slower failing attempt cannot undo a success for the same revision, and a review predating synchronization tracking still records its first attempt | Monotonic-success and generation-adoption tests, on memory and PostgreSQL |
 | Overlapping attempts for one commit create a single check run, and no publication fault escapes unrecorded | Concurrent-write test and stable failure codes for every fault path |
-Current automated count: 179 architecture-core tests, 17 CLI tests, 25 Action tests, 13 frontend tests, and 345 backend tests (579 total). A further 19 backend tests run the synchronization, decision-audit, connection-authority and schema-upgrade contracts against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.
+| A superseded review does not publish after a newer decision or a change during check lookup | Stale-snapshot and in-flight-lookup synchronization tests |
+| Failed, malformed or incomplete GitHub check lookups do not create another gate; existing gates beyond the first page are updated | Check lookup refusal, App-filter and pagination tests |
+| A failed or throttled installation-permission refresh is reported as unavailable verification, not proof of a missing grant | Entitlement refresh tests |
+| The shipped Action runs without consumer dependencies, enforces base policy, and exits 0/1/2 consistently with its outputs | Six isolated Git consumer smoke tests against the committed bundle |
+| Configured ingestion refuses redirects and accepts local IPv6 development URLs | Local HTTP redirect test and URL-validation test |
+
+Current automated count: 179 architecture-core tests, 17 CLI tests, 27 Action tests, 13 frontend tests, and 364 backend tests (600 total), plus six standalone Action consumer checks. A further 19 backend tests run the synchronization, decision-audit, connection-authority and schema-upgrade contracts against a real PostgreSQL; CI provides one and fails if they skip, and locally they are skipped unless `TEST_DATABASE_URL` points at a scratch database. The Next.js production build type-checks and prerenders the review list, review detail, and repository-connections routes.

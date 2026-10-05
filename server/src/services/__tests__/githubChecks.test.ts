@@ -167,6 +167,49 @@ describe("publishing the decision check", () => {
     expect(patched?.body).toMatchObject({ conclusion: "success" });
   });
 
+  it("looks through all check runs belonging to this App, not only the latest named run", async () => {
+    const { transport, recorded } = transportFor();
+    await writeDecisionCheck(review(), { transport, env });
+    const lookup = new URL(recorded.find((call) => call.url.includes("/check-runs?"))!.url);
+    expect(lookup.searchParams.get("filter")).toBe("all");
+    expect(lookup.searchParams.get("app_id")).toBe(env.GITHUB_APP_ID);
+    expect(lookup.searchParams.get("per_page")).toBe("100");
+  });
+
+  it("updates an existing review check on a later page instead of duplicating it", async () => {
+    const { transport: base, recorded } = transportFor();
+    const pages: number[] = [];
+    const transport: HttpTransport = async (url, init) => {
+      if (!url.includes("/check-runs?")) return base(url, init);
+      const page = Number(new URL(url).searchParams.get("page") || 1);
+      pages.push(page);
+      return { status: 200, json: async () => ({ check_runs: page === 1
+        ? Array.from({ length: 100 }, (_, id) => ({ id: id + 1000, external_id: "another-review" }))
+        : [{ id: 555, external_id: REVIEW_ID }] }) };
+    };
+    expect(await writeDecisionCheck(review(), { transport, env })).toMatchObject({ status: "written" });
+    expect(pages).toEqual([1, 2]);
+    expect(recorded.find((call) => call.method === "PATCH")?.url).toContain("/check-runs/555");
+    expect(recorded.some((call) => call.method === "POST" && call.url.endsWith("/check-runs"))).toBe(false);
+  });
+
+  it.each(["unavailable", "unbounded"])("does not create a gate when later lookup pages are %s", async (failure) => {
+    const { transport: base, recorded } = transportFor();
+    let pages = 0;
+    const transport: HttpTransport = async (url, init) => {
+      if (!url.includes("/check-runs?")) return base(url, init);
+      pages += 1;
+      return failure === "unavailable" && pages > 1
+        ? { status: 503, json: async () => ({}) }
+        : { status: 200, json: async () => ({ check_runs:
+          Array.from({ length: 100 }, (_, id) => ({ id: id + 1000, external_id: "another-review" })) }) };
+    };
+    expect(await writeDecisionCheck(review(), { transport, env }))
+      .toMatchObject({ status: "error", code: "check_lookup_failed" });
+    expect(pages).toBe(failure === "unavailable" ? 2 : 10);
+    expect(recorded.filter((call) => call.url.includes("/check-runs"))).toEqual([]);
+  });
+
   it("never sends head_sha when updating, which GitHub refuses", async () => {
     const { transport, recorded } = transportFor([{ id: 555, external_id: REVIEW_ID }]);
     const result = await writeDecisionCheck(review({ decision: "approved" }), { transport, env });
@@ -324,5 +367,25 @@ describe("publishing the decision check", () => {
     await expect(writeDecisionCheck(review(), { transport, env })).resolves.toMatchObject({
       status: "error",
     });
+  });
+
+  it.each([403, 429, 500])("does not create a duplicate when check lookup returns %s", async (status) => {
+    const { transport: base, recorded } = transportFor([{ id: 555, external_id: REVIEW_ID }]);
+    const transport: HttpTransport = async (url, init) => url.includes("/check-runs?")
+      ? { status, json: async () => ({ message: "lookup unavailable" }) }
+      : base(url, init);
+    expect(await writeDecisionCheck(review(), { transport, env }))
+      .toMatchObject({ status: "error", code: "check_lookup_failed" });
+    expect(recorded.filter((call) => call.url.includes("/check-runs"))).toEqual([]);
+  });
+
+  it.each([null, {}, { check_runs: null }])("refuses an invalid check lookup response: %j", async (payload) => {
+    const { transport: base, recorded } = transportFor();
+    const transport: HttpTransport = async (url, init) => url.includes("/check-runs?")
+      ? { status: 200, json: async () => payload }
+      : base(url, init);
+    expect(await writeDecisionCheck(review(), { transport, env }))
+      .toMatchObject({ status: "error", code: "check_lookup_failed" });
+    expect(recorded.filter((call) => call.url.includes("/check-runs"))).toEqual([]);
   });
 });

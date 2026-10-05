@@ -1,11 +1,14 @@
 import {
   getInstallationToken,
+  readGitHubAppConfig,
   type CredentialFailureCode,
   type HttpTransport,
 } from "./githubApp.js";
 import { logger } from "../middleware/logger.js";
 import { decisionCheckState, reviewDecisionSubject } from "./decisionState.js";
+import { ownerScope } from "./reviewAccess.js";
 import {
+  getArchitectureReview,
   getGitHubSyncState,
   recordGitHubSyncOutcome,
   recordGitHubSyncSkipped,
@@ -24,6 +27,8 @@ const GITHUB_API = "https://api.github.com";
  */
 export const DECISION_CHECK_NAME = "Architecture Decision";
 const COMMIT_SHA = /^[a-f0-9]{40}$/i;
+const CHECK_PAGE_SIZE = 100;
+const MAX_CHECK_PAGES = 10;
 
 /**
  * Why a publish attempt failed, as a fixed vocabulary a reviewer can be shown.
@@ -37,13 +42,21 @@ export type DecisionCheckFailureCode =
   | "check_write_forbidden"
   | "check_write_invalid"
   | "check_write_failed"
+  | "check_lookup_failed"
   | "configuration_invalid"
   | "unexpected_error";
 
 export type DecisionCheckResult =
   | { status: "written"; conclusion: string }
+  | { status: "superseded" }
   | { status: "skipped"; reason: string }
   | { status: "error"; code: DecisionCheckFailureCode; detail: string };
+
+interface PublicationOptions {
+  transport?: HttpTransport;
+  env?: NodeJS.ProcessEnv;
+  isCurrent?: () => Promise<boolean>;
+}
 
 function reviewUrl(review: ArchitectureReviewRecord): string {
   const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
@@ -69,7 +82,7 @@ function defaultTransport(): HttpTransport {
  */
 export async function writeDecisionCheck(
   review: ArchitectureReviewRecord,
-  options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv } = {}
+  options: PublicationOptions = {}
 ): Promise<DecisionCheckResult> {
   // Nothing in this function may throw. The caller records what it returns, so
   // an escaping exception is the one outcome that leaves a review claiming it
@@ -87,7 +100,7 @@ export async function writeDecisionCheck(
 
 async function attemptDecisionCheck(
   review: ArchitectureReviewRecord,
-  options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv }
+  options: PublicationOptions
 ): Promise<DecisionCheckResult> {
   const source = review.externalSource;
   if (!source) return { status: "skipped", reason: "not_external" };
@@ -156,24 +169,41 @@ async function attemptDecisionCheck(
     // is what can be duplicated — and keying it by review would make an attempt
     // for a newer commit wait behind one for a commit nobody is looking at.
     return await inSequenceFor(`${source.repository}@${review.headRevision}`, async () => {
-      const existing = await transport(
-        `${GITHUB_API}/repos/${source.repository}/commits/${review.headRevision}/check-runs?check_name=${encodeURIComponent(DECISION_CHECK_NAME)}`,
-        { method: "GET", headers }
-      );
+      if (options.isCurrent && !(await options.isCurrent())) return { status: "superseded" };
+      // Token acquisition above requires this configuration. Filter by App as
+      // well as name, and include older runs: GitHub's default `latest` can
+      // hide this review behind another review using the same check name.
+      const appId = readGitHubAppConfig(options.env)!.appId;
       let existingId: number | undefined;
-      if (existing.status === 200) {
+      for (let page = 1; page <= MAX_CHECK_PAGES; page += 1) {
+        const existing = await transport(
+          `${GITHUB_API}/repos/${source.repository}/commits/${review.headRevision}/check-runs?check_name=${encodeURIComponent(DECISION_CHECK_NAME)}&app_id=${encodeURIComponent(appId)}&filter=all&per_page=${CHECK_PAGE_SIZE}&page=${page}`,
+          { method: "GET", headers }
+        );
+        if (existing.status !== 200) {
+          return { status: "error", code: "check_lookup_failed", detail: `check run lookup returned ${existing.status}` };
+        }
         const payload = (await existing.json().catch(() => null)) as
           | { check_runs?: Array<{ id?: unknown; external_id?: unknown }> }
           | null;
-        // Match on the identifier this service set, not on position. Another
-        // application may publish a check of the same name against the same
-        // commit, and updating someone else's run would be worse than adding one.
-        const mine = (payload?.check_runs || [])
-          .filter((run) => run.external_id === review.id && typeof run.id === "number")
+        if (!Array.isArray(payload?.check_runs)) {
+          return { status: "error", code: "check_lookup_failed", detail: "check run lookup returned an invalid response" };
+        }
+        // Never adopt another review's run, even within the same App.
+        existingId = payload.check_runs
+          .filter((run) => run?.external_id === review.id && typeof run.id === "number")
           .map((run) => run.id as number)
-          .sort((left, right) => right - left);
-        existingId = mine[0];
+          .sort((left, right) => right - left)[0];
+        if (existingId || payload.check_runs.length < CHECK_PAGE_SIZE) break;
+        if (page === MAX_CHECK_PAGES) {
+          // An incomplete search is not proof there is no existing check.
+          return { status: "error", code: "check_lookup_failed", detail: "check run lookup exceeded the pagination limit" };
+        }
       }
+
+      // A lookup can take long enough for another decision to be recorded.
+      // Compare under the publication lock, immediately before the write.
+      if (options.isCurrent && !(await options.isCurrent())) return { status: "superseded" };
 
       const written = existingId
         ? await transport(
@@ -248,7 +278,14 @@ export async function publishDecisionCheck(
   review: ArchitectureReviewRecord,
   options: { transport?: HttpTransport; env?: NodeJS.ProcessEnv } = {}
 ): Promise<GitHubSyncState> {
-  const attempted = await writeDecisionCheck(review, options);
+  const attempted = await writeDecisionCheck(review, {
+    ...options,
+    isCurrent: async () => {
+      const current = await getArchitectureReview(review.id, ownerScope(review.ownerId));
+      return Boolean(current && current.revision === review.revision && current.headRevision === review.headRevision);
+    },
+  });
+  if (attempted.status === "superseded") return currentState(review);
   const generation = {
     revision: review.revision,
     headRevision: review.headRevision,

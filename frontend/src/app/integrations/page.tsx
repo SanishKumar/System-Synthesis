@@ -176,13 +176,13 @@ export default function IntegrationsPage() {
   };
 
   const workflowSnippet = `- name: Review architecture change
-  uses: SanishKumar/System-Synthesis@v0.2.0
+  uses: SanishKumar/System-Synthesis@<reviewed-full-commit-sha>
   with:
     compose-path: compose.yaml
     base-revision: \${{ github.event.pull_request.base.sha }}
     head-revision: \${{ github.event.pull_request.head.sha }}
-    ingestion-url: \${{ vars.SYSTEM_SYNTHESIS_INGESTION_URL }}
-    ingestion-token: \${{ secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN }}`;
+    ingestion-url: \${{ (github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
+    ingestion-token: \${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}`;
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -533,7 +533,7 @@ function CredentialPanel({
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold text-text-primary">3. Pin the Action in your workflow</p>
-              <p className="mt-1 text-[11px] leading-5 text-text-muted">Use a reviewed full commit SHA, not a mutable branch.</p>
+              <p className="mt-1 text-[11px] leading-5 text-text-muted">Replace the placeholder with a reviewed full commit SHA. v0.2.0 is not published yet. Run on pull_request with checkout fetch-depth: 0.</p>
             </div>
             <button onClick={() => void copyText(workflowSnippet, "Workflow")} className="btn-secondary h-8 gap-1.5 !px-2.5 text-[10px]">
               <Clipboard className="h-3 w-3" /> Copy

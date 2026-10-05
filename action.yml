@@ -38,7 +38,7 @@ inputs:
 
 outputs:
   exit-code:
-    description: 0 for pass, 1 for blocking findings, or 2 for invalid input.
+    description: 0 for pass, 1 for blocking findings, or 2 for invalid input or a configured ingestion failure.
   status:
     description: pass, fail, or error.
   blocking-findings:

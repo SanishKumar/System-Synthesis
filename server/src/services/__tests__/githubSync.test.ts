@@ -117,6 +117,45 @@ describe("GitHub synchronization state", () => {
     expect(state.succeededAt).not.toBeNull();
   });
 
+  it("does not publish an old snapshot after a newer decision reached GitHub", async () => {
+    const { review: old } = await ingest();
+    const decided = await updateArchitectureReviewDecision(
+      old.id, SCOPE, OWNER, old.revision, "rejected", "Do not expose the database.", MANUAL_ENTITLEMENT
+    );
+    if (decided.status !== "updated") throw new Error("Decision was not stored");
+    const writes: string[] = [];
+    const base = transport();
+    const recording: HttpTransport = async (url, init) => {
+      if (url.includes("/check-runs") && init.method !== "GET") {
+        writes.push(JSON.parse(init.body!).conclusion);
+      }
+      return base(url, init);
+    };
+    await publishDecisionCheck(decided.review, { transport: recording, env });
+    await publishDecisionCheck(old, { transport: recording, env });
+    expect(writes).toEqual(["failure"]);
+    expect((await getArchitectureReview(old.id, SCOPE))?.githubSync)
+      .toMatchObject({ status: "synced", conclusion: "failure" });
+  });
+
+  it("discards a snapshot that becomes stale during the GitHub lookup", async () => {
+    const { review } = await ingest();
+    let writes = 0;
+    const base = transport();
+    const racing: HttpTransport = async (url, init) => {
+      if (url.includes("/check-runs?") && init.method === "GET") {
+        await updateArchitectureReviewDecision(
+          review.id, SCOPE, OWNER, review.revision, "rejected", "Newer decision.", MANUAL_ENTITLEMENT
+        );
+      }
+      if (url.includes("/check-runs") && init.method !== "GET") writes += 1;
+      return base(url, init);
+    };
+    const state = await publishDecisionCheck(review, { transport: racing, env });
+    expect(writes).toBe(0);
+    expect(state).toMatchObject({ status: "pending", conclusion: "failure", revision: review.revision + 1 });
+  });
+
   it("keeps the decision durable when publication is refused", async () => {
     const { review } = await ingest();
     const decided = await updateArchitectureReviewDecision(

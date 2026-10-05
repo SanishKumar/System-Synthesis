@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
 import { createActionReview } from "../review.js";
 import {
   createIngestionPayload,
@@ -184,6 +185,15 @@ describe("GitHub Action browser-review ingestion", () => {
     expect(bodies[0]).toBe(bodies[1]);
   });
 
+  it("accepts the documented IPv6 loopback HTTP endpoint", async () => {
+    const fetchMock = vi.fn(async () => successResponse());
+    await expect(uploadArchitectureReview({
+      endpoint: "http://[::1]:4000/api/review-ingestions/github",
+      token: TOKEN, payload: payload(), fetchImpl: fetchMock,
+    })).resolves.toMatchObject({ status: "created" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("fails closed without retrying credential or endpoint errors", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(JSON.stringify({ error: "invalid credential" }), { status: 401 }));
@@ -201,6 +211,33 @@ describe("GitHub Action browser-review ingestion", () => {
       token: TOKEN,
       payload: payload(),
     })).rejects.toThrow("must be HTTPS");
+  });
+
+  it("does not forward the credential or private graph through an ingestion redirect", async () => {
+    const requests: string[] = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url || "");
+      request.resume();
+      if (request.url === "/api/review-ingestions/github") {
+        response.writeHead(307, { Location: "/unapproved-destination" });
+        response.end();
+      } else {
+        response.writeHead(400);
+        response.end();
+      }
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Missing server address");
+      await expect(uploadArchitectureReview({
+        endpoint: `http://127.0.0.1:${address.port}/api/review-ingestions/github`,
+        token: TOKEN, payload: payload(), attempts: 1,
+      })).rejects.toThrow("HTTP 307");
+      expect(requests).toEqual(["/api/review-ingestions/github"]);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it("rejects a mismatched current response but accepts an explicitly stale delivery", async () => {

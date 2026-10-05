@@ -65,6 +65,7 @@ const FAILURE_DETAIL: Record<string, string> = {
   check_write_forbidden: "The App is not allowed to write checks here. Grant it Checks: Read and write.",
   check_write_invalid: "GitHub rejected the check this service sent, which is a bug worth reporting.",
   check_write_failed: "GitHub did not accept the check run.",
+  check_lookup_failed: "GitHub could not confirm the existing check. Retry to publish this decision safely.",
   configuration_invalid: "The server's FRONTEND_URL is not a valid URL, so the check could not be addressed.",
   unexpected_error: "The publish attempt failed unexpectedly. The reason is in the server log.",
 };

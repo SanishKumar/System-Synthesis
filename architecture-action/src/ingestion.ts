@@ -104,7 +104,7 @@ function httpUrl(value: unknown, label: string): string {
   } catch {
     throw new Error(`${label} is invalid.`);
   }
-  const loopback = ["localhost", "127.0.0.1", "::1"].includes(url.hostname);
+  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
   if ((url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) || url.username || url.password) {
     throw new Error(`${label} must be HTTPS (or loopback HTTP) and contain no credentials.`);
   }
@@ -297,6 +297,7 @@ export async function uploadArchitectureReview(
     try {
       response = await fetchImpl(endpoint, {
         method: "POST",
+        redirect: "manual",
         headers: {
           Authorization: `Bearer ${options.token}`,
           "Content-Type": "application/json",

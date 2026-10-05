@@ -4,9 +4,10 @@ The Action can review a pull request without any of this. The App exists for one
 additional thing: publishing the **Architecture Decision** check, so that a
 decision recorded in the browser becomes a merge gate on the pull request.
 
-Without the App the product still works — analysis runs, the comment appears,
-the review persists, decisions are recorded and audited. They are simply not
-mirrored to GitHub, and every publish attempt is skipped with `not_configured`.
+Without the App, local Action analysis and comments still work. Connecting a
+repository for browser ingestion requires the App to verify administrator
+authority. Existing or manually imported browser reviews can still record
+decisions; publication is skipped with `not_configured` when the App is absent.
 
 Nothing here requires a webhook. The server never receives GitHub events; it
 only writes check runs when a review changes.
@@ -89,6 +90,11 @@ before trusting the gate.
 Open a pull request that introduces a deliberate violation — giving a service
 that publishes a host port a direct dependency on a database is enough.
 
+With reviewer identity enabled, the account that connected the ingestion
+credential must perform the browser steps below, and a different account should
+author the pull request. Reviews are owner-scoped, not shared with every GitHub
+collaborator. Configure identity as in section 7 before this walkthrough.
+
 1. The deterministic Action check **fails**.
 2. Exactly **one** `Architecture Decision` check appears, as **action required**.
 3. Its details link opens the correct review.
@@ -137,6 +143,7 @@ unpublished and retrying is worth doing:
 | `credential_rejected` | GitHub refused the App's credential — a rotated key, or access removed |
 | `installation_lookup_failed` | GitHub could not confirm the installation; usually transient |
 | `token_request_failed` | GitHub would not issue an installation token |
+| `check_lookup_failed` | Existing check runs could not be read completely and safely; no new check was created. Retry, or inspect the server log if the lookup limit was reached |
 | `check_write_forbidden` | The App lacks `Checks: Read and write`, or the installation was removed |
 | `app_permission_missing` | The App lacks `Pull requests: Read`, so the author of the change cannot be established. Reported only from the installation's own grant, which GitHub states when it mints a token. Publishing is unaffected; only deciding is refused |
 | `verification_unavailable` | GitHub could not answer. A rate limit, an IP allow list, or an organisation policy all answer `403`, and none of them are fixed by editing the App, so a `403` is always reported as something to retry. `X-Accepted-GitHub-Permissions` states what an endpoint requires rather than what the caller was found to be missing, so it never decides this either way |
@@ -212,8 +219,8 @@ else changes: decisions are still recorded, audited and published.
 
 ## 8. What deciding then requires
 
-With both the App and reviewer identity configured, a decision on a
-pull-request review is checked before it is recorded:
+With both the App and reviewer identity configured, a decision or finding
+exception on a pull-request review is checked before it is recorded:
 
 | Refusal | Meaning |
 | --- | --- |
@@ -226,6 +233,10 @@ A refusal writes nothing, so no gate is left disagreeing with the pull request.
 `verification_unavailable` is deliberately a refusal rather than a pass: letting
 anyone decide whenever GitHub is unreachable would be a false gate at exactly
 the moment nobody would notice.
+
+Finding exceptions use the same base-branch self-approval policy as decisions,
+since accepting the last blocking finding can itself make the gate pass. Their
+audit events include the same entitlement evidence.
 
 A deployment without the App, or without identity configured, cannot ask any of
 this. It records the decision as before rather than locking every reviewer out
@@ -290,11 +301,17 @@ the whole deployment.
 Public repositories can answer a pull-request lookup without the permission, so
 they cannot prove this works. Test on a private one:
 
-1. Install the App on a private repository you own.
-2. Run the Action on a pull request there so a review is ingested.
-3. Link a GitHub account at `/integrations` that is **not** the author of that
-   pull request and has write access.
-4. Decide the review in the browser.
+1. Install the App on a private repository you administer and enable reviewer identity.
+2. In reviewer B's System Synthesis account, link B's GitHub identity and connect
+   the repository. B needs admin access to create the ingestion credential.
+   Configure the workflow with B's token.
+3. Have account A open the pull request and run the Action so the review is
+   ingested under B's ownership.
+4. As B, open the review and decide it or accept a finding exception. B must
+   still have write access; another linked collaborator cannot open B's review.
 5. A decision that records `basis: verified` proves the permission is live.
    `app_permission_missing` means step 4 of the update was not completed;
    `self_approval` means the linked account opened the pull request.
+
+A solo-maintainer test instead needs an explicit self-approval exception in the
+base-branch policy; its audit basis is deliberately different from `verified`.

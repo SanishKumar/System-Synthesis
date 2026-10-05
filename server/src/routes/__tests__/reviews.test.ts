@@ -39,7 +39,7 @@ const identity = {
 
 vi.mock("../auth.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../auth.js")>();
-  return { ...actual, linkedGitHubIdentity: async () => identity.linked };
+  return { ...actual, linkedGitHubIdentity: async () => identity.linked, refreshGitHubLogin: async () => undefined };
 });
 
 vi.mock("../../services/githubApp.js", async (importOriginal) => {
@@ -198,6 +198,9 @@ describe("architecture review routes and the decision gate", () => {
     github.installed = true;
     github.calls = 0;
     github.onWrite = null;
+    github.permissions = { checks: "write", metadata: "read", pull_requests: "read" };
+    identity.linked = { githubUserId: null, githubLogin: null };
+    identity.permission = "admin";
     process.env.GITHUB_APP_ID = "1234";
     process.env.GITHUB_APP_PRIVATE_KEY = privateKey;
 
@@ -219,7 +222,10 @@ describe("architecture review routes and the decision gate", () => {
         return new Response(JSON.stringify({ user: { id: identity.authorId } }), { status: 200 });
       }
       if (url.includes("/collaborators/")) {
-        return new Response(JSON.stringify({ permission: identity.permission }), { status: 200 });
+        return new Response(JSON.stringify({
+          permission: identity.permission,
+          user: { id: Number(identity.linked.githubUserId), login: identity.linked.githubLogin },
+        }), { status: 200 });
       }
       return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
     }) as typeof fetch;
@@ -229,6 +235,8 @@ describe("architecture review routes and the decision gate", () => {
     globalThis.fetch = originalFetch;
     delete process.env.GITHUB_APP_ID;
     delete process.env.GITHUB_APP_PRIVATE_KEY;
+    delete process.env.GITHUB_APP_CLIENT_ID;
+    delete process.env.GITHUB_APP_CLIENT_SECRET;
     if (!server) return;
     await new Promise<void>((resolve, reject) => {
       server!.close((error) => (error ? reject(error) : resolve()));
@@ -368,6 +376,72 @@ describe("architecture review routes and the decision gate", () => {
       delete process.env.GITHUB_APP_CLIENT_ID;
       delete process.env.GITHUB_APP_CLIENT_SECRET;
     }
+  });
+
+  it.each([
+    { id: "7001", login: "octo-author", permission: "admin", code: "self_approval" },
+    { id: null, login: null, permission: "admin", code: "identity_required" },
+    { id: "9002", login: "octo-reviewer", permission: "read", code: "insufficient_permission" },
+  ])("refuses a finding exception when entitlement is $code", async ({ id, login, permission, code }) => {
+    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc";
+    process.env.GITHUB_APP_CLIENT_SECRET = "test-secret";
+    identity.linked = { githubUserId: id, githubLogin: login };
+    identity.permission = permission;
+    const baseUrl = await startApp();
+    const ingested = await ingest(baseUrl);
+    const before = (await getArchitectureReview(ingested.reviewId, SCOPE))!;
+    const finding = before.report.blockingFindings[0];
+    const eventsBefore = await listArchitectureReviewEvents(before.id, SCOPE);
+    const writesBefore = github.calls;
+
+    const suppressed = await asOwner(baseUrl, `/api/reviews/${before.id}/suppressions`, {
+      method: "POST",
+      body: JSON.stringify({
+        expectedRevision: before.revision,
+        ruleId: finding.ruleId,
+        findingId: finding.id,
+        justification: "Accept this architecture exception for the pilot.",
+      }),
+    });
+
+    expect(suppressed.status).toBe(403);
+    expect(suppressed.body.code).toBe(code);
+    expect(await getArchitectureReview(before.id, SCOPE)).toEqual(before);
+    expect(await listArchitectureReviewEvents(before.id, SCOPE)).toEqual(eventsBefore);
+    expect(github.calls).toBe(writesBefore);
+  });
+
+  it("records verified entitlement with a finding exception before publishing it", async () => {
+    process.env.GITHUB_APP_CLIENT_ID = "Iv1.abc";
+    process.env.GITHUB_APP_CLIENT_SECRET = "test-secret";
+    identity.linked = { githubUserId: "9002", githubLogin: "octo-reviewer" };
+    identity.permission = "write";
+    const baseUrl = await startApp();
+    const ingested = await ingest(baseUrl);
+    const before = (await getArchitectureReview(ingested.reviewId, SCOPE))!;
+    const finding = before.report.blockingFindings[0];
+
+    const suppressed = await asOwner(baseUrl, `/api/reviews/${before.id}/suppressions`, {
+      method: "POST",
+      body: JSON.stringify({
+        expectedRevision: before.revision,
+        ruleId: finding.ruleId,
+        findingId: finding.id,
+        justification: "Accepted with a separately enforced network firewall.",
+      }),
+    });
+
+    expect(suppressed.status).toBe(200);
+    expect(suppressed.body.revision).toBe(before.revision + 1);
+    const event = (await listArchitectureReviewEvents(before.id, SCOPE))
+      .find((entry) => entry.eventType === "suppression.added");
+    expect(event?.actorId).toBe(OWNER.userId);
+    expect(event?.data.entitlement).toMatchObject({
+      basis: "verified", repository: REPOSITORY,
+      githubUserId: "9002", githubLogin: "octo-reviewer", permission: "write",
+      selfApproved: false,
+    });
+    expect(event?.data.entitlement).toHaveProperty("checkedAt");
   });
 
   it("refuses with a configuration answer when the App cannot read pull requests", async () => {

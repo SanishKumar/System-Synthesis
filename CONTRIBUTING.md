@@ -36,6 +36,7 @@ author anyway. See [the App setup guide](./docs/GITHUB_APP_SETUP.md).
 ```bash
 npm ci
 npm run verify      # every workspace builds, every test runs
+npm run test:bundle --workspace=architecture-action  # shipped Action, isolated Git consumer
 ```
 
 `npm run verify` is the gate. Run it with **no development server running**:

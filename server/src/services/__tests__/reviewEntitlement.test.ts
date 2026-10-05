@@ -640,6 +640,28 @@ describe("accepting the permission recovers without waiting for the token to exp
     expect(state.minted).toBe(2);
   });
 
+  it.each([404, 503])("reports failed permission refresh (%s) as temporarily unverifiable", async (status) => {
+    const { transport } = installation();
+    await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: AT });
+    const failing: HttpTransport = async (url, init) => url.endsWith("/installation")
+      ? { status, json: async () => ({}) }
+      : transport(url, init);
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, {
+      env, transport: failing, now: later(FORCED_REFRESH_INTERVAL_MS + 1),
+    });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+  });
+
+  it("does not call a throttled cached refresh proof that permission is still missing", async () => {
+    const { state, transport } = installation();
+    await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: AT });
+    await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: later(1000) });
+    state.granted = FULL_GRANT;
+    const verdict = await reviewDecisionEntitlement(review(), REVIEWER, { env, transport, now: later(2000) });
+    expect(verdict).toMatchObject({ status: "refused", code: "verification_unavailable" });
+    expect(state.minted).toBe(2);
+  });
+
   it("needs no restart and no configuration change to pick the grant up", async () => {
     // The same process, the same cache, the same App configuration.
     const { state, transport } = installation();

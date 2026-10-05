@@ -61,19 +61,25 @@ Connecting issues a repository-scoped credential for GitHub Actions. Tokens are 
 Deciding a review is bound to a real identity: linking proves which GitHub account you are, and the decision gate checks write access on that repository at the moment you decide. Self-approval is refused by default; the base-branch policy may name a solo-maintainer or administrator exception, and either one is recorded distinctly.
 
 ```yaml
+- uses: actions/checkout@v6
+  with:
+    fetch-depth: 0
+    persist-credentials: false
+
 - name: Architecture review
   id: review
-  uses: SanishKumar/System-Synthesis@v0.2.0
-  continue-on-error: true
+  uses: SanishKumar/System-Synthesis@<reviewed-full-commit-sha>
   with:
     compose-path: compose.yaml
     policy-path: .system-synthesis/policy.json
     base-revision: ${{ github.event.pull_request.base.sha }}
     head-revision: ${{ github.event.pull_request.head.sha }}
     # Optional: persist an interactive review in the browser.
-    ingestion-url: ${{ vars.SYSTEM_SYNTHESIS_INGESTION_URL }}
-    ingestion-token: ${{ secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN }}
+    ingestion-url: ${{ (github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
+    ingestion-token: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
 ```
+
+Use these steps in a `pull_request` workflow. Replace `<reviewed-full-commit-sha>` with the full SHA of a reviewed, published commit; `v0.2.0` is not tagged yet. A failing review fails the job. If you add `continue-on-error` to upload reports afterwards, finish with an `always()` step that enforces the `exit-code` output, as in [this repository's workflow](./.github/workflows/architecture-review.yml).
 
 It is a bundled Node 24 action — consumers install nothing and run no dependency lifecycle scripts.
 
@@ -207,7 +213,7 @@ A Kubernetes adapter exists in `architecture-core` and is not yet reachable from
 
 ## Running it locally
 
-Requires Node.js 20+ and npm. PostgreSQL is needed for durable reviews and history; Redis for multi-instance collaboration. Without either, it runs in memory.
+Requires Node.js 24 LTS and npm, matching CI, the container images, and the bundled Action. PostgreSQL is needed for durable reviews and history; Redis for multi-instance collaboration. Without either, it runs in memory.
 
 ```bash
 npm ci

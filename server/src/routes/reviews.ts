@@ -11,7 +11,7 @@ import {
 import { reviewCreateLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
-import { reviewDecisionEntitlement } from "../services/reviewEntitlement.js";
+import { reviewDecisionEntitlement, type EntitlementEvidence } from "../services/reviewEntitlement.js";
 import { linkedGitHubIdentity, refreshGitHubLogin } from "./auth.js";
 import { ownerScope, type ReviewAccessScope } from "../services/reviewAccess.js";
 import {
@@ -190,6 +190,24 @@ async function mutationResponse(
   return res.json({ ...review, ...analyzerStatus(review), ...importStatus(review) });
 }
 
+async function authorizeReviewMutation(
+  review: ArchitectureReviewRecord,
+  userId: string,
+  res: Response
+): Promise<EntitlementEvidence | null> {
+  const identity = await linkedGitHubIdentity(userId);
+  const entitlement = await reviewDecisionEntitlement(review, identity);
+  if (entitlement.status === "refused") {
+    logger.warn("Architecture review mutation refused", { reviewId: review.id, code: entitlement.code });
+    res.status(403).json({ error: entitlement.message, code: entitlement.code });
+    return null;
+  }
+  if (entitlement.evidence.githubLogin && entitlement.evidence.githubLogin !== identity.githubLogin) {
+    await refreshGitHubLogin(userId, entitlement.evidence.githubLogin);
+  }
+  return entitlement.evidence;
+}
+
 router.get("/", async (req, res) => {
   try {
     res.json({
@@ -308,6 +326,10 @@ router.post("/:id/suppressions", async (req, res) => {
     ) {
       return res.status(400).json({ error: "Suppression expiry must be in the future." });
     }
+    // Accepting an exception can make the merge gate pass without a separate
+    // approval. It therefore needs the same live authority as a decision.
+    const entitlement = await authorizeReviewMutation(current, req.user!.userId, res);
+    if (!entitlement) return;
     const suppression: RuleSuppression = {
       ...parsed.data,
       id: randomUUID(),
@@ -346,6 +368,7 @@ router.post("/:id/suppressions", async (req, res) => {
         justification: suppression.justification,
         ticket: suppression.ticket,
         expiresAt: suppression.expiresAt,
+        entitlement,
       }
     );
     return await mutationResponse(res, result, scope);
@@ -457,25 +480,8 @@ router.patch("/:id/decision", async (req, res) => {
     // Whether this person may decide at all, asked before anything is recorded.
     // A refusal here is not a failed publish: nothing was written, so there is
     // no decision to be out of step with the pull request.
-    const identity = await linkedGitHubIdentity(req.user!.userId);
-    const entitlement = await reviewDecisionEntitlement(current, identity);
-    if (entitlement.status === "refused") {
-      logger.warn("Architecture decision refused", {
-        reviewId: current.id,
-        code: entitlement.code,
-      });
-      return res.status(403).json({ error: entitlement.message, code: entitlement.code });
-    }
-
-    // GitHub may have resolved a login this account has since changed. The link
-    // is anchored to the numeric id, which was just confirmed, so the stored
-    // label can safely follow it.
-    if (
-      entitlement.evidence.githubLogin &&
-      entitlement.evidence.githubLogin !== identity.githubLogin
-    ) {
-      await refreshGitHubLogin(req.user!.userId, entitlement.evidence.githubLogin);
-    }
+    const entitlement = await authorizeReviewMutation(current, req.user!.userId, res);
+    if (!entitlement) return;
 
     const result = await updateArchitectureReviewDecision(
       current.id,
@@ -484,7 +490,7 @@ router.patch("/:id/decision", async (req, res) => {
       parsed.data.expectedRevision,
       parsed.data.decision,
       parsed.data.note || null,
-      entitlement.evidence
+      entitlement
     );
     return await mutationResponse(res, result, scope);
   } catch (error: any) {

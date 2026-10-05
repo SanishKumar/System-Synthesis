@@ -194,4 +194,7 @@ run().catch((error: unknown) => {
   core.setOutput("status", "error");
   core.setOutput("ingestion-status", "error");
   core.setFailed(error instanceof Error ? error.message : "Architecture review failed.");
+  // setFailed uses 1 for every failure; preserve the documented distinction
+  // between blocking findings (1) and input/integration failures (2).
+  process.exitCode = 2;
 });
