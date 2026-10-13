@@ -21,6 +21,7 @@ Run them with `npm run verify`, then `npm run test:bundle --workspace=architectu
 | An identity-token delivery is accepted only from the connected repository's numeric id, a `pull_request` run, and the pull request and workflow run the token names | OIDC ingestion route tests |
 | A connection accepts one kind of credential, an upgrade grants no connection a second one, and at most one account holds a repository's OIDC connection | OIDC ingestion route tests, and one storage contract run against both memory and PostgreSQL |
 | The Action never sends an identity token where a stored token is configured, never requests one for a fork or for an endpoint it would not deliver to, and requests it only for the endpoint's origin | Action ingestion tests and isolated consumer checks |
+| The shipped Action's OIDC delivery is one the server accepts as sent: the audience it requests is the one required, and the pull request and run it names are the ones its token is held to | The built Action run against the ingestion routes, with a locally signed token in GitHub's place |
 | Stale review decisions cannot overwrite a newer revision | Repository tests and API HTTP 409 verification |
 | Review creation, suppression, and decision are auditable | Transactional repository tests and API event-sequence verification |
 | Protected boards can only be mutated by owner/editor | Adversarial socket tests and authenticated integration |
