@@ -27,7 +27,7 @@ jobs:
       # checkout. The trusted implementation and untrusted source are checked
       # out into separate directories, with the trusted base commit first.
       - name: Checkout trusted Action implementation
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           path: trusted-action
@@ -38,7 +38,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Checkout pull request with base history
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
           path: source
