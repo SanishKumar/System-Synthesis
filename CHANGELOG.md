@@ -16,6 +16,7 @@ The first release of the pull-request architecture review. `v0.1.0` predates the
 - Base-branch policy authority, scoped and expiring suppressions, review decisions, optimistic revisions, and append-only audit events.
 - Explicit, base-branch-controlled self-approval modes for solo maintainers and administrators, with live GitHub verification and distinct audit evidence.
 - GitHub synchronization status and retry controls for browser review decisions.
+- GitHub OIDC ingestion as an alternative to a stored token: connect a repository for OIDC, give the workflow `id-token: write`, and set only `ingestion-url`. No secret or variable is stored in the repository. Requires `PUBLIC_API_URL` on the server; existing token connections are unchanged.
 - A collaborative architecture canvas backed by Yjs, PostgreSQL snapshots and update logs, Redis distribution, version history, and deterministic infrastructure export.
 - Reproducible convergence tests, live Socket.IO benchmarks, a threat model, a failure model, ADRs, and documented limitations.
 

@@ -38,6 +38,8 @@ export type RepositoryAuthorityRefusal =
   | "app_not_installed"
   | "repository_permission_insufficient"
   | "app_checks_permission_missing"
+  /** The name is an alias for a repository that is now called something else. */
+  | "repository_name_changed"
   | "repository_verification_unavailable";
 
 /** What was established, recorded so the connection can be accounted for. */
@@ -46,6 +48,13 @@ export interface VerifiedRepositoryAuthority {
   githubLogin: string;
   permission: string;
   verifiedAt: string;
+  /**
+   * GitHub's numeric id for the repository this authority is over, or null
+   * where GitHub did not confirm it. Everything above is a statement about a
+   * name, and a name can be released and taken by somebody else; the id is the
+   * part that cannot, and is what an identity token is later matched against.
+   */
+  repositoryId: string | null;
 }
 
 export type RepositoryAuthorityVerdict =
@@ -108,10 +117,71 @@ function forbiddenIsNotAnAnswer(
   );
 }
 
+type RepositoryIdentity =
+  | { status: "established"; repositoryId: string }
+  | { status: "renamed"; currentName: string }
+  | { status: "unavailable" };
+
+const REPOSITORY_NAME_PATTERN = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
+
+/**
+ * Which repository this name refers to right now.
+ *
+ * GitHub keeps answering for a name a repository used to have, so a successful
+ * lookup is not proof that the name is current. The answer says what the
+ * repository is called today, and a difference is reported rather than
+ * smoothed over: a connection made under an old name would never be matched by
+ * a token, which is issued for the name the repository has now.
+ */
+async function repositoryIdentity(
+  repository: string,
+  transport: HttpTransport,
+  headers: Record<string, string>
+): Promise<RepositoryIdentity> {
+  try {
+    const response = await transport(`${GITHUB_API}/repos/${repository}`, {
+      method: "GET",
+      headers,
+    });
+    if (response.status !== 200) return { status: "unavailable" };
+    const body = (await response.json().catch(() => null)) as
+      | { id?: unknown; full_name?: unknown }
+      | null;
+    if (
+      typeof body?.id !== "number" ||
+      !Number.isSafeInteger(body.id) ||
+      body.id <= 0 ||
+      typeof body.full_name !== "string" ||
+      !REPOSITORY_NAME_PATTERN.test(body.full_name)
+    ) {
+      return { status: "unavailable" };
+    }
+    if (body.full_name.toLowerCase() !== repository.toLowerCase()) {
+      return { status: "renamed", currentName: body.full_name };
+    }
+    return { status: "established", repositoryId: String(body.id) };
+  } catch {
+    return { status: "unavailable" };
+  }
+}
+
 export async function verifyRepositoryAuthority(
   repository: string,
   user: ConnectingUser,
-  options: { env?: NodeJS.ProcessEnv; transport?: HttpTransport; now?: Date } = {}
+  options: {
+    env?: NodeJS.ProcessEnv;
+    transport?: HttpTransport;
+    now?: Date;
+    /**
+     * Refuse unless GitHub also confirms which repository the name refers to.
+     *
+     * A token connection does not depend on that, so for one it stays best
+     * effort and a failure to learn it changes nothing. A connection that
+     * accepts identity tokens is only as good as the id it will match them
+     * against, so for one it is part of the authority itself.
+     */
+    requireRepositoryId?: boolean;
+  } = {}
 ): Promise<RepositoryAuthorityVerdict> {
   const env = options.env ?? process.env;
 
@@ -301,6 +371,27 @@ export async function verifyRepositoryAuthority(
       );
     }
 
+    // Asked last, and only once everything above holds: it adds a request, and
+    // an account with no standing has already been told so by now.
+    const identity = await repositoryIdentity(repository, transport, headers);
+    if (options.requireRepositoryId && identity.status === "renamed") {
+      return refuse(
+        "repository_name_changed",
+        `That repository is now named ${identity.currentName}. Connect it under its ` +
+          "current name; GitHub issues identity tokens for the name a repository has now.",
+        409
+      );
+    }
+    if (options.requireRepositoryId && identity.status !== "established") {
+      return refuse(
+        "repository_verification_unavailable",
+        "GitHub did not confirm which repository that name refers to, so a connection " +
+          "that depends on it could not be established. Nothing has been connected; try " +
+          "again shortly.",
+        503
+      );
+    }
+
     return {
       status: "verified",
       authority: {
@@ -309,6 +400,7 @@ export async function verifyRepositoryAuthority(
           typeof level.user?.login === "string" ? level.user.login : user.githubLogin,
         permission: level.permission,
         verifiedAt: (options.now ?? new Date()).toISOString(),
+        repositoryId: identity.status === "established" ? identity.repositoryId : null,
       },
     };
   } catch {

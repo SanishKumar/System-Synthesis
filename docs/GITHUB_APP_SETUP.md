@@ -71,16 +71,63 @@ Redeploy, then confirm the running commit is the one you expect.
 
 ## 4. Connect the repository for ingestion
 
-The App publishes checks. It does not upload reviews — the Action does, using a
-separate repository-scoped credential.
+The App publishes checks. It does not upload reviews — the Action does, and it
+has to prove which repository it is running for. A connection accepts exactly
+one of two credentials, chosen when you connect. Connecting again with the other
+one switches it, and ends the first immediately.
 
-1. Sign in with a permanent account and open `/integrations`.
-2. Connect the repository and copy the `ssri_…` token. It is shown once.
-3. In **Repository → Settings → Secrets and variables → Actions**:
+Sign in with a permanent account, open `/integrations`, and connect the
+repository. Either way requires a linked GitHub account with admin permission
+on it (section 7).
+
+### With an ingestion token
+
+1. Choose **Ingestion token** and copy the `ssri_…` token. It is shown once.
+2. In **Repository → Settings → Secrets and variables → Actions**:
    - Secret `SYSTEM_SYNTHESIS_INGESTION_TOKEN` — the token
    - Variable `SYSTEM_SYNTHESIS_INGESTION_URL` — `https://<your-backend>/api/review-ingestions/github`
 
 Both are optional inputs. A fork pull request receives neither by design.
+
+### With GitHub OIDC
+
+Nothing is stored in the repository. GitHub signs a short-lived identity token
+for each workflow run, and the server accepts that in place of a secret.
+
+1. Set `PUBLIC_API_URL` on the server to its public address. Identity tokens
+   are accepted only when they were requested for that origin, and none are
+   accepted while it is unset.
+2. Choose **GitHub OIDC** when connecting. One account at a time can hold a
+   repository's OIDC connection; a second is refused until the first revokes.
+3. In the workflow, give the job `id-token: write` and pass `ingestion-url`
+   without `ingestion-token`:
+
+   ```yaml
+   permissions:
+     contents: read
+     id-token: write
+
+   steps:
+     - uses: SanishKumar/System-Synthesis@<reviewed-full-commit-sha>
+       with:
+         ingestion-url: https://<your-backend>/api/review-ingestions/github
+   ```
+
+`ingestion-url` must be on the same origin as `PUBLIC_API_URL`. Setting
+`permissions` replaces the defaults, so keep whatever else the job needs, such
+as `pull-requests: write` for a comment.
+
+On every delivery the server checks GitHub's signature, issuer, expiry and
+audience; that a `pull_request` event started the run; that the token comes from
+the connected repository, by GitHub's numeric repository id rather than its
+name; and that the delivery is for the pull request and workflow run the token
+was issued to.
+
+GitHub gives a fork pull request no identity token, so it is reviewed in the
+workflow and not uploaded. The same applies to a Dependabot run that is given
+none. Any other run that cannot request one fails and says to add
+`id-token: write`. If the repository is renamed or transferred, connect it again
+under its new name.
 
 ## 5. Verify against a real pull request
 
@@ -202,7 +249,7 @@ on the server:
 | --- | --- |
 | `GITHUB_APP_CLIENT_ID` | From the App's settings page |
 | `GITHUB_APP_CLIENT_SECRET` | Generated on the same page; shown once |
-| `PUBLIC_API_URL` | Where GitHub returns the reviewer, if not localhost |
+| `PUBLIC_API_URL` | This server's public address: where GitHub returns the reviewer, and the audience GitHub OIDC tokens must be requested for |
 
 A reviewer then opens **Connections** and links their account. Identity is matched
 on GitHub's numeric account id, which is not reused; the login is kept for

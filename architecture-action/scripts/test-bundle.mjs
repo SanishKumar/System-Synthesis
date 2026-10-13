@@ -108,7 +108,7 @@ async function run(revision, inputs = {}, fork = false, options = {}) {
       head: { sha: revision, repo: { full_name: fork ? "contributor/bundle-consumer" : repository } } },
   }));
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-    !/^(GITHUB_|INPUT_|NODE_OPTIONS$|NODE_PATH$)/i.test(key)));
+    !/^(GITHUB_|INPUT_|ACTIONS_ID_TOKEN_REQUEST_|NODE_OPTIONS$|NODE_PATH$)/i.test(key)));
   const result = await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [bundle], {
       cwd: consumer,
@@ -309,5 +309,182 @@ test("detected inputs and explicit ref aliases ingest the exact PR pair with bas
     }
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+// --- GitHub OIDC -----------------------------------------------------------
+
+const identityToken = [
+  Buffer.from(JSON.stringify({ alg: "RS256", kid: "key-1", typ: "JWT" })).toString("base64url"),
+  Buffer.from(JSON.stringify({ repository, run_id: "5551" })).toString("base64url"),
+  Buffer.from("not-a-real-signature").toString("base64url"),
+].join(".");
+
+/**
+ * Stands in for the two things an OIDC delivery talks to: the endpoint GitHub
+ * gives a run to request its identity token from, and the ingestion endpoint.
+ */
+async function oidcWorld(handleIngestion) {
+  const tokenRequests = [];
+  const deliveries = [];
+  const github = createServer((request, response) => {
+    tokenRequests.push({ url: request.url, authorization: request.headers.authorization });
+    request.resume();
+    response.writeHead(200, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ value: identityToken }));
+  });
+  const ingestion = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      deliveries.push({ authorization: request.headers.authorization, payload: JSON.parse(body) });
+      const answer = handleIngestion?.() ?? { status: 201, body: { status: "created",
+        reviewId: "8f2a1c00-0000-4000-8000-000000000002",
+        reviewUrl: "https://example.invalid/reviews/8f2a1c00-0000-4000-8000-000000000002",
+        revision: 1, analysisStatus: "pass", blockingFindings: 0, headRevision: base } };
+      response.writeHead(answer.status, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(answer.body));
+    });
+  });
+  await new Promise((resolve) => github.listen(0, "127.0.0.1", resolve));
+  await new Promise((resolve) => ingestion.listen(0, "127.0.0.1", resolve));
+  const origin = `http://127.0.0.1:${ingestion.address().port}`;
+  return {
+    tokenRequests, deliveries, origin,
+    inputs: { "INPUT_INGESTION-URL": `${origin}/api/review-ingestions/github` },
+    environment: {
+      ACTIONS_ID_TOKEN_REQUEST_URL: `http://127.0.0.1:${github.address().port}/token?api-version=2.0`,
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: "runtime-request-token",
+      GITHUB_RUN_ID: "5551", GITHUB_ACTOR: "octo-admin",
+    },
+    close: async () => {
+      for (const server of [github, ingestion]) {
+        await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+      }
+    },
+  };
+}
+
+test("an endpoint with no stored token delivers with the run's identity token", async () => {
+  const world = await oidcWorld();
+  try {
+    const result = await run(base, world.inputs, false, { environment: world.environment });
+    assert.equal(result.code, 0, result.log);
+    assert.equal(result.outputs["ingestion-status"], "created");
+
+    // Asked of GitHub once, as this run, for the origin it is then sent to.
+    assert.equal(world.tokenRequests.length, 1);
+    assert.equal(world.tokenRequests[0].authorization, "Bearer runtime-request-token");
+    assert.equal(
+      new URL(world.tokenRequests[0].url, "http://127.0.0.1").searchParams.get("audience"),
+      world.origin
+    );
+
+    assert.equal(world.deliveries.length, 1);
+    assert.equal(world.deliveries[0].authorization, `Bearer ${identityToken}`);
+    // What the server holds an identity-token delivery to.
+    assert.equal(world.deliveries[0].payload.workflowRun.id, "5551");
+    assert.equal(world.deliveries[0].payload.pullRequest.number, 1);
+    // Registered as a secret before anything else could print it.
+    assert.ok(result.log.includes(`::add-mask::${identityToken}`), result.log);
+    assert.match(readFileSync(result.outputs["comment-file"], "utf8"), /example.invalid\/reviews/);
+  } finally {
+    await world.close();
+  }
+});
+
+test("a stored token is used alone even when an identity token could be requested", async () => {
+  const world = await oidcWorld();
+  try {
+    const stored = `ssri_${"x".repeat(43)}`;
+    const result = await run(base, { ...world.inputs, "INPUT_INGESTION-TOKEN": stored },
+      false, { environment: world.environment });
+    assert.equal(result.code, 0, result.log);
+    assert.equal(world.tokenRequests.length, 0);
+    assert.equal(world.deliveries[0].authorization, `Bearer ${stored}`);
+  } finally {
+    await world.close();
+  }
+});
+
+test("a fork neither requests an identity token nor delivers", async () => {
+  const world = await oidcWorld();
+  try {
+    const result = await run(base, world.inputs, true, { environment: world.environment });
+    assert.equal(result.code, 0, result.log);
+    assert.equal(result.outputs["ingestion-status"], "skipped");
+    assert.match(result.log, /skipped for a fork pull request/);
+    assert.equal(world.tokenRequests.length, 0);
+    assert.equal(world.deliveries.length, 0);
+  } finally {
+    await world.close();
+  }
+});
+
+test("a job that cannot request an identity token fails and says what to add", async () => {
+  const world = await oidcWorld();
+  try {
+    const result = await run(base, world.inputs, false, { environment: { GITHUB_ACTOR: "octo-admin" } });
+    assert.equal(result.code, 2, result.log);
+    assert.equal(result.outputs["ingestion-status"], "error");
+    assert.match(result.log, /id-token: write/);
+    assert.equal(world.deliveries.length, 0);
+    // The review itself was still produced.
+    assertReports(result.outputs);
+
+    // Half of what GitHub provides is the same as none of it.
+    const halfGranted = await run(base, world.inputs, false, { environment: {
+      GITHUB_ACTOR: "octo-admin",
+      ACTIONS_ID_TOKEN_REQUEST_URL: world.environment.ACTIONS_ID_TOKEN_REQUEST_URL } });
+    assert.equal(halfGranted.code, 2, halfGranted.log);
+    assert.match(halfGranted.log, /id-token: write/);
+    assert.equal(world.tokenRequests.length, 0);
+  } finally {
+    await world.close();
+  }
+});
+
+test("a Dependabot run without an identity token keeps its review local", async () => {
+  const world = await oidcWorld();
+  try {
+    const result = await run(base, world.inputs, false,
+      { environment: { GITHUB_ACTOR: "dependabot[bot]" } });
+    assert.equal(result.code, 0, result.log);
+    assert.equal(result.outputs["ingestion-status"], "skipped");
+    assert.match(result.log, /Dependabot/);
+    assert.equal(world.deliveries.length, 0);
+  } finally {
+    await world.close();
+  }
+});
+
+test("a refused identity-token delivery fails with the server's explanation", async () => {
+  const world = await oidcWorld(() => ({ status: 403, body: {
+    error: "No connection for acme/bundle-consumer accepts GitHub Actions identity tokens.",
+    code: "repository_not_connected_for_oidc" } }));
+  try {
+    const result = await run(base, world.inputs, false, { environment: world.environment });
+    assert.equal(result.code, 2, result.log);
+    assert.equal(result.outputs["ingestion-status"], "error");
+    assert.match(result.log, /HTTP 403: No connection for acme\/bundle-consumer/);
+    // Refused, not retried: one delivery, one token.
+    assert.equal(world.deliveries.length, 1);
+    assert.equal(world.tokenRequests.length, 1);
+  } finally {
+    await world.close();
+  }
+});
+
+test("an identity token is never requested for an endpoint it would not be sent to", async () => {
+  const world = await oidcWorld();
+  try {
+    const result = await run(base, { "INPUT_INGESTION-URL": `${world.origin}/somewhere-else` },
+      false, { environment: world.environment });
+    assert.equal(result.code, 2, result.log);
+    assert.match(result.log, /must end exactly with/);
+    assert.equal(world.tokenRequests.length, 0);
+    assert.equal(world.deliveries.length, 0);
+  } finally {
+    await world.close();
   }
 });

@@ -265,16 +265,18 @@ Making this the merge gate is a repository setting: mark `Architecture Decision`
 
 The server and browser expose the secure persistence boundary used by Action synchronization:
 
-- `POST /api/review-integrations` creates or rotates a GitHub repository-scoped ingestion token for the authenticated user.
+- `POST /api/review-integrations` creates or rotates a GitHub repository-scoped ingestion token for the authenticated user, or with `"authentication": "oidc"` connects the repository to authenticate with GitHub's identity token instead.
 - `GET /api/review-integrations` lists token metadata without revealing token values.
 - `DELETE /api/review-integrations/:id` revokes a token.
-- `POST /api/review-ingestions/github` accepts bounded canonical Docker Compose graphs from that repository credential.
+- `POST /api/review-ingestions/github` accepts bounded canonical Docker Compose graphs from that repository's credential: its ingestion token, or the identity token GitHub issued to the run.
 
 Ingestion tokens are shown once and stored only as SHA-256 digests. The submitted repository must match the credential. The server validates graph shape, provenance, IDs, edge endpoints, URLs, revisions, policy, and payload size, then recomputes the deterministic report instead of trusting a caller-supplied result. Raw Compose documents are not uploaded or retained.
 
 There is exactly one persisted review per owner, provider, repository, and pull-request number. Duplicate deliveries are idempotent. A provider-supplied monotonic change version prevents a delayed older workflow from replacing a newer head. A same-version delivery with different content is rejected as a conflict. PostgreSQL advisory locking and a partial unique index protect concurrent deliveries.
 
-The bundled Action can now call this endpoint when both optional inputs are configured:
+A connection accepts one kind of credential. With GitHub OIDC nothing is issued or stored: the server verifies the run's identity token against GitHub's published keys, requires this deployment's public origin (`PUBLIC_API_URL`) as its audience, matches the repository by GitHub's numeric id, and accepts the delivery only for the pull request and workflow run the token names. At most one account holds a repository's OIDC connection.
+
+The bundled Action calls this endpoint when `ingestion-url` is configured. With `ingestion-token` it sends that token:
 
 ```yaml
 with:
@@ -282,11 +284,22 @@ with:
   ingestion-token: ${{ secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN }}
 ```
 
+With `ingestion-url` alone it requests an identity token for that URL's origin, which needs `id-token: write` on the job:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+# ...
+with:
+  ingestion-url: https://<your-backend>/api/review-ingestions/github
+```
+
 `SYSTEM_SYNTHESIS_INGESTION_URL` must be the complete HTTPS URL ending in `/api/review-ingestions/github`. The token comes from `POST /api/review-integrations` and must be stored as a GitHub Actions secret. A successful upload exposes `ingestion-status`, `review-id`, and `review-url` Action outputs; the repository workflow includes the interactive review link in its marker-based PR comment.
 
 The Action derives repository, pull-request, base/head SHA, update timestamp, and workflow-run identity from the GitHub event and rejects mismatches with the analyzed graphs. It retries only transient HTTP/network failures, reusing the identical idempotent payload. Authentication, configuration, validation, and conflict failures do not retry and produce exit code 2 so persistence failures cannot be mistaken for a successful review.
 
-Never pass the ingestion secret to `uses: ./` from a pull-request checkout. A pull request can modify that Action code. The repository workflow checks out the trusted Action implementation from the base commit into a separate path before supplying the secret. External consumers should pin the Action to a reviewed full commit SHA. Fork PRs receive neither ingestion input and continue with local deterministic analysis only.
+Never pass the ingestion secret to `uses: ./` from a pull-request checkout. A pull request can modify that Action code. The repository workflow checks out the trusted Action implementation from the base commit into a separate path before supplying the secret. External consumers should pin the Action to a reviewed full commit SHA. Fork PRs receive neither ingestion input and no identity token, and continue with local deterministic analysis only.
 
 A synchronized review is re-read when the tab regains attention, and polled while a decision is still outstanding, because the Action rewrites it on every new commit and an open tab must never present a verdict the pull request has moved past. A background tab is left alone, a failed background read stays silent, and a mutation in flight always wins so a refresh cannot overwrite what the reviewer just did. Manually imported reviews change only when their owner changes them, so they are not polled.
 

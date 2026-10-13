@@ -3,8 +3,9 @@ import { createServer } from "node:http";
 import { createActionReview } from "../review.js";
 import {
   createIngestionPayload,
-  ingestionMode,
+  ingestionAudience,
   parsePullRequestContext,
+  planIngestion,
   uploadArchitectureReview,
 } from "../ingestion.js";
 
@@ -122,13 +123,138 @@ describe("GitHub Action browser-review ingestion", () => {
     })).toThrow("Analyzed revisions do not match");
   });
 
-  it("requires complete configuration and skips all fork uploads", () => {
-    expect(ingestionMode("", "", false)).toBe("skip");
-    expect(ingestionMode(ENDPOINT, TOKEN, false)).toBe("upload");
-    expect(ingestionMode(ENDPOINT, TOKEN, true)).toBe("skip");
-    expect(() => ingestionMode(ENDPOINT, "", false)).toThrow(
-      "must either both be configured or both be omitted"
+  describe("deciding whether a run delivers, and with what", () => {
+    const plan = (overrides: Partial<Parameters<typeof planIngestion>[0]> = {}) =>
+      planIngestion({
+        endpoint: ENDPOINT,
+        token: "",
+        isFork: false,
+        identityTokenAvailable: false,
+        actor: "octo-admin",
+        ...overrides,
+      });
+
+    it("keeps the review local when nothing is configured", () => {
+      expect(plan({ endpoint: "" })).toEqual({ action: "none" });
+      // Having an identity token to hand is not a reason to send anything.
+      expect(plan({ endpoint: "  ", identityTokenAvailable: true })).toEqual({ action: "none" });
+    });
+
+    it("refuses a token with nowhere to send it", () => {
+      expect(() => plan({ endpoint: "", token: TOKEN })).toThrow(
+        "ingestion-token is set but ingestion-url is not"
+      );
+    });
+
+    it("uses the stored token whenever one is configured", () => {
+      expect(plan({ token: TOKEN })).toEqual({ action: "upload", credential: "token" });
+      // Never both, and never the identity token in its place.
+      expect(plan({ token: TOKEN, identityTokenAvailable: true })).toEqual({
+        action: "upload",
+        credential: "token",
+      });
+    });
+
+    it("uses the run's identity token when only the endpoint is configured", () => {
+      expect(plan({ identityTokenAvailable: true })).toEqual({
+        action: "upload",
+        credential: "identity",
+      });
+    });
+
+    it("skips every fork, whichever credential the run could have used", () => {
+      for (const overrides of [
+        { token: TOKEN },
+        { identityTokenAvailable: true },
+        { token: TOKEN, identityTokenAvailable: true },
+        {},
+      ]) {
+        expect(plan({ ...overrides, isFork: true })).toMatchObject({ action: "skip" });
+      }
+    });
+
+    it("says what to add when the job cannot request an identity token", () => {
+      expect(() => plan()).toThrow("id-token: write");
+      // The other way to arrive here: a secret that reached the Action empty.
+      expect(() => plan()).toThrow("ingestion-token reached the Action empty");
+    });
+
+    it("skips a Dependabot run that was given no identity token, and only that", () => {
+      expect(plan({ actor: "dependabot[bot]" })).toMatchObject({ action: "skip" });
+      // With a token to use it delivers like any other run.
+      expect(plan({ actor: "dependabot[bot]", identityTokenAvailable: true })).toEqual({
+        action: "upload",
+        credential: "identity",
+      });
+      // A name that merely resembles it is an ordinary misconfigured run.
+      expect(() => plan({ actor: "dependabot" })).toThrow("id-token: write");
+    });
+  });
+
+  it("requests an identity token for the origin it will be sent to, and nothing looser", () => {
+    expect(ingestionAudience(ENDPOINT)).toBe("https://system-synthesis.example");
+    expect(ingestionAudience("https://Reviews.Example.test:8443/api/review-ingestions/github/")).toBe(
+      "https://reviews.example.test:8443"
     );
+    // Not for an address a delivery would then be refused to.
+    expect(() => ingestionAudience("http://attacker.example/api/review-ingestions/github")).toThrow(
+      "must be HTTPS"
+    );
+    expect(() => ingestionAudience("https://system-synthesis.example/")).toThrow(
+      "must end exactly with"
+    );
+    expect(() =>
+      ingestionAudience("https://user:secret@system-synthesis.example/api/review-ingestions/github")
+    ).toThrow("contain no credentials");
+  });
+
+  it("sends an identity token as the credential when that is what the run has", async () => {
+    const identity = "aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl";
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      expect(init?.headers).toMatchObject({ Authorization: `Bearer ${identity}` });
+      expect(JSON.parse(String(init?.body))).toMatchObject({
+        workflowRun: { id: "987654" },
+        pullRequest: { number: 42 },
+      });
+      return successResponse();
+    });
+
+    await expect(uploadArchitectureReview({
+      endpoint: ENDPOINT,
+      token: identity,
+      credential: "identity",
+      payload: payload(),
+      fetchImpl: fetchMock as unknown as typeof fetch,
+    })).resolves.toMatchObject({ status: "created" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds each kind of credential to its own shape before sending anything", async () => {
+    const fetchMock = vi.fn(async () => successResponse());
+    const send = (token: string, credential?: "token" | "identity") =>
+      uploadArchitectureReview({
+        endpoint: ENDPOINT,
+        token,
+        credential,
+        payload: payload(),
+        fetchImpl: fetchMock as unknown as typeof fetch,
+      });
+
+    // An identity token is not sent where a stored token was expected.
+    await expect(send("aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl")).rejects.toThrow("ingestion-token is malformed");
+    await expect(send("aGVhZGVy.cGF5bG9hZA.c2lnbmF0dXJl", "token")).rejects.toThrow("ingestion-token is malformed");
+    // Nor a stored token where the run's identity was expected.
+    for (const unusable of [
+      TOKEN,
+      "",
+      "only.two",
+      "aGVhZGVy.cGF5bG9hZA.",
+      "aGVhZGVy.cGF5bG9hZA.c2ln bmF0dXJl",
+      `${"a".repeat(8200)}.b.c`,
+    ]) {
+      await expect(send(unusable, "identity")).rejects.toThrow("usable identity token");
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("uploads only the canonical payload with the repository credential", async () => {

@@ -44,22 +44,81 @@ export interface IngestionResponse {
   headRevision: string;
 }
 
-export function ingestionMode(
-  endpoint: string,
-  token: string,
-  isFork: boolean
-): "skip" | "upload" {
-  if (Boolean(endpoint.trim()) !== Boolean(token.trim())) {
-    throw new Error(
-      "ingestion-url and ingestion-token must either both be configured or both be omitted."
-    );
+/**
+ * What a delivery proves its repository with: the ingestion token stored as a
+ * repository secret, or the identity token GitHub issues to this run.
+ */
+export type IngestionCredentialKind = "token" | "identity";
+
+export type IngestionPlan =
+  /** Nothing is configured; the review stays local. */
+  | { action: "none" }
+  /** Configured, but this run is one that cannot deliver. Not a failure. */
+  | { action: "skip"; reason: string }
+  | { action: "upload"; credential: IngestionCredentialKind };
+
+/**
+ * Decide whether this run delivers a browser review, and what it proves
+ * itself with.
+ *
+ * `ingestion-url` on its own means GitHub OIDC: the run asks GitHub for an
+ * identity token, so the repository holds no secret. Adding `ingestion-token`
+ * means that token and nothing else; a run never falls back from one to the
+ * other, because the server accepts exactly one of them per repository.
+ */
+export function planIngestion(input: {
+  endpoint: string;
+  token: string;
+  isFork: boolean;
+  /** Whether GitHub gave this run somewhere to ask for an identity token. */
+  identityTokenAvailable: boolean;
+  actor?: string;
+}): IngestionPlan {
+  const endpoint = input.endpoint.trim();
+  const token = input.token.trim();
+  if (!endpoint) {
+    if (token) {
+      throw new Error(
+        "ingestion-token is set but ingestion-url is not. Set ingestion-url as well, or " +
+          "remove both to keep the review local."
+      );
+    }
+    return { action: "none" };
   }
-  return !endpoint.trim() || isFork ? "skip" : "upload";
+  // Before anything else: a fork's run is given neither a secret nor an
+  // identity token, and its content is not the repository's to vouch for.
+  if (input.isFork) {
+    return {
+      action: "skip",
+      reason: "Browser review ingestion skipped for a fork pull request.",
+    };
+  }
+  if (token) return { action: "upload", credential: "token" };
+  if (input.identityTokenAvailable) return { action: "upload", credential: "identity" };
+  // GitHub runs Dependabot's pull requests with reduced permissions. Where
+  // that leaves no identity token there is nothing for the workflow's author
+  // to fix, so the review stays local instead of failing every update.
+  if (input.actor === "dependabot[bot]") {
+    return {
+      action: "skip",
+      reason:
+        "Browser review ingestion skipped: GitHub did not give this Dependabot run an " +
+        "identity token.",
+    };
+  }
+  throw new Error(
+    "ingestion-url is set without ingestion-token, so this run authenticates with GitHub " +
+      "OIDC, but the job cannot request an identity token. Add `id-token: write` to the " +
+      "job's permissions. If a stored token was intended, ingestion-token reached the " +
+      "Action empty."
+  );
 }
 
 interface UploadOptions {
   endpoint: string;
   token: string;
+  /** Which kind `token` is. A stored ingestion token unless said otherwise. */
+  credential?: IngestionCredentialKind;
   payload: ArchitectureIngestionPayload;
   fetchImpl?: typeof fetch;
   sleep?: (milliseconds: number) => Promise<void>;
@@ -267,6 +326,23 @@ function ingestionEndpoint(value: string): string {
   return endpoint.toString();
 }
 
+/**
+ * The audience an identity token is requested for: the origin the delivery is
+ * about to be sent to.
+ *
+ * The endpoint is validated first, so a token is never minted for an address
+ * this Action would then refuse to send to. Binding the token to the origin is
+ * what makes it worthless anywhere else: a server that receives one can only
+ * replay it to itself.
+ */
+export function ingestionAudience(endpoint: string): string {
+  return new URL(ingestionEndpoint(endpoint)).origin;
+}
+
+/** Three base64url segments, bounded: a signed token and nothing else. */
+const IDENTITY_TOKEN_PATTERN = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const MAX_IDENTITY_TOKEN_LENGTH = 8192;
+
 function parseIngestionResponse(value: unknown): IngestionResponse {
   const body = record(value, "Ingestion response");
   if (!["created", "updated", "unchanged", "stale"].includes(body.status)) {
@@ -301,7 +377,16 @@ export async function uploadArchitectureReview(
   options: UploadOptions
 ): Promise<IngestionResponse> {
   const endpoint = ingestionEndpoint(options.endpoint);
-  if (!/^ssri_[A-Za-z0-9_-]{43}$/.test(options.token)) {
+  // Each kind is held to its own shape, so one is never sent in place of the
+  // other and nothing unrecognisable is sent at all.
+  if (options.credential === "identity") {
+    if (
+      options.token.length > MAX_IDENTITY_TOKEN_LENGTH ||
+      !IDENTITY_TOKEN_PATTERN.test(options.token)
+    ) {
+      throw new Error("GitHub did not return a usable identity token.");
+    }
+  } else if (!/^ssri_[A-Za-z0-9_-]{43}$/.test(options.token)) {
     throw new Error("ingestion-token is malformed.");
   }
   const fetchImpl = options.fetchImpl || fetch;

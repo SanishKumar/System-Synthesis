@@ -561,6 +561,322 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
   });
 
   /**
+   * Connections that accept GitHub's identity token instead of a stored one.
+   *
+   * Memory storage decides all of this in JavaScript. Here it is a partial
+   * unique index, an upsert that has to lose to it, and two WHERE clauses, and
+   * the only way to know they agree with memory is to run them.
+   */
+  describe("identity-token connections", () => {
+    const IDENTIFIED = { ...VERIFIED, repositoryId: "5001" };
+    let sequence = 0;
+    const unique = (label: string) => `${label}-${Date.now()}-${(sequence += 1)}`;
+
+    it("stores the mode and the repository id, and no usable token", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = unique("owner-oidc");
+      const repository = `acme/${unique("oidc")}`;
+
+      const connected = await integrations.connectReviewIntegrationForOidc({
+        ownerId: owner,
+        provider: "github",
+        repository: repository.toUpperCase(),
+        verified: IDENTIFIED,
+      });
+
+      expect(connected.status).toBe("connected");
+      if (connected.status !== "connected") return;
+      expect(connected.integration).toMatchObject({
+        ownerId: owner,
+        repository,
+        authMode: "oidc",
+        tokenPrefix: "",
+        verifiedRepositoryId: "5001",
+        verifiedGithubUserId: "9002",
+      });
+      const listed = await integrations.listReviewIntegrations(owner);
+      expect(listed).toHaveLength(1);
+      expect(listed[0].authMode).toBe("oidc");
+    });
+
+    it("finds the one connection waiting for a repository, whatever case it is asked in", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = unique("owner-find");
+      const repository = `acme/${unique("find")}`;
+      await integrations.connectReviewIntegrationForOidc({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+
+      const found = await integrations.findOidcReviewIntegration(
+        "github",
+        repository.toUpperCase()
+      );
+
+      expect(found.status).toBe("found");
+      if (found.status !== "found") return;
+      expect(found.integration).toMatchObject({ ownerId: owner, authMode: "oidc" });
+      expect(found.integration.lastUsedAt).toBeTruthy();
+      await expect(
+        integrations.findOidcReviewIntegration("github", `acme/${unique("absent")}`)
+      ).resolves.toEqual({ status: "none" });
+    });
+
+    it("refuses a second account for the same repository", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const first = unique("owner-first");
+      const second = unique("owner-second");
+      const repository = `acme/${unique("contested")}`;
+      await integrations.connectReviewIntegrationForOidc({
+        ownerId: first,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+
+      const refused = await integrations.connectReviewIntegrationForOidc({
+        ownerId: second,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+
+      expect(refused).toEqual({ status: "conflict" });
+      await expect(integrations.listReviewIntegrations(second)).resolves.toEqual([]);
+      const found = await integrations.findOidcReviewIntegration("github", repository);
+      expect(found).toMatchObject({ status: "found", integration: { ownerId: first } });
+    });
+
+    it("lets exactly one of two simultaneous connections through", async () => {
+      // The reason this is an index and not a check made on arrival.
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/${unique("race")}`;
+
+      const outcomes = await Promise.all(
+        [unique("owner-race-a"), unique("owner-race-b")].map((ownerId) =>
+          integrations.connectReviewIntegrationForOidc({
+            ownerId,
+            provider: "github",
+            repository,
+            verified: IDENTIFIED,
+          })
+        )
+      );
+
+      expect(outcomes.map((outcome) => outcome.status).sort()).toEqual([
+        "conflict",
+        "connected",
+      ]);
+      const found = await integrations.findOidcReviewIntegration("github", repository);
+      expect(found.status).toBe("found");
+    });
+
+    it("keeps one row when the same account connects again", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = unique("owner-again");
+      const repository = `acme/${unique("again")}`;
+      const input = {
+        ownerId: owner,
+        provider: "github" as const,
+        repository,
+        verified: IDENTIFIED,
+      };
+
+      const first = await integrations.connectReviewIntegrationForOidc(input);
+      const again = await integrations.connectReviewIntegrationForOidc({
+        ...input,
+        verified: { ...IDENTIFIED, repositoryId: "5002" },
+      });
+
+      expect(first.status).toBe("connected");
+      expect(again.status).toBe("connected");
+      if (first.status !== "connected" || again.status !== "connected") return;
+      expect(again.integration.id).toBe(first.integration.id);
+      expect(again.integration.verifiedRepositoryId).toBe("5002");
+    });
+
+    it("does not count a stored-token connection, or a revoked one, as waiting", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const holder = unique("owner-holder");
+      const other = unique("owner-other");
+      const repository = `acme/${unique("free")}`;
+
+      // Another account holding a stored token for the repository is no conflict.
+      await integrations.createOrRotateReviewIntegration({
+        ownerId: holder,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      const connected = await integrations.connectReviewIntegrationForOidc({
+        ownerId: other,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+      expect(connected.status).toBe("connected");
+      if (connected.status !== "connected") return;
+
+      // Revoking frees the repository, and takes the connection out of reach.
+      await integrations.revokeReviewIntegration(connected.integration.id, other);
+      await expect(
+        integrations.findOidcReviewIntegration("github", repository)
+      ).resolves.toEqual({ status: "none" });
+      const taken = await integrations.connectReviewIntegrationForOidc({
+        ownerId: holder,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+      expect(taken.status).toBe("connected");
+
+      // And the account that revoked cannot take it back while it is held.
+      await expect(
+        integrations.connectReviewIntegrationForOidc({
+          ownerId: other,
+          provider: "github",
+          repository,
+          verified: IDENTIFIED,
+        })
+      ).resolves.toEqual({ status: "conflict" });
+    });
+
+    it("ends the stored token when a connection is switched, and the reverse", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = unique("owner-switch");
+      const repository = `acme/${unique("switch")}`;
+
+      const issued = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      expect(issued.integration.authMode).toBe("token");
+      await expect(
+        integrations.findOidcReviewIntegration("github", repository)
+      ).resolves.toEqual({ status: "none" });
+
+      const switched = await integrations.connectReviewIntegrationForOidc({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+      expect(switched).toMatchObject({
+        status: "connected",
+        integration: { id: issued.integration.id, authMode: "oidc" },
+      });
+      await expect(
+        integrations.authenticateReviewIntegrationToken(issued.ingestionToken)
+      ).resolves.toBeNull();
+
+      const back = await integrations.createOrRotateReviewIntegration({
+        ownerId: owner,
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+      expect(back.integration.authMode).toBe("token");
+      await expect(
+        integrations.findOidcReviewIntegration("github", repository)
+      ).resolves.toEqual({ status: "none" });
+      await expect(
+        integrations.authenticateReviewIntegrationToken(back.ingestionToken)
+      ).resolves.toMatchObject({ id: issued.integration.id });
+    });
+
+    it("refuses a stored token by the connection's mode, not by its digest", async () => {
+      // Switching replaces the digest, so the state is written directly: a row
+      // that accepts identity tokens while an issued token's digest is still
+      // on it.
+      const { db } = await load();
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const issued = await integrations.createOrRotateReviewIntegration({
+        ownerId: unique("owner-mode"),
+        provider: "github",
+        repository: `acme/${unique("mode")}`,
+        verified: VERIFIED,
+      });
+      await db.getPool()!.query(
+        "UPDATE architecture_review_integrations SET auth_mode = 'oidc' WHERE id = $1",
+        [issued.integration.id]
+      );
+
+      await expect(
+        integrations.authenticateReviewIntegrationToken(issued.ingestionToken)
+      ).resolves.toBeNull();
+    });
+
+    it("cannot be made to hold two waiting connections by writing to it", async () => {
+      const { db } = await load();
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const repository = `acme/${unique("forced")}`;
+      await integrations.connectReviewIntegrationForOidc({
+        ownerId: unique("owner-forced-a"),
+        provider: "github",
+        repository,
+        verified: IDENTIFIED,
+      });
+      const second = await integrations.createOrRotateReviewIntegration({
+        ownerId: unique("owner-forced-b"),
+        provider: "github",
+        repository,
+        verified: VERIFIED,
+      });
+
+      await expect(
+        db.getPool()!.query(
+          "UPDATE architecture_review_integrations SET auth_mode = 'oidc' WHERE id = $1",
+          [second.integration.id]
+        )
+      ).rejects.toMatchObject({
+        code: "23505",
+        constraint: "idx_review_integrations_oidc_repository",
+      });
+    });
+
+    it("writes the repository id with each fresh proof, including its absence", async () => {
+      const integrations = await import("../reviewIntegrationRepository.js");
+      const owner = unique("owner-proof");
+      const connected = await integrations.connectReviewIntegrationForOidc({
+        ownerId: owner,
+        provider: "github",
+        repository: `acme/${unique("proof")}`,
+        verified: IDENTIFIED,
+      });
+      if (connected.status !== "connected") throw new Error("not connected");
+      const id = connected.integration.id;
+
+      const next = new Date(Date.now() + 1000).toISOString();
+      await expect(
+        integrations.recordIntegrationAuthority(
+          id,
+          { ...VERIFIED, repositoryId: "7777", verifiedAt: next },
+          { previousVerifiedAt: connected.integration.verifiedAt }
+        )
+      ).resolves.toBe(true);
+      expect((await integrations.listReviewIntegrations(owner))[0].verifiedRepositoryId).toBe(
+        "7777"
+      );
+
+      // A proof that did not establish the id does not keep the old one.
+      await expect(
+        integrations.recordIntegrationAuthority(
+          id,
+          { ...VERIFIED, verifiedAt: new Date(Date.now() + 2000).toISOString() },
+          { previousVerifiedAt: next }
+        )
+      ).resolves.toBe(true);
+      expect(
+        (await integrations.listReviewIntegrations(owner))[0].verifiedRepositoryId
+      ).toBeNull();
+    });
+  });
+
+  /**
    * The upgrade, not the fresh install.
    *
    * Every other test here runs against a schema this build created, where the
@@ -674,39 +990,59 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
         verified: VERIFIED,
       });
 
+      // Everything a deployment upgrading from an earlier release is missing.
+      const migrated = [
+        "auth_mode",
+        "verified_at",
+        "verified_github_login",
+        "verified_github_user_id",
+        "verified_permission",
+        "verified_repository_id",
+      ];
       const client = await pool.connect();
+      const present = async () => {
+        const columns = await client.query(
+          `SELECT column_name::text AS name FROM information_schema.columns
+            WHERE table_name = 'architecture_review_integrations'
+              AND column_name::text = ANY($1::text[])`,
+          [migrated]
+        );
+        return columns.rows.map((row: { name: string }) => row.name).sort();
+      };
+      const oidcIndex = async () => {
+        const indexes = await client.query(
+          `SELECT indexname FROM pg_indexes
+            WHERE tablename = 'architecture_review_integrations'
+              AND indexname = 'idx_review_integrations_oidc_repository'`
+        );
+        return indexes.rows.length;
+      };
       try {
         await client.query("BEGIN");
-        for (const column of [
-          "verified_github_user_id",
-          "verified_github_login",
-          "verified_permission",
-          "verified_at",
-        ]) {
+        // Named, rather than left to go with the column it is declared over,
+        // so the starting shape does not depend on how a drop cascades.
+        await client.query("DROP INDEX IF EXISTS idx_review_integrations_oidc_repository");
+        for (const column of migrated) {
           await client.query(
             `ALTER TABLE architecture_review_integrations DROP COLUMN IF EXISTS ${column}`
           );
         }
-        const removed = await client.query(
-          `SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'architecture_review_integrations'
-              AND column_name LIKE 'verified%'`
-        );
-        expect(removed.rows).toEqual([]);
+        expect(await present()).toEqual([]);
+        expect(await oidcIndex()).toBe(0);
 
         await client.query(db.MIGRATION_SQL);
 
-        const restored = await client.query(
-          `SELECT column_name FROM information_schema.columns
-            WHERE table_name = 'architecture_review_integrations'
-              AND column_name LIKE 'verified%'
-            ORDER BY column_name`
+        expect(await present()).toEqual(migrated);
+        expect(await oidcIndex()).toBe(1);
+
+        // A row that was there before the upgrade accepts a token and nothing
+        // else. The column arrives with that default; nothing is widened.
+        const upgraded = await client.query(
+          "SELECT auth_mode FROM architecture_review_integrations WHERE owner_id = $1",
+          [owner]
         );
-        expect(restored.rows.map((row: { column_name: string }) => row.column_name)).toEqual([
-          "verified_at",
-          "verified_github_login",
-          "verified_github_user_id",
-          "verified_permission",
+        expect(upgraded.rows.map((row: { auth_mode: string }) => row.auth_mode)).toEqual([
+          "token",
         ]);
       } finally {
         await client.query("ROLLBACK").catch(() => undefined);
@@ -732,11 +1068,16 @@ describe.skipIf(!TEST_DATABASE_URL)("GitHub synchronization state on PostgreSQL"
         "verified_github_login",
         "verified_permission",
         "verified_at",
+        "auth_mode",
+        "verified_repository_id",
       ]) {
         expect(source).toContain(
           `ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS ${column}`
         );
       }
+      expect(source).toContain(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_review_integrations_oidc_repository"
+      );
     });
   });
 });

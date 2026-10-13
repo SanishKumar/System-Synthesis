@@ -29,10 +29,10 @@ inputs:
     required: false
     default: .system-synthesis/reports
   ingestion-url:
-    description: Full HTTPS System Synthesis GitHub ingestion endpoint. Omit with ingestion-token to keep analysis local.
+    description: Full HTTPS System Synthesis GitHub ingestion endpoint. Set alone to authenticate with GitHub OIDC, which needs id-token write permission on the job. Omit with ingestion-token to keep analysis local.
     required: false
   ingestion-token:
-    description: Repository-scoped System Synthesis ingestion token. Pass from a GitHub Actions secret only to a trusted, pinned Action implementation.
+    description: Repository-scoped System Synthesis ingestion token, for a repository connected with one. Pass from a GitHub Actions secret only to a trusted, pinned Action implementation. Omit for GitHub OIDC.
     required: false
 
 outputs:

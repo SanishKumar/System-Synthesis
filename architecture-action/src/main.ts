@@ -14,11 +14,29 @@ import { createActionReview } from "./review.js";
 import { resolveActionRevisions } from "./inputs.js";
 import {
   createIngestionPayload,
-  ingestionMode,
+  ingestionAudience,
+  planIngestion,
   readPullRequestContext,
   uploadArchitectureReview,
 } from "./ingestion.js";
 
+/**
+ * Ask GitHub for this run's identity token, requested for one audience.
+ *
+ * The token is registered as a secret by the toolkit before it is returned,
+ * so it is masked in the log from the moment it exists.
+ */
+async function requestIdentityToken(audience: string): Promise<string> {
+  try {
+    return await core.getIDToken(audience);
+  } catch (error) {
+    throw new Error(
+      `GitHub did not issue an identity token for this run: ${
+        error instanceof Error ? error.message.replace(/\s+/g, " ").trim() : "unknown error"
+      }`
+    );
+  }
+}
 
 function repositoryDirectory(value: string): string {
   const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
@@ -124,32 +142,46 @@ async function run(): Promise<void> {
   const ingestionUrl = core.getInput("ingestion-url").trim();
   const ingestionToken = core.getInput("ingestion-token").trim();
   if (ingestionToken) core.setSecret(ingestionToken);
-  if (ingestionUrl && ingestionToken) {
-    const context = readPullRequestContext();
-    if (ingestionMode(ingestionUrl, ingestionToken, context.isFork) === "skip") {
-      core.notice("Browser review ingestion skipped for a fork pull request.");
-    } else {
-      const ingestion = await uploadArchitectureReview({
-        endpoint: ingestionUrl,
-        token: ingestionToken,
-        payload: createIngestionPayload({
-          context,
-          sourcePath: composePath,
-          baseGraph: reports.baseGraph,
-          headGraph: reports.headGraph,
-          policy: reports.policy,
-        }),
-      });
-      reviewUrl = ingestion.reviewUrl;
-      core.setOutput("ingestion-status", ingestion.status);
-      core.setOutput("review-id", ingestion.reviewId);
-      core.setOutput("review-url", ingestion.reviewUrl);
-      await writeJobSummary(
-        `\n\n[Open the persisted architecture review](${ingestion.reviewUrl})\n`
-      );
-    }
-  } else {
-    ingestionMode(ingestionUrl, ingestionToken, false);
+  // Read only when a delivery is configured. It needs a pull_request event,
+  // and a review that stays local does not.
+  const context = ingestionUrl ? readPullRequestContext() : null;
+  const plan = planIngestion({
+    endpoint: ingestionUrl,
+    token: ingestionToken,
+    isFork: context?.isFork ?? false,
+    identityTokenAvailable: Boolean(
+      process.env.ACTIONS_ID_TOKEN_REQUEST_URL && process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN
+    ),
+    actor: process.env.GITHUB_ACTOR,
+  });
+  if (plan.action === "skip") core.notice(plan.reason);
+  if (plan.action === "upload" && context) {
+    const payload = createIngestionPayload({
+      context,
+      sourcePath: composePath,
+      baseGraph: reports.baseGraph,
+      headGraph: reports.headGraph,
+      policy: reports.policy,
+    });
+    // Requested last, once there is something to send: an identity token is
+    // only good for a few minutes.
+    const token =
+      plan.credential === "identity"
+        ? await requestIdentityToken(ingestionAudience(ingestionUrl))
+        : ingestionToken;
+    const ingestion = await uploadArchitectureReview({
+      endpoint: ingestionUrl,
+      token,
+      credential: plan.credential,
+      payload,
+    });
+    reviewUrl = ingestion.reviewUrl;
+    core.setOutput("ingestion-status", ingestion.status);
+    core.setOutput("review-id", ingestion.reviewId);
+    core.setOutput("review-url", ingestion.reviewUrl);
+    await writeJobSummary(
+      `\n\n[Open the persisted architecture review](${ingestion.reviewUrl})\n`
+    );
   }
 
   // Written after ingestion so the comment can lead with the decision link.

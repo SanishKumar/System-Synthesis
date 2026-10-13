@@ -54,9 +54,9 @@ Every pull request the analyzer has compared, newest first, and what each one is
 
 ## Connect a repository
 
-![Repository connections: link a GitHub account, connect a repository, and issue a repository-scoped credential](docs/connections.png)
+![Repository connections: link a GitHub account, then connect a repository with a repository-scoped token or GitHub OIDC](docs/connections.png)
 
-Connecting issues a repository-scoped credential for GitHub Actions. Tokens are shown once, stored only as hashes, and never sent to fork pull requests.
+A repository connects in one of two ways. With an **ingestion token**, connecting issues a repository-scoped credential for GitHub Actions, shown once and stored only as a hash. With **GitHub OIDC**, the workflow proves which repository it is with a short-lived token GitHub signs for each run, so there is nothing to store or rotate. Either way, fork pull requests are reviewed in the workflow and never uploaded.
 
 Deciding a review is bound to a real identity: linking proves which GitHub account you are, and the decision gate checks write access on that repository at the moment you decide. Self-approval is refused by default; the base-branch policy may name a solo-maintainer or administrator exception, and either one is recorded distinctly.
 
@@ -76,6 +76,23 @@ Deciding a review is bound to a real identity: linking proves which GitHub accou
 ```
 
 Use these steps in a `pull_request` workflow. Replace `<reviewed-full-commit-sha>` with the full SHA of a reviewed, published commit; `v0.2.0` is not tagged yet. A failing review fails the job. If you add `continue-on-error` to upload reports afterwards, finish with an `always()` step that enforces the `exit-code` output, as in [this repository's workflow](./.github/workflows/architecture-review.yml).
+
+To connect without a stored secret, choose **GitHub OIDC** when connecting, give the job `id-token: write`, and pass only the endpoint:
+
+```yaml
+permissions:
+  contents: read
+  id-token: write
+
+steps:
+  # ...checkout as above
+  - name: Architecture review
+    uses: SanishKumar/System-Synthesis@<reviewed-full-commit-sha>
+    with:
+      ingestion-url: https://<your-backend>/api/review-ingestions/github
+```
+
+The server accepts each delivery only from the connected repository, and only for the pull request and workflow run its token was issued to. A connection accepts one kind of credential, so switching ends the other. [Setup details](docs/GITHUB_APP_SETUP.md#4-connect-the-repository-for-ingestion).
 
 The Action detects the PR's base/head SHAs from its event, not `GITHUB_SHA` (which can identify the merge commit). [GitHub's event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request) explains that distinction. It detects a single root `compose.yml`, `compose.yaml`, `docker-compose.yml`, or `docker-compose.yaml` across both revisions. Added/deleted files are supported; multiple candidates, including a rename between standard filenames, fail with a request to set `compose-path`. Nested or custom-named files need an explicit path. Files are not merged and no repository history is fetched automatically.
 

@@ -1,19 +1,33 @@
 import type { NextFunction, Request, Response } from "express";
 import {
   authenticateReviewIntegrationToken,
+  findOidcReviewIntegration,
   isVerifiedIntegration,
   recordIntegrationAuthority,
   type ReviewIntegrationRecord,
 } from "../services/reviewIntegrationRepository.js";
 import { verifyRepositoryAuthority } from "../services/repositoryAuthority.js";
+import { verifyGitHubOidcToken, type GitHubOidcClaims } from "../services/githubOidc.js";
 
 declare global {
   namespace Express {
     interface Request {
       reviewIntegration?: ReviewIntegrationRecord;
+      /**
+       * What GitHub said about the run that sent this request. Present only
+       * when it authenticated with an identity token rather than a stored one.
+       */
+      reviewOidcClaims?: GitHubOidcClaims;
     }
   }
 }
+
+/**
+ * Three base64url segments: the shape of a signed identity token, and of
+ * nothing this service issues itself. Which credential arrived is settled by
+ * this before either is examined, so a token is never tried as the other kind.
+ */
+const IDENTITY_TOKEN_SHAPE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/;
 
 /**
  * How long authority established once is trusted before it is established
@@ -72,13 +86,17 @@ type AuthorityOutcome =
   | { status: "refused"; code: string; message: string; httpStatus: number };
 
 /**
- * Authenticate a repository-scoped ingestion token. These credentials are
- * deliberately separate from user JWTs and are only accepted in a Bearer
- * header so they cannot leak through URLs.
+ * Authenticate a delivery by the credential it presents: a repository-scoped
+ * ingestion token, or the identity token GitHub issued to the run sending it.
+ * Both are deliberately separate from user JWTs and are only accepted in a
+ * Bearer header so they cannot leak through URLs.
  *
- * Deliberately does no network work. Rate limiting runs between this and the
- * authority refresh, so an unauthenticated flood is rejected before anything
- * reaches GitHub.
+ * Does no network work per request. Rate limiting runs between this and the
+ * authority refresh, so an unauthenticated flood is rejected before it can
+ * make this server ask GitHub anything on its behalf. An identity token is
+ * checked against a key set that is held and refetched at most once a minute
+ * whatever arrives, and everything that can be decided from the token alone is
+ * decided before that.
  */
 export async function requireReviewIntegration(
   req: Request,
@@ -91,6 +109,10 @@ export async function requireReviewIntegration(
     : null;
   if (!token) {
     res.status(401).json({ error: "Repository ingestion credential required" });
+    return;
+  }
+  if (IDENTITY_TOKEN_SHAPE.test(token)) {
+    await authenticateIdentityToken(token, req, res, next);
     return;
   }
   try {
@@ -123,13 +145,93 @@ export async function requireReviewIntegration(
   }
 }
 
+/**
+ * Authenticate a delivery by the identity token GitHub issued to its run.
+ *
+ * A verified token says which repository a request came from. It does not say
+ * the repository was ever connected here, so the connection is still what
+ * decides whose account the review belongs to, and it has to be one whose
+ * administrator chose to accept identity tokens. A connection made for a
+ * stored token is never matched: somebody who keeps that token behind an
+ * approval step has not agreed to a second way in.
+ */
+async function authenticateIdentityToken(
+  token: string,
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const verdict = await verifyGitHubOidcToken(token);
+    if (verdict.status === "refused") {
+      res.status(verdict.httpStatus).json({ error: verdict.message, code: verdict.code });
+      return;
+    }
+    const claims = verdict.claims;
+    // A review belongs to a pull request. A run started by anything else has
+    // no pull request for one to be about, however genuine its token is.
+    if (claims.eventName !== "pull_request") {
+      res.status(403).json({
+        error:
+          "Browser reviews are created from pull_request runs only. This run was started " +
+          "by a different event.",
+        code: "oidc_event_unsupported",
+      });
+      return;
+    }
+    const lookup = await findOidcReviewIntegration("github", claims.repository);
+    if (lookup.status === "none") {
+      res.status(403).json({
+        error:
+          `No connection for ${claims.repository} accepts GitHub Actions identity tokens. ` +
+          "An administrator of the repository connects it here and chooses GitHub OIDC; a " +
+          "connection made for an ingestion token only accepts that token.",
+        code: "repository_not_connected_for_oidc",
+      });
+      return;
+    }
+    if (lookup.status === "ambiguous") {
+      res.status(409).json({
+        error:
+          "More than one connection is waiting for this repository's identity tokens, so " +
+          "nothing has been recorded. All but one of them must be revoked.",
+        code: "repository_connection_ambiguous",
+      });
+      return;
+    }
+    if (!isVerifiedIntegration(lookup.integration)) {
+      res.status(403).json({
+        error:
+          "This repository's connection carries no proof that its owner administers it. " +
+          "Reconnect the repository.",
+        code: "integration_unverified",
+      });
+      return;
+    }
+    req.reviewIntegration = lookup.integration;
+    req.reviewOidcClaims = claims;
+    next();
+  } catch {
+    // Storage or verification failing must not be read as acceptance.
+    res.status(503).json({ error: "Repository credential verification unavailable" });
+  }
+}
+
 async function refreshAuthority(
   integration: ReviewIntegrationRecord
 ): Promise<AuthorityOutcome> {
-  const authority = await verifyRepositoryAuthority(integration.repository, {
-    githubUserId: integration.verifiedGithubUserId,
-    githubLogin: integration.verifiedGithubLogin,
-  });
+  const authority = await verifyRepositoryAuthority(
+    integration.repository,
+    {
+      githubUserId: integration.verifiedGithubUserId,
+      githubLogin: integration.verifiedGithubLogin,
+    },
+    // For a connection that accepts identity tokens, which repository the name
+    // refers to is part of what has to be established again. Proof that an
+    // administrator still administers "that name" is not enough to go on
+    // matching tokens against an id nobody has just confirmed.
+    { requireRepositoryId: integration.authMode === "oidc" }
+  );
   if (authority.status === "refused") {
     backoff.set(integration.id, {
       until: Date.now() + AUTHORITY_FAILURE_BACKOFF_MS,
@@ -170,6 +272,7 @@ async function refreshAuthority(
       verifiedGithubLogin: authority.authority.githubLogin,
       verifiedPermission: authority.authority.permission,
       verifiedAt: authority.authority.verifiedAt,
+      verifiedRepositoryId: authority.authority.repositoryId,
     },
   };
 }
@@ -237,4 +340,39 @@ export async function requireCurrentRepositoryAuthority(
       code: "repository_verification_unavailable",
     });
   }
+}
+
+/**
+ * Confirm an identity token came from the repository this connection is about.
+ *
+ * Runs after authority has been established, because that is what records the
+ * repository's id. The token was matched to this connection by name, and a
+ * name can be released and registered by somebody else; the id cannot. So a
+ * token is accepted only from the repository whose id was confirmed when an
+ * administrator's authority over it was last established, and a difference is
+ * a refusal rather than a reason to look again: whoever holds a name now does
+ * not get to make this server ask GitHub about it.
+ */
+export function requireOidcRepositoryIdentity(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): void {
+  const claims = req.reviewOidcClaims;
+  if (!claims) {
+    next();
+    return;
+  }
+  const established = req.reviewIntegration?.verifiedRepositoryId;
+  if (!established || established !== claims.repositoryId) {
+    res.status(403).json({
+      error:
+        "This identity token comes from a different repository than the one this " +
+        "connection was verified for. If the repository was renamed, transferred or " +
+        "recreated, an administrator needs to connect it again.",
+      code: "repository_identity_mismatch",
+    });
+    return;
+  }
+  next();
 }

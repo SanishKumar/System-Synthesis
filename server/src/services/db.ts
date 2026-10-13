@@ -181,6 +181,12 @@ export const MIGRATION_SQL = `
     verified_github_login   TEXT,
     verified_permission     TEXT,
     verified_at             TIMESTAMPTZ,
+    -- Which one kind of credential this connection accepts: its own ingestion
+    -- token, or the identity token GitHub issues to a run of the repository.
+    auth_mode               TEXT NOT NULL DEFAULT 'token',
+    -- GitHub's immutable id for the repository, as of the proof above. A name
+    -- can be released and taken by somebody else; this cannot.
+    verified_repository_id  TEXT,
     UNIQUE(owner_id, provider, repository)
   );
 
@@ -220,9 +226,22 @@ export const MIGRATION_SQL = `
   ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_github_login TEXT;
   ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_permission TEXT;
   ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+  -- Every connection that predates this column accepts a token and nothing
+  -- else, which is what the default says. Accepting identity tokens is
+  -- something an administrator chooses, never something an upgrade grants.
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT 'token';
+  ALTER TABLE architecture_review_integrations ADD COLUMN IF NOT EXISTS verified_repository_id TEXT;
 
   CREATE INDEX IF NOT EXISTS idx_architecture_review_integrations_owner
     ON architecture_review_integrations(owner_id, updated_at DESC);
+  -- An identity token names a repository and no account, so it can only be
+  -- delivered somewhere if exactly one connection is waiting for it. Enforced
+  -- here rather than checked on arrival: two administrators connecting at the
+  -- same moment would both pass a check and leave every later delivery with
+  -- two places to go.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_review_integrations_oidc_repository
+    ON architecture_review_integrations(provider, repository)
+    WHERE auth_mode = 'oidc' AND revoked_at IS NULL;
 `;
 
 /**

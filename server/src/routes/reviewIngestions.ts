@@ -9,8 +9,10 @@ import {
 import type { SourceProvenance } from "@system-synthesis/shared";
 import {
   requireCurrentRepositoryAuthority,
+  requireOidcRepositoryIdentity,
   requireReviewIntegration,
 } from "../middleware/reviewIntegrationAuth.js";
+import type { GitHubOidcClaims } from "../services/githubOidc.js";
 import { reviewIngestionLimiter } from "../middleware/rateLimit.js";
 import { logger } from "../middleware/logger.js";
 import { publishDecisionCheck } from "../services/githubChecks.js";
@@ -345,13 +347,51 @@ function responseFor(
   return res.json(body);
 }
 
+/**
+ * Why a delivery does not belong to the run whose identity token carried it.
+ *
+ * A stored token says only "this repository". An identity token says which
+ * pull request and which run, so the delivery is held to both: without that, a
+ * token minted while reviewing one pull request could be used to rewrite the
+ * review of another for as long as it stayed valid.
+ *
+ * The repository is not compared again here. The connection was found by the
+ * repository the token names, and the delivery has already been held to that
+ * connection.
+ */
+function identityTokenMismatch(
+  claims: GitHubOidcClaims,
+  delivery: { pullRequestNumber: number; workflowRunId?: string }
+): { code: string; error: string } | null {
+  // The ref of a pull_request run is the merge ref of the pull request that
+  // started it, which is the only place the token states the number.
+  if (claims.ref !== `refs/pull/${delivery.pullRequestNumber}/merge`) {
+    return {
+      code: "oidc_pull_request_mismatch",
+      error:
+        "The delivery is for a different pull request than the run its identity token " +
+        "was issued to.",
+    };
+  }
+  if (!delivery.workflowRunId || delivery.workflowRunId !== claims.runId) {
+    return {
+      code: "oidc_run_mismatch",
+      error: "The delivery does not name the workflow run its identity token was issued to.",
+    };
+  }
+  return null;
+}
+
 // Authenticate, then rate limit, then confirm authority. The order matters:
 // the authority check talks to GitHub, and putting it behind the limiter is
-// what stops a burst of deliveries from becoming a burst of lookups.
+// what stops a burst of deliveries from becoming a burst of lookups. The
+// repository an identity token came from is compared last, against the id
+// that confirming authority just made current.
 router.use(
   requireReviewIntegration,
   reviewIngestionLimiter,
-  requireCurrentRepositoryAuthority
+  requireCurrentRepositoryAuthority,
+  requireOidcRepositoryIdentity
 );
 
 router.post("/github", async (req, res) => {
@@ -365,6 +405,13 @@ router.post("/github", async (req, res) => {
     return res.status(403).json({
       error: "Repository does not match this ingestion credential",
     });
+  }
+  if (req.reviewOidcClaims) {
+    const mismatch = identityTokenMismatch(req.reviewOidcClaims, {
+      pullRequestNumber: parsed.data.pullRequest.number,
+      workflowRunId: parsed.data.workflowRun?.id,
+    });
+    if (mismatch) return res.status(403).json(mismatch);
   }
   try {
     const baseGraph = bindGraph(

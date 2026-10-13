@@ -17,6 +17,10 @@ Run them with `npm run verify`, then `npm run test:bundle --workspace=architectu
 | CLI output and exit contracts are stable across JSON, Markdown, and SARIF | CLI tests and compiled-binary execution |
 | SARIF contains repository-relative file/line evidence | Core/CLI tests |
 | Browser approval is impossible while blocking findings remain | API end-to-end verification |
+| A GitHub Actions identity token is accepted only when GitHub signed it for this deployment and it has not expired; a forged, re-targeted, unsigned, or symmetric-algorithm token is refused, and unavailable keys refuse rather than accept | Identity-token verification tests |
+| An identity-token delivery is accepted only from the connected repository's numeric id, a `pull_request` run, and the pull request and workflow run the token names | OIDC ingestion route tests |
+| A connection accepts one kind of credential, an upgrade grants no connection a second one, and at most one account holds a repository's OIDC connection | OIDC ingestion route tests and the PostgreSQL contract |
+| The Action never sends an identity token where a stored token is configured, never requests one for a fork or for an endpoint it would not deliver to, and requests it only for the endpoint's origin | Action ingestion tests and isolated consumer checks |
 | Stale review decisions cannot overwrite a newer revision | Repository tests and API HTTP 409 verification |
 | Review creation, suppression, and decision are auditable | Transactional repository tests and API event-sequence verification |
 | Protected boards can only be mutated by owner/editor | Adversarial socket tests and authenticated integration |
