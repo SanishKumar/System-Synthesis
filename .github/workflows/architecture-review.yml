@@ -54,12 +54,12 @@ jobs:
           policy-path: .system-synthesis/policy.json
           base-revision: ${{ github.event.pull_request.base.sha }}
           head-revision: ${{ github.event.pull_request.head.sha }}
-          # Both halves or neither. Asking only whether this is a fork was not
-          # enough: a Dependabot pull request runs on a branch in this
-          # repository, so that test passed, but such an event can read Actions
-          # variables and cannot read secrets. The endpoint arrived without its
-          # credential, and the Action refused the pair — correctly, since a URL
-          # with no token is a misconfiguration and not a request to skip.
+          # Both halves or neither. This repository is connected with an
+          # ingestion token, and an endpoint on its own asks the Action to
+          # authenticate with GitHub OIDC instead. Asking only whether this is a
+          # fork does not prevent that: a Dependabot pull request runs on a
+          # branch in this repository, can read Actions variables, and cannot
+          # read secrets, so the endpoint would arrive without its credential.
           ingestion-url: ${{ (github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL != '' && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
           ingestion-token: ${{ (github.event.pull_request.head.repo.full_name == github.repository && vars.SYSTEM_SYNTHESIS_INGESTION_URL != '' && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
 

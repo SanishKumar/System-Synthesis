@@ -95,15 +95,17 @@ export function planIngestion(input: {
   }
   if (token) return { action: "upload", credential: "token" };
   if (input.identityTokenAvailable) return { action: "upload", credential: "identity" };
-  // GitHub runs Dependabot's pull requests with reduced permissions. Where
-  // that leaves no identity token there is nothing for the workflow's author
-  // to fix, so the review stays local instead of failing every update.
+  // GitHub withholds repository secrets from Dependabot's pull requests and
+  // runs them with reduced permissions, so a workflow that delivers every
+  // other pull request can arrive here with no credential of either kind.
+  // That is not a misconfiguration to fail every dependency update on; the
+  // review stays local.
   if (input.actor === "dependabot[bot]") {
     return {
       action: "skip",
       reason:
-        "Browser review ingestion skipped: GitHub did not give this Dependabot run an " +
-        "identity token.",
+        "Browser review ingestion skipped: this Dependabot run was given neither an " +
+        "ingestion token nor an identity token.",
     };
   }
   throw new Error(

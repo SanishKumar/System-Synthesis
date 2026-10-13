@@ -179,12 +179,24 @@ describe("GitHub Action browser-review ingestion", () => {
       expect(() => plan()).toThrow("ingestion-token reached the Action empty");
     });
 
-    it("skips a Dependabot run that was given no identity token, and only that", () => {
-      expect(plan({ actor: "dependabot[bot]" })).toMatchObject({ action: "skip" });
-      // With a token to use it delivers like any other run.
+    it("skips a Dependabot run that was given no credential of either kind, and only that", () => {
+      // The usual way to arrive here is a workflow that passes a stored token:
+      // GitHub withholds the secret from Dependabot, so only the endpoint
+      // comes through. The reason has to be true of that case as well.
+      const skipped = plan({ actor: "dependabot[bot]" });
+      expect(skipped).toMatchObject({ action: "skip" });
+      expect(skipped).toHaveProperty(
+        "reason",
+        expect.stringContaining("neither an ingestion token nor an identity token")
+      );
+      // With either credential to use it delivers like any other run.
       expect(plan({ actor: "dependabot[bot]", identityTokenAvailable: true })).toEqual({
         action: "upload",
         credential: "identity",
+      });
+      expect(plan({ actor: "dependabot[bot]", token: TOKEN })).toEqual({
+        action: "upload",
+        credential: "token",
       });
       // A name that merely resembles it is an ordinary misconfigured run.
       expect(() => plan({ actor: "dependabot" })).toThrow("id-token: write");

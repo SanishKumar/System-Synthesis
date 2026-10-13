@@ -125,7 +125,7 @@ was issued to.
 
 GitHub gives a fork pull request no identity token, so it is reviewed in the
 workflow and not uploaded. The same applies to a Dependabot run that is given
-none. Any other run that cannot request one fails and says to add
+no credential of either kind. Any other run that cannot request one fails and says to add
 `id-token: write`. If the repository is renamed or transferred, connect it again
 under its new name.
 

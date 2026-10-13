@@ -444,14 +444,14 @@ test("a job that cannot request an identity token fails and says what to add", a
   }
 });
 
-test("a Dependabot run without an identity token keeps its review local", async () => {
+test("a Dependabot run given no credential of either kind keeps its review local", async () => {
   const world = await oidcWorld();
   try {
     const result = await run(base, world.inputs, false,
       { environment: { GITHUB_ACTOR: "dependabot[bot]" } });
     assert.equal(result.code, 0, result.log);
     assert.equal(result.outputs["ingestion-status"], "skipped");
-    assert.match(result.log, /Dependabot/);
+    assert.match(result.log, /neither an ingestion token nor an identity token/);
     assert.equal(world.deliveries.length, 0);
   } finally {
     await world.close();
