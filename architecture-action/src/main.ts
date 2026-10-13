@@ -4,15 +4,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
-import { COMPOSE_FILE_NAMES } from "@system-synthesis/architecture-core";
 import { composeReviewComment } from "./comment.js";
 import {
-  composeCandidatesAt,
+  composePairFromGit,
   readFileAtRevision,
-  resolveComposeSources,
-  verifyRevision,
+  safeRepositoryPath,
 } from "@system-synthesis/architecture-cli";
 import { createActionReview } from "./review.js";
+import { resolveActionRevisions } from "./inputs.js";
 import {
   createIngestionPayload,
   ingestionMode,
@@ -20,19 +19,6 @@ import {
   uploadArchitectureReview,
 } from "./ingestion.js";
 
-
-function safeRepositoryPath(value: string, label: string): string {
-  const normalized = value.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (
-    !normalized ||
-    normalized.startsWith("/") ||
-    normalized.split("/").includes("..") ||
-    /[\0\r\n]/.test(normalized)
-  ) {
-    throw new Error(`${label} must be a repository-relative path.`);
-  }
-  return normalized;
-}
 
 function repositoryDirectory(value: string): string {
   const workspace = resolve(process.env.GITHUB_WORKSPACE || process.cwd());
@@ -75,27 +61,24 @@ async function run(): Promise<void> {
   const sourceDirectory = repositoryDirectory(
     core.getInput("repository-directory") || "."
   );
-  const composePath = safeRepositoryPath(
-    core.getInput("compose-path", { required: true }),
-    "compose-path"
-  );
   const policyInput = core.getInput("policy-path");
   const policyPath = policyInput
     ? safeRepositoryPath(policyInput, "policy-path")
     : undefined;
-  const baseRevision = core.getInput("base-revision", { required: true });
-  const headRevision = core.getInput("head-revision", { required: true });
-  verifyRevision(baseRevision, sourceDirectory);
-  verifyRevision(headRevision, sourceDirectory);
-
-  const sources = resolveComposeSources({
-    composePath,
-    baseRevision,
-    headRevision,
-    baseFile: readFileAtRevision(baseRevision, composePath, sourceDirectory),
-    headFile: readFileAtRevision(headRevision, composePath, sourceDirectory),
-    findCandidates: () => composeCandidatesAt(headRevision, sourceDirectory),
+  const revisions = resolveActionRevisions({
+    baseRevision: core.getInput("base-revision"),
+    headRevision: core.getInput("head-revision"),
   });
+  const sources = composePairFromGit({
+    directory: sourceDirectory,
+    composePath: core.getInput("compose-path") || undefined,
+    ...revisions,
+  });
+  const { composePath, baseRevision, headRevision } = sources;
+  core.setOutput("compose-path", composePath);
+  core.setOutput("base-revision", baseRevision);
+  core.setOutput("head-revision", headRevision);
+  core.info(`Reviewing ${composePath}: ${baseRevision} -> ${headRevision}`);
 
   const reports = createActionReview({
     baseContent: sources.baseContent,

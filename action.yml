@@ -12,19 +12,18 @@ inputs:
     required: false
     default: .
   compose-path:
-    description: Repository-relative Docker Compose file to compare.
-    required: true
-    default: compose.yaml
+    description: Repository-relative Docker Compose file. Omit to detect one standard root filename across the base and head; multiple candidates require an explicit path.
+    required: false
   policy-path:
     description: Repository-relative JSON policy. The base-branch version governs the review.
     required: false
     default: .system-synthesis/policy.json
   base-revision:
-    description: Base commit SHA or ref.
-    required: true
+    description: Base commit SHA or ref. Defaults to the pull_request event base SHA; required for other events.
+    required: false
   head-revision:
-    description: Head commit SHA or ref.
-    required: true
+    description: Head commit SHA or ref. Defaults to the pull_request event head SHA, never the merge SHA; required for other events.
+    required: false
   output-directory:
     description: Repository-relative directory for JSON, Markdown, and SARIF reports.
     required: false
@@ -37,6 +36,12 @@ inputs:
     required: false
 
 outputs:
+  compose-path:
+    description: Resolved repository-relative Compose file used for the comparison.
+  base-revision:
+    description: Resolved full base commit SHA used for analysis and policy.
+  head-revision:
+    description: Resolved full head commit SHA used for analysis.
   exit-code:
     description: 0 for pass, 1 for blocking findings, or 2 for invalid input or a configured ingestion failure.
   status:

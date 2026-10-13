@@ -37,7 +37,7 @@ const HELP = `System Synthesis architecture change intelligence
 
 Usage:
   system-synthesis review --base <compose.yaml> --head <compose.yaml> [options]
-  system-synthesis review --repo <dir> --compose-path <path>       --base-revision <rev> --head-revision <rev> [options]
+  system-synthesis review --repo <dir> --base-revision <rev> --head-revision <rev> [options]
   system-synthesis import --file <compose.yaml> [options]
 
 Review options:
@@ -47,7 +47,8 @@ Review options:
   --repository <owner/name>       Repository recorded in source provenance
   --repo <dir>                    Read both sides from a Git repository, using
                                   --base-revision and --head-revision as commits
-  --compose-path <path>           Compose file to read at each revision (with --repo)
+  --compose-path <path>           Explicit Compose file (otherwise detect one standard
+                                  root filename across both revisions, with --repo)
   --source-path <path>            Repository-relative Compose path for evidence
   --base-revision <sha>           Base revision; a label without --repo (default: base)
   --head-revision <sha>           Head revision; a label without --repo (default: head)
@@ -190,24 +191,24 @@ function reviewSides(
   const directory = parsed.values.get("repo");
 
   if (directory) {
-    const composePath = required(parsed, "compose-path");
+    const composePath = parsed.values.get("compose-path");
     const baseRevision = required(parsed, "base-revision");
     const headRevision = required(parsed, "head-revision");
-    const evidencePath = (parsed.values.get("source-path") || composePath).replace(/\\/g, "/");
     const sources = composePairFromGit({
       directory,
       composePath,
       baseRevision,
       headRevision,
     });
+    const evidencePath = (parsed.values.get("source-path") || sources.composePath).replace(/\\/g, "/");
     return {
       base: dockerComposeAdapter.import(
         [{ path: evidencePath, content: sources.baseContent }],
-        { repository, revision: baseRevision }
+        { repository, revision: sources.baseRevision }
       ),
       head: dockerComposeAdapter.import(
         [{ path: evidencePath, content: sources.headContent }],
-        { repository, revision: headRevision }
+        { repository, revision: sources.headRevision }
       ),
     };
   }

@@ -10,6 +10,7 @@ The first release of the pull-request architecture review. `v0.1.0` predates the
 
 - Deterministic architecture-change reviews for a bounded Docker Compose contract, including semantic graph diffs, source evidence, policy enforcement, Markdown, JSON, and SARIF output.
 - A bundled GitHub Action, pull-request comment, check run, and authenticated browser review workflow.
+- Automatic PR base/head revision detection in the Action, and unambiguous standard root Compose-path detection in the Action and Git-backed CLI. Explicit inputs remain authoritative; selected paths and resolved SHAs are exposed as Action outputs. Missing or ambiguous inputs fail instead of selecting a branch, merge commit, or arbitrary file.
 - A Kubernetes manifest adapter and Kubernetes-specific policy rules in `architecture-core`. This adapter is not yet selectable from the CLI, Action, or server.
 - Stable graph algorithms for reachability, trust boundaries, redundancy, cycles, and downstream blast radius.
 - Base-branch policy authority, scoped and expiring suppressions, review decisions, optimistic revisions, and append-only audit events.

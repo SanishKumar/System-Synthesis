@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -111,6 +111,61 @@ describe("reading both sides out of a repository", () => {
     expect(() => verifyRevision("not-a-real-revision", repository)).toThrow(
       /"not-a-real-revision" is not a commit/
     );
+  });
+
+  it("resolves refs to immutable commit SHAs and detects the tracked Compose path", () => {
+    const sources = composePairFromGit({ directory: repository,
+      baseRevision: `${baseCommit}~0`, headRevision: `${headCommit}~0` });
+    expect(sources).toEqual({ composePath: "docker-compose.yml",
+      baseRevision: baseCommit, headRevision: headCommit, baseContent: BASE, headContent: HEAD });
+  });
+
+  it.each(["--help", "--all", "--show-toplevel", "--glob=*", "-q"])(
+    "refuses the option-shaped revision %s as something that is not a commit",
+    (revision) => {
+      // What is held here is the outcome: nothing shaped like an option is ever
+      // acted on. The `^{commit}` suffix is what achieves that today, so this
+      // passes with or without `--end-of-options` — the fence only starts to
+      // matter if the suffix ever changes, and no input can tell them apart.
+      expect(() => verifyRevision(revision, repository)).toThrow("is not a commit");
+    }
+  );
+
+  it("does not mistake a directory with a Compose filename for a Compose file", () => {
+    // A tree passes an existence check, and `git show` on one returns a listing
+    // rather than a document. Counted as a candidate it would make an ordinary
+    // repository look ambiguous, or hand the importer a directory to parse.
+    const directory = mkdtempSync(join(tmpdir(), "ss-git-tree-"));
+    try {
+      const run = (...args: string[]) =>
+        execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
+      run("init", "--quiet");
+      run("config", "user.email", "test@example.test");
+      run("config", "user.name", "Test");
+      mkdirSync(join(directory, "compose.yaml"));
+      writeFileSync(join(directory, "compose.yaml", "notes.txt"), "not a Compose file\n");
+      writeFileSync(join(directory, "docker-compose.yml"), BASE);
+      run("add", ".");
+      run("commit", "--quiet", "-m", "base");
+      const commit = run("rev-parse", "HEAD");
+
+      expect(
+        composePairFromGit({ directory, baseRevision: commit, headRevision: commit }).composePath
+      ).toBe("docker-compose.yml");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reviews from the CLI without --compose-path but still requires named revisions", () => {
+    const context = io();
+    expect(runCli(["review", "--repo", repository, "--base-revision", baseCommit,
+      "--head-revision", headCommit, "--format", "json"], context)).toBe(1);
+    expect(JSON.parse(context.out.join("")).base.revision).toBe(baseCommit);
+    expect(context.out.join("")).toContain("docker-compose.yml");
+    const missing = io();
+    expect(runCli(["review", "--repo", repository], missing)).toBe(2);
+    expect(missing.err.join("")).toContain("--base-revision");
   });
 
   it("reviews a repository in one command, and fails on what it finds", () => {

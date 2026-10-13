@@ -20,16 +20,20 @@ export const EMPTY_COMPOSE = "services: {}\n";
  * shallow clone that lacks the base commit and a mistyped branch look identical
  * in the raw error, and both are things the person running this can fix.
  */
-export function verifyRevision(revision: string, cwd: string): void {
+export function verifyRevision(revision: string, cwd: string): string {
+  // The `^{commit}` suffix already keeps an option-shaped name from being read
+  // as an option. `--end-of-options` is there so that stays true if the suffix
+  // ever changes; no input distinguishes the two today.
   try {
-    execFileSync("git", ["rev-parse", "--verify", `${revision}^{commit}`], {
+    return execFileSync("git", ["rev-parse", "--verify", "--end-of-options", `${revision}^{commit}`], {
       cwd,
-      stdio: "ignore",
-    });
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     throw new Error(
       `"${revision}" is not a commit this repository can resolve. Check the name, ` +
-        "and that the clone has enough history to contain it."
+        "and that the clone has enough history to contain it (actions/checkout: fetch-depth: 0)."
     );
   }
 }
@@ -57,22 +61,52 @@ export function readFileAtRevision(
 }
 
 /**
- * Root-level Compose files present at a revision, used only to turn a
- * misconfigured path into an actionable message. Probing the known names
+ * Root-level Compose blobs present at a revision, for detection and actionable
+ * misconfiguration messages. Probing the known names
  * directly keeps this to a few cheap lookups instead of listing the tree.
  */
 export function composeCandidatesAt(revision: string, cwd: string): string[] {
   return COMPOSE_FILE_NAMES.filter((name) => {
     try {
-      execFileSync("git", ["cat-file", "-e", `${revision}:${name}`], {
+      const type = execFileSync("git", ["cat-file", "-t", `${revision}:${name}`], {
         cwd,
-        stdio: "ignore",
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
       });
-      return true;
+      return type.trim() === "blob";
     } catch {
       return false;
     }
   });
+}
+
+export function safeRepositoryPath(value: string, label: string): string {
+  const normalized = value.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!normalized || normalized === "." || normalized.startsWith("/") ||
+      normalized.split("/").includes("..") || /[:\0\r\n]/.test(normalized)) {
+    throw new Error(`${label} must be a repository-relative path.`);
+  }
+  return normalized;
+}
+
+/** Never prefer a filename or revision when the repository gives two choices. */
+export function resolveComposePath(input: {
+  composePath?: string;
+  baseRevision: string;
+  headRevision: string;
+  findCandidates: (revision: string) => string[];
+}): string {
+  if (input.composePath) return safeRepositoryPath(input.composePath, "compose-path");
+  const found = new Set([
+    ...input.findCandidates(input.baseRevision),
+    ...input.findCandidates(input.headRevision),
+  ]);
+  const candidates = COMPOSE_FILE_NAMES.filter((name) => found.has(name));
+  if (candidates.length === 1) return candidates[0];
+  if (candidates.length > 1) {
+    throw new Error(`Multiple Compose files exist across the base/head revisions: ${candidates.join(", ")}. Set compose-path explicitly; files are not merged.`);
+  }
+  throw new Error("No standard Compose file was found at the repository root in either revision. Set compose-path explicitly for a nested or custom-named file.");
 }
 
 /**
@@ -111,18 +145,28 @@ export function resolveComposeSources(input: {
 /** Both sides of a comparison, read straight out of a repository's history. */
 export function composePairFromGit(input: {
   directory: string;
-  composePath: string;
+  composePath?: string;
   baseRevision: string;
   headRevision: string;
-}): { baseContent: string; headContent: string } {
-  verifyRevision(input.baseRevision, input.directory);
-  verifyRevision(input.headRevision, input.directory);
-  return resolveComposeSources({
-    composePath: input.composePath,
-    baseRevision: input.baseRevision,
-    headRevision: input.headRevision,
-    baseFile: readFileAtRevision(input.baseRevision, input.composePath, input.directory),
-    headFile: readFileAtRevision(input.headRevision, input.composePath, input.directory),
-    findCandidates: () => composeCandidatesAt(input.headRevision, input.directory),
+}): { composePath: string; baseRevision: string; headRevision: string; baseContent: string; headContent: string } {
+  // Resolve refs once, so detection, source reads and policy cannot disagree if
+  // a local branch moves while the comparison is running.
+  const baseRevision = verifyRevision(input.baseRevision, input.directory);
+  const headRevision = verifyRevision(input.headRevision, input.directory);
+  const composePath = resolveComposePath({
+    composePath: input.composePath, baseRevision, headRevision,
+    findCandidates: (revision) => composeCandidatesAt(revision, input.directory),
   });
+  return {
+    composePath, baseRevision, headRevision,
+    ...resolveComposeSources({
+      composePath, baseRevision, headRevision,
+      baseFile: readFileAtRevision(baseRevision, composePath, input.directory),
+      headFile: readFileAtRevision(headRevision, composePath, input.directory),
+      findCandidates: () => [...new Set([
+        ...composeCandidatesAt(baseRevision, input.directory),
+        ...composeCandidatesAt(headRevision, input.directory),
+      ])],
+    }),
+  };
 }

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { after, before, test } from "node:test";
@@ -14,6 +15,9 @@ let bundle;
 let base;
 let head;
 let malformed;
+let ambiguous;
+let removed;
+let renamed;
 const repository = "acme/bundle-consumer";
 const safe = "services:\n  database:\n    image: postgres:16\n";
 const blocking = safe + "    ports: ['5432:5432']\n";
@@ -53,6 +57,19 @@ before(() => {
   git("add", ".");
   git("commit", "--quiet", "-m", "Malformed input");
   malformed = git("rev-parse", "HEAD");
+  git("checkout", "--quiet", head);
+  writeFileSync(join(consumer, "docker-compose.yml"), safe);
+  git("add", ".");
+  git("commit", "--quiet", "-m", "Add a second Compose candidate");
+  ambiguous = git("rev-parse", "HEAD");
+  git("checkout", "--quiet", base);
+  git("rm", "compose.yaml");
+  git("commit", "--quiet", "-m", "Remove Compose");
+  removed = git("rev-parse", "HEAD");
+  git("checkout", "--quiet", base);
+  git("mv", "compose.yaml", "docker-compose.yml");
+  git("commit", "--quiet", "-m", "Rename Compose");
+  renamed = git("rev-parse", "HEAD");
 });
 
 after(() => {
@@ -77,17 +94,17 @@ function parseOutputs(text) {
   return values;
 }
 
-async function run(revision, inputs = {}, fork = false) {
+async function run(revision, inputs = {}, fork = false, options = {}) {
   const runDirectory = mkdtempSync(join(directory, "run-"));
   const output = join(runDirectory, "outputs");
   const summary = join(runDirectory, "summary");
   const eventPath = join(runDirectory, "event.json");
   writeFileSync(output, "");
   writeFileSync(summary, "");
-  writeFileSync(eventPath, JSON.stringify({
+  writeFileSync(eventPath, options.rawEvent ?? JSON.stringify({
     repository: { full_name: repository },
     pull_request: { number: 1, title: "Consumer smoke test", html_url: `https://github.com/${repository}/pull/1`,
-      updated_at: "2026-10-05T00:00:00Z", base: { sha: base },
+      updated_at: "2026-10-05T00:00:00Z", base: { sha: options.eventBase || base },
       head: { sha: revision, repo: { full_name: fork ? "contributor/bundle-consumer" : repository } } },
   }));
   const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
@@ -101,7 +118,7 @@ async function run(revision, inputs = {}, fork = false) {
         "INPUT_COMPOSE-PATH": "compose.yaml", "INPUT_POLICY-PATH": ".system-synthesis/policy.json",
         "INPUT_BASE-REVISION": base, "INPUT_HEAD-REVISION": revision,
         "INPUT_OUTPUT-DIRECTORY": `.system-synthesis/${runDirectory.split(/[\\/]/).at(-1)}`,
-        ...inputs },
+        ...inputs, ...options.environment },
       stdio: ["ignore", "pipe", "pipe"], timeout: 20_000,
     });
     let log = "";
@@ -171,4 +188,126 @@ test("fork source still analyzes but cannot upload a browser review", async () =
   }, true);
   assert.equal(result.code, 0, result.log);
   assert.equal(result.outputs["ingestion-status"], "skipped");
+});
+
+const detectedInputs = {
+  "INPUT_COMPOSE-PATH": "", "INPUT_BASE-REVISION": "", "INPUT_HEAD-REVISION": "",
+};
+
+test("detects the PR pair and Compose path without using the checkout or merge SHA", async () => {
+  // The working tree now holds the renamed file; neither it nor GITHUB_SHA is
+  // authoritative for this event. Base policy must still block the head change.
+  const result = await run(head, detectedInputs, false, { environment: { GITHUB_SHA: base } });
+  assert.equal(result.code, 1, result.log);
+  assert.equal(result.outputs["compose-path"], "compose.yaml");
+  assert.equal(result.outputs["base-revision"], base);
+  assert.equal(result.outputs["head-revision"], head);
+  const report = JSON.parse(readFileSync(result.outputs["json-file"], "utf8"));
+  assert.equal(report.base.revision, base);
+  assert.equal(report.head.revision, head);
+});
+
+test("detects a deletion from the base instead of reporting no Compose file", async () => {
+  const result = await run(removed, detectedInputs);
+  assert.equal(result.code, 0, result.log);
+  assert.equal(result.outputs["compose-path"], "compose.yaml");
+  const report = JSON.parse(readFileSync(result.outputs["json-file"], "utf8"));
+  assert.ok(report.diff.stats.removed > 0);
+});
+
+test("detects a newly added Compose file from the head", async () => {
+  const result = await run(head, detectedInputs, false, { eventBase: removed });
+  assert.equal(result.code, 1, result.log);
+  assert.equal(result.outputs["base-revision"], removed);
+  assert.equal(result.outputs["compose-path"], "compose.yaml");
+});
+
+test("refuses ambiguous candidates, including a rename across the two commits", async () => {
+  for (const revision of [ambiguous, renamed]) {
+    const result = await run(revision, detectedInputs);
+    assert.equal(result.code, 2, result.log);
+    assert.match(result.log, /Multiple Compose files/);
+    assert.match(result.log, /compose.yaml/);
+    assert.match(result.log, /docker-compose.yml/);
+    assert.equal(result.outputs["json-file"], undefined);
+  }
+});
+
+test("explicit path and revisions override detection, including outside a PR event", async () => {
+  const result = await run(ambiguous, {
+    "INPUT_COMPOSE-PATH": "docker-compose.yml",
+    "INPUT_BASE-REVISION": `${renamed}~0`, "INPUT_HEAD-REVISION": ambiguous,
+  }, false, { environment: { GITHUB_EVENT_NAME: "workflow_dispatch" }, rawEvent: "not JSON" });
+  assert.equal(result.code, 0, result.log);
+  assert.equal(result.outputs["compose-path"], "docker-compose.yml");
+  assert.equal(result.outputs["base-revision"], renamed);
+});
+
+test("requires explicit revisions outside pull_request and rejects malformed PR metadata", async () => {
+  const nonPr = await run(head, detectedInputs, false,
+    { environment: { GITHUB_EVENT_NAME: "pull_request_target" } });
+  assert.equal(nonPr.code, 2);
+  assert.match(nonPr.log, /base-revision and head-revision/);
+  const malformedEvent = await run(head, detectedInputs, false, { rawEvent: "not JSON" });
+  assert.equal(malformedEvent.code, 2);
+  assert.match(malformedEvent.log, /valid JSON/);
+});
+
+test("no candidates and unavailable commits fail with actionable input errors", async () => {
+  const noFile = await run(removed, detectedInputs, false, { eventBase: removed });
+  assert.equal(noFile.code, 2);
+  assert.match(noFile.log, /No standard Compose file/);
+  const missingCommit = await run("c".repeat(40), detectedInputs);
+  assert.equal(missingCommit.code, 2);
+  assert.match(missingCommit.log, /fetch-depth: 0/);
+});
+
+test("detected fork reviews still cannot upload when ingestion inputs are present", async () => {
+  const result = await run(base, { ...detectedInputs,
+    "INPUT_INGESTION-URL": "http://127.0.0.1:1/api/review-ingestions/github",
+    "INPUT_INGESTION-TOKEN": `ssri_${"x".repeat(43)}`,
+  }, true);
+  assert.equal(result.code, 0, result.log);
+  assert.equal(result.outputs["head-revision"], base);
+  assert.equal(result.outputs["ingestion-status"], "skipped");
+});
+
+test("detected inputs and explicit ref aliases ingest the exact PR pair with base policy", async () => {
+  const payloads = [];
+  const server = createServer((request, response) => {
+    let body = "";
+    request.on("data", (chunk) => { body += chunk; });
+    request.on("end", () => {
+      payloads.push(JSON.parse(body));
+      response.writeHead(201, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ status: "created",
+        reviewId: "8f2a1c00-0000-4000-8000-000000000001",
+        reviewUrl: "https://example.invalid/reviews/8f2a1c00-0000-4000-8000-000000000001",
+        revision: 1, analysisStatus: "fail", blockingFindings: 1, headRevision: head }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    for (const baseInput of ["", `${base}~0`]) {
+      const result = await run(head, { ...detectedInputs,
+        "INPUT_BASE-REVISION": baseInput,
+        "INPUT_INGESTION-URL": `http://127.0.0.1:${server.address().port}/api/review-ingestions/github`,
+        "INPUT_INGESTION-TOKEN": `ssri_${"x".repeat(43)}`,
+      });
+      assert.equal(result.code, 1, result.log);
+      assert.equal(result.outputs["ingestion-status"], "created");
+      assert.match(readFileSync(result.outputs["comment-file"], "utf8"), /example.invalid\/reviews/);
+    }
+    assert.equal(payloads.length, 2);
+    for (const payload of payloads) {
+      assert.equal(payload.baseRevision, base);
+      assert.equal(payload.headRevision, head);
+      assert.equal(payload.baseGraph.source.revision, base);
+      assert.equal(payload.headGraph.source.revision, head);
+      assert.equal(payload.sourcePath, "compose.yaml");
+      assert.equal(payload.policy.failOn, undefined);
+    }
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });

@@ -66,7 +66,7 @@ interface UploadOptions {
   attempts?: number;
 }
 
-const SHA_PATTERN = /^[a-f0-9]{40,64}$/;
+const SHA_PATTERN = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const REPOSITORY_PATTERN = /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -111,12 +111,12 @@ function httpUrl(value: unknown, label: string): string {
   return url.toString();
 }
 
-export function parsePullRequestContext(
+export function parsePullRequestRevisions(
   event: unknown,
   environment: NodeJS.ProcessEnv = process.env
-): PullRequestIngestionContext {
+): Pick<PullRequestIngestionContext, "repository" | "baseRevision" | "headRevision"> {
   if (environment.GITHUB_EVENT_NAME !== "pull_request") {
-    throw new Error("Architecture review ingestion only supports pull_request events.");
+    throw new Error("Architecture review context only supports pull_request events.");
   }
   const root = record(event, "GitHub event payload");
   const pullRequest = record(root.pull_request, "GitHub pull request");
@@ -131,6 +131,20 @@ export function parsePullRequestContext(
   if (repository !== environmentRepository) {
     throw new Error("GitHub event repository does not match GITHUB_REPOSITORY.");
   }
+  return {
+    repository,
+    baseRevision: commit(record(pullRequest.base, "pull request base").sha, "base revision"),
+    headRevision: commit(record(pullRequest.head, "pull request head").sha, "head revision"),
+  };
+}
+
+export function parsePullRequestContext(
+  event: unknown,
+  environment: NodeJS.ProcessEnv = process.env
+): PullRequestIngestionContext {
+  const revisions = parsePullRequestRevisions(event, environment);
+  const { repository } = revisions;
+  const pullRequest = record(record(event).pull_request, "GitHub pull request");
   const number = pullRequest.number;
   if (!Number.isInteger(number) || number < 1 || number > 1_000_000_000) {
     throw new Error("GitHub pull request number is invalid.");
@@ -164,8 +178,8 @@ export function parsePullRequestContext(
     pullRequestUrl: httpUrl(pullRequest.html_url, "pull request URL"),
     pullRequestTitle: title,
     changeVersion: updatedAt,
-    baseRevision: commit(record(pullRequest.base, "pull request base").sha, "base revision"),
-    headRevision: commit(record(pullRequest.head, "pull request head").sha, "head revision"),
+    baseRevision: revisions.baseRevision,
+    headRevision: revisions.headRevision,
     isFork: headRepository !== repository,
     ...(workflowRunId
       ? {
@@ -176,18 +190,22 @@ export function parsePullRequestContext(
   };
 }
 
-export function readPullRequestContext(
+export function readPullRequestEvent(
   environment: NodeJS.ProcessEnv = process.env
-): PullRequestIngestionContext {
+): unknown {
   const eventPath = environment.GITHUB_EVENT_PATH;
-  if (!eventPath) throw new Error("GITHUB_EVENT_PATH is required for ingestion.");
-  let event: unknown;
+  if (!eventPath) throw new Error("GITHUB_EVENT_PATH is required to read pull request metadata.");
   try {
-    event = JSON.parse(readFileSync(eventPath, "utf8"));
+    return JSON.parse(readFileSync(eventPath, "utf8"));
   } catch {
     throw new Error("GITHUB_EVENT_PATH did not contain valid JSON.");
   }
-  return parsePullRequestContext(event, environment);
+}
+
+export function readPullRequestContext(
+  environment: NodeJS.ProcessEnv = process.env
+): PullRequestIngestionContext {
+  return parsePullRequestContext(readPullRequestEvent(environment), environment);
 }
 
 export function createIngestionPayload(input: {

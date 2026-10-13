@@ -70,16 +70,16 @@ Deciding a review is bound to a real identity: linking proves which GitHub accou
   id: review
   uses: SanishKumar/System-Synthesis@<reviewed-full-commit-sha>
   with:
-    compose-path: compose.yaml
-    policy-path: .system-synthesis/policy.json
-    base-revision: ${{ github.event.pull_request.base.sha }}
-    head-revision: ${{ github.event.pull_request.head.sha }}
     # Optional: persist an interactive review in the browser.
     ingestion-url: ${{ (github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN != '') && vars.SYSTEM_SYNTHESIS_INGESTION_URL || '' }}
     ingestion-token: ${{ github.event.pull_request.head.repo.full_name == github.repository && secrets.SYSTEM_SYNTHESIS_INGESTION_TOKEN || '' }}
 ```
 
 Use these steps in a `pull_request` workflow. Replace `<reviewed-full-commit-sha>` with the full SHA of a reviewed, published commit; `v0.2.0` is not tagged yet. A failing review fails the job. If you add `continue-on-error` to upload reports afterwards, finish with an `always()` step that enforces the `exit-code` output, as in [this repository's workflow](./.github/workflows/architecture-review.yml).
+
+The Action detects the PR's base/head SHAs from its event, not `GITHUB_SHA` (which can identify the merge commit). [GitHub's event documentation](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#pull_request) explains that distinction. It detects a single root `compose.yml`, `compose.yaml`, `docker-compose.yml`, or `docker-compose.yaml` across both revisions. Added/deleted files are supported; multiple candidates, including a rename between standard filenames, fail with a request to set `compose-path`. Nested or custom-named files need an explicit path. Files are not merged and no repository history is fetched automatically.
+
+Explicit `compose-path`, `base-revision`, and `head-revision` inputs override detection. Outside `pull_request` events both revisions are required, and browser ingestion remains PR-only. `.system-synthesis/policy.json` is still read from the resolved base commit by default. The `compose-path`, `base-revision`, and `head-revision` outputs record the selected file and full commit SHAs. Existing pins predating automatic detection still need all three inputs supplied explicitly.
 
 It is a bundled Node 24 action — consumers install nothing and run no dependency lifecycle scripts.
 
@@ -137,9 +137,10 @@ Point it at any project you like — each side is read out of Git history, so no
 ```bash
 node architecture-cli/dist/bin.js review \
   --repo ../their-project \
-  --compose-path docker-compose.yml \
   --base-revision main --head-revision their-branch
 ```
+
+Repository mode detects the same standard root Compose filenames. Add `--compose-path deploy/production.yml` for a nested, custom-named, or ambiguous layout. The CLI still requires both revision arguments; it does not infer branches from the local checkout.
 
 **Output formats:** `--format json`, `markdown`, `sarif`
 
