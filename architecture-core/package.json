@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@system-synthesis/shared": "*",
-    "yaml": "2.9.0"
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
